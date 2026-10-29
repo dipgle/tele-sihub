@@ -24,6 +24,22 @@ opened on the machine, and no address points back to it:
 **Platform:** macOS (Terminal.app + AppleScript). A Windows port exists but has
 not yet run on a real Windows machine — see below.
 
+## All you need is your phone
+
+With huba running, **a phone with Telegram is enough to get the work done.** Leave
+the Mac at home and go out: you can still see what every session did, answer its
+questions with a tap, give it the next task, open a new session for a new job, and
+have the files it produces sent to you in the chat.
+
+What the Mac needs while you are away:
+
+- **Powered on, online and not asleep.** A sleeping Mac runs nothing — turn off
+  automatic sleep (or keep it awake with `caffeinate`).
+- **Logged in** to your user account — huba runs as a launchd agent of that
+  session. The screen **may be locked**: typing into sessions and `/shot` go
+  through Terminal and keep working on the lock screen; only `/anh` (screenshots)
+  and `/web` (driving Chrome) need it unlocked.
+
 ## Telegram is the main channel
 
 Telegram is a **full command channel**: every verb in the tables below can be

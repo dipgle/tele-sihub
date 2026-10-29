@@ -16,6 +16,21 @@ vào máy, không có địa chỉ nào trỏ về đây:
        └──── tin báo + nút bấm ◄──────┘   (chỉ khi có THAY ĐỔI, không báo trạng thái)
 ```
 
+## Chỉ cần điện thoại
+
+Có huba thì **một chiếc điện thoại có Telegram là đủ để làm việc.** Cứ để máy tính
+ở nhà mà đi chơi: vẫn xem được từng phiên đã làm gì, bấm một nút để trả lời câu
+phiên đang hỏi, giao việc tiếp theo, mở phiên mới cho việc mới, và nhận tệp kết
+quả gửi thẳng vào buồng chat.
+
+Máy Mac ở nhà cần:
+
+- **Bật, có mạng và KHÔNG ngủ.** Máy ngủ thì không gì chạy — tắt chế độ tự ngủ (hoặc
+  giữ máy thức bằng `caffeinate`).
+- **Đã đăng nhập** tài khoản người dùng — huba chạy như một launchd agent của phiên
+  ấy. Màn hình **khoá cũng được**: gõ vào phiên và `/shot` đi qua Terminal nên vẫn
+  chạy khi khoá màn; chỉ `/anh` (chụp ảnh màn) và `/web` (lái Chrome) cần mở khoá.
+
 ## Telegram là kênh chính
 
 Từ 2026-08-11 Telegram không còn là cái loa hai nút mà là **kênh ra lệnh đầy
