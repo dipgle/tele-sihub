@@ -1,0 +1,1087 @@
+//! Bắt "vừa xong" / "vừa tắt" — và **chỉ nói một lần**.
+//!
+//! Cái loa này chạy trong một vòng lặp ~10 giây. Sai một nhịp ở đây không ra
+//! một dòng log xấu mà ra một cái điện thoại rung mãi không thôi — rồi chủ máy
+//! tắt thông báo, và mất luôn cả những lần đáng nghe. Nên mọi ca đều ghim.
+
+use std::collections::BTreeMap;
+
+use huba::sessions::LiveSession;
+use huba::watch::{
+    changes, Change, Idle, Mark, BG_MISS_DEBOUNCE_SEC, DEAD, IDLE, MIN_RUN_SEC, WORKING,
+};
+
+/// Mốc thời gian giả, để test không phụ thuộc đồng hồ thật.
+const NOW: i64 = 1_800_000_000;
+
+/// Sổ ghi "đang chạy từ lúc nào" — chạy đủ lâu để lượt xong ĐƯỢC tính là tin.
+fn mark(state: &str, tty: &str, kind: &str) -> Mark {
+    Mark {
+        s: state.to_string(),
+        y: tty.to_string(),
+        k: kind.to_string(),
+        p: String::new(),
+        // Đã thấy từ lâu: mặc định của các test cũ là phiên sống thật, không
+        // phải phiên chớp nhoáng — cửa tuổi thọ mới không được đổi ý nghĩa của
+        // chúng.
+        f: NOW - 3600,
+        h: false,
+        n: String::new(),
+        d: String::new(),
+        l: String::new(),
+        // Mặc định của test cũ: sổ ĐÃ biết phiên này thuộc tài khoản nào. Sổ
+        // chưa biết (`a` rỗng) là một ca riêng, có test riêng bên dưới.
+        a: "acc1".to_string(),
+        c: "/Users/username/projects".to_string(),
+        i: 4242,
+        o: "terminal".to_string(),
+        g: 0,
+        // Chưa từng báo mồ côi — mọi bài kiểm ở đây nói về chuyện khác.
+        m: false,
+    }
+}
+fn working_long(id: &str) -> (String, Mark) {
+    (
+        id.to_string(),
+        mark(
+            &format!("working@{}", NOW - MIN_RUN_SEC - 5),
+            "ttys009",
+            "interactive",
+        ),
+    )
+}
+
+fn sess(id: &str, name: &str, host: &str, working: bool) -> LiveSession {
+    LiveSession {
+        session_id: id.to_string(),
+        name: name.to_string(),
+        host: host.to_string(),
+        working,
+        ..Default::default()
+    }
+}
+
+fn book(pairs: &[(&str, &str)]) -> BTreeMap<String, Mark> {
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), mark(v, "ttys009", "interactive")))
+        .collect()
+}
+
+/// Thư mục làm việc của hubad — nơi mọi phép dò `/usage` của chính huba chạy.
+fn hub_runtime_cwd() -> String {
+    format!(
+        "{}/Library/Application Support/hub",
+        std::env::var("HOME").unwrap_or_default()
+    )
+}
+
+/// Phép dò hạn mức của CHÍNH huba sống LÂU vẫn không phải tin.
+///
+/// 🔴 Hà 2026-08-12, đọc `⏹ huba-67 (033059d8) đã tắt — cửa sổ ấy nay đang chạy
+/// phiên huba-ec.`: *"quá vô lý"*. Cửa tuổi thọ (120 giây) bắt được phần lớn phép
+/// dò, nhưng nó bắt sai chỗ: thứ khiến cái chết ấy không phải tin không phải là
+/// **nó ngắn** mà là **nó của huba**. Ca thật lọt lưới: phiên nằm trong danh sách
+/// 11 phút vì lượt dò treo tới trần 60 giây.
+#[test]
+fn hub_own_usage_probe_never_rings_even_when_it_lived_long() {
+    let mut m = mark(IDLE, "", "interactive");
+    m.f = NOW - 11 * 60; // sống 11 phút — qua thừa cửa tuổi thọ
+    m.c = hub_runtime_cwd();
+    let prev: BTreeMap<String, Mark> = [("probe".to_string(), m)].into_iter().collect();
+    let (events, next) = changes(&prev, &[], NOW, &[]);
+    assert!(
+        events.is_empty(),
+        "chuông kêu vì phiên của chính huba: {events:?}"
+    );
+    assert!(
+        !next.contains_key("probe"),
+        "giữ lại trong sổ thì lượt sau lại kêu"
+    );
+}
+
+/// …kể cả khi nó CÒN SỐNG: phép dò của huba cũng không được báo "vừa xong", và
+/// không được vào sổ. Hai cửa, hai đường khác nhau — cửa trên đọc sổ (phiên đã
+/// rời danh sách), cửa này đọc danh sách đang sống.
+#[test]
+fn a_running_hub_probe_never_reports_finishing_either() {
+    let mut m = mark(
+        &format!("working@{}", NOW - MIN_RUN_SEC - 5),
+        "",
+        "interactive",
+    );
+    m.c = hub_runtime_cwd();
+    let prev: BTreeMap<String, Mark> = [("probe".to_string(), m)].into_iter().collect();
+    let mut s = sess("probe", "huba-67", "detached", false);
+    s.cwd = hub_runtime_cwd();
+    let (events, next) = changes(&prev, &[s], NOW, &[]);
+    assert!(
+        events.is_empty(),
+        "chuông kêu cho phép dò của huba: {events:?}"
+    );
+    // Vẫn VÀO SỔ: cửa đặt ở chỗ phát ngôn, không ở đầu vào — nhờ vậy lúc nó
+    // chết còn có một dòng `session_end_muted` để kiểm luật có đang chạy không.
+    assert!(
+        next.contains_key("probe"),
+        "sổ phải nhớ nó như mọi phiên khác"
+    );
+}
+
+/// …và một phiên THẬT sống lâu thì vẫn phải báo — luật trên không được siết lan.
+#[test]
+fn a_real_long_lived_session_still_rings_when_it_ends() {
+    let mut m = mark(IDLE, "", "interactive");
+    m.f = NOW - 11 * 60;
+    m.c = "/Users/username/projects".to_string();
+    let prev: BTreeMap<String, Mark> = [("real".to_string(), m)].into_iter().collect();
+    let (events, _) = changes(&prev, &[], NOW, &[]);
+    assert_eq!(events.len(), 1, "nuốt mất tin của phiên thật: {events:?}");
+}
+
+/// Phiên sống chớp nhoáng chết đi thì KHÔNG phải tin.
+///
+/// 🔴 Hà 2026-08-12: *"tại sao cứ báo phiên đã tắt liên tục"*. Log: 20 tin trong
+/// 4 tiếng, mỗi tin một id khác — không phải một phiên báo lặp, mà là **phép dò
+/// hạn mức của chính huba** (`claude -p "/usage"`, 5 phút một lượt) đẻ ra phiên
+/// thật rồi kết thúc trong vài giây.
+#[test]
+fn a_session_that_lived_only_seconds_dies_quietly() {
+    let mut m = mark(IDLE, "", "background");
+    m.f = NOW - 20; // vừa sinh ra 20 giây trước
+    let prev: BTreeMap<String, Mark> = [("probe".to_string(), m)].into_iter().collect();
+    let (events, _) = changes(&prev, &[], NOW, &[]);
+    assert!(
+        events.is_empty(),
+        "phiên sống 20 giây mà vẫn kêu: {events:?}"
+    );
+}
+
+/// …trừ phiên do CHÍNH huba mở: ở đó chết ≠ xong.
+///
+/// Chủ máy bấm mở một phiên từ điện thoại rồi nó chết trong 30 giây là đúng thứ
+/// phải báo — người mở đang chờ nó chạy, không ngồi nhìn màn hình máy.
+#[test]
+fn a_hub_opened_session_dying_young_is_always_reported() {
+    let mut m = mark(IDLE, "ttys009", "interactive");
+    m.f = NOW - 20;
+    m.h = true;
+    let prev: BTreeMap<String, Mark> = [("just-opened".to_string(), m)].into_iter().collect();
+    let (events, _) = changes(&prev, &[], NOW, &[]);
+    assert_eq!(
+        events.len(),
+        1,
+        "phiên huba vừa mở mà chết thì phải báo: {events:?}"
+    );
+}
+
+/// Tin báo phải gọi được TÊN phiên, không chỉ id.
+///
+/// Hà 2026-08-12: *"không biết nó là phiên nào rất mơ hồ"*. Lúc phiên rời khỏi
+/// danh sách thì hàng của nó đi theo, nên tên phải nằm sẵn trong sổ.
+#[test]
+fn the_farewell_says_which_session_it_was() {
+    let mut m = mark(IDLE, "ttys009", "interactive");
+    m.n = "projects-71".into();
+    m.d = "AI/huba".into();
+    let prev: BTreeMap<String, Mark> = [("8db91183-1111-2222-3333-444444444444".to_string(), m)]
+        .into_iter()
+        .collect();
+    let (events, _) = changes(&prev, &[], NOW, &[]);
+    let said = match events.first() {
+        Some(Change::Ended { name, .. }) => name.clone(),
+        other => panic!("phải là Ended: {other:?}"),
+    };
+    // Nhãn là DỰ ÁN, không phải tên `claude` tự đặt — Hà 2026-08-13 phải nhắc
+    // hai lần vì lượt trước tôi đổi ở danh sách mà quên đường của cái loa.
+    assert!(said.contains("[AI/huba]"), "thiếu dự án: {said}");
+    assert!(
+        !said.contains("projects-71"),
+        "tên tự sinh vẫn chiếm chỗ: {said}"
+    );
+    assert!(
+        said.contains("8db91183"),
+        "thiếu id để gõ lệnh tiếp: {said}"
+    );
+}
+
+/// Lượt ĐẦU im hoàn toàn.
+///
+/// Sổ trống nghĩa là huba vừa khởi động lại, không phải mọi phiên vừa đổi trạng
+/// thái. Báo hết là một tràng tin cho những việc xảy ra lúc huba còn chưa chạy.
+#[test]
+fn the_first_round_says_nothing_it_only_writes_the_book() {
+    let now = vec![
+        sess("a", "dwork", "terminal", true),
+        sess("b", "tfl5", "terminal", false),
+    ];
+    let (events, next) = changes(&BTreeMap::new(), &now, NOW, &[]);
+    assert!(events.is_empty(), "lượt đầu phải im: {events:?}");
+    assert!(
+        next.get("a").is_some_and(|m| m.s.starts_with(WORKING)),
+        "{next:?}"
+    );
+    assert_eq!(next.get("b").map(|m| m.s.as_str()), Some(IDLE));
+}
+
+/// Đang chạy → đứng ở dấu nhắc = xong việc, nói ĐÚNG một lần.
+#[test]
+fn finishing_is_announced_once_not_every_cycle() {
+    let prev: BTreeMap<String, Mark> = [working_long("a")].into_iter().collect();
+    let now = vec![sess("a", "dwork", "terminal", false)];
+
+    let (events, next) = changes(&prev, &now, NOW, &[]);
+    assert_eq!(events.len(), 1);
+    assert!(matches!(&events[0], Change::Finished { id, .. } if id == "a"));
+    // Kiểm Ý NGHĨA, không kiểm mặt chữ: tin phải nói nó đang CHỜ NGƯỜI.
+    // (Câu chữ đổi theo Hà 2026-08-11: "chia làm 2 trường hợp thôi — dừng chờ
+    // giao tiếp và tắt hẳn"; ghim mặt chữ thì mỗi lần đổi lời là một test đỏ
+    // vô nghĩa.)
+    assert!(events[0].say(&Idle::Prompt, None).contains("chờ bạn"));
+
+    // Vòng sau, cùng trạng thái: KHÔNG nói nữa. Đây là điều kiện sống còn —
+    // vòng lặp chạy mỗi ~10 giây.
+    let (again, _) = changes(&next, &now, NOW, &[]);
+    assert!(again.is_empty(), "không được nói lại: {again:?}");
+}
+
+/// Biến mất khỏi danh sách = đã tắt. Đây là ĐƯỜNG CHÍNH, không phải `dead`.
+///
+/// `claude agents` bỏ một phiên đã dừng khỏi danh sách sau vài giây, nên chỉ
+/// rình `host == "dead"` là bỏ lọt gần hết các lần tắt thật.
+#[test]
+fn a_session_that_leaves_the_list_counts_as_ended() {
+    let prev: BTreeMap<String, Mark> = [
+        working_long("a"),
+        ("b".to_string(), mark(IDLE, "ttys002", "interactive")),
+    ]
+    .into_iter()
+    .collect();
+    let now = vec![sess("b", "tfl5", "terminal", false)];
+
+    let (events, next) = changes(&prev, &now, NOW, &[]);
+    assert_eq!(events.len(), 1);
+    match &events[0] {
+        Change::Ended {
+            id, was_working, ..
+        } => {
+            assert_eq!(id, "a");
+            // Tắt lúc đang chạy dở là chuyện khác hẳn tắt lúc đang rảnh — câu
+            // nói phải phân biệt, vì một cái là bình thường còn cái kia đáng ngờ.
+            assert!(*was_working);
+        }
+        other => panic!("phải là Ended: {other:?}"),
+    }
+    // Câu kết cục nay do `pipeline` dựng sau khi DÒ cửa sổ terminal, nên ở
+    // đây chỉ kiểm sự kiện mang đủ dữ kiện để dò.
+    assert!(
+        matches!(&events[0], Change::Ended { tty, kind, .. } if !tty.is_empty() && !kind.is_empty())
+    );
+    assert!(
+        !next.contains_key("a"),
+        "đã tắt thì rời sổ, không nói lại lần nữa"
+    );
+
+    let (again, _) = changes(&next, &now, NOW, &[]);
+    assert!(again.is_empty());
+}
+
+/// Còn trong danh sách nhưng `host == "dead"` cũng là tắt — và cũng chỉ một lần.
+#[test]
+fn a_row_that_turns_dead_is_announced_once_and_then_dropped() {
+    let prev = book(&[("a", IDLE)]);
+    let now = vec![sess("a", "dwork", "dead", false)];
+
+    let (events, next) = changes(&prev, &now, NOW, &[]);
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        &events[0],
+        Change::Ended {
+            was_working: false,
+            ..
+        }
+    ));
+    // KHÔNG ghi lại vào sổ: nếu ghi, lần sau nó biến khỏi danh sách và bị báo
+    // tắt lần thứ hai.
+    assert!(!next.contains_key("a"));
+    assert_eq!(next.len(), 0);
+
+    let (again, _) = changes(&next, &now, NOW, &[]);
+    assert!(again.is_empty(), "báo tắt hai lần: {again:?}");
+}
+
+/// Rảnh → chạy thì KHÔNG nói gì.
+///
+/// Bắt đầu một lượt là chuyện người ta vừa tự tay làm; báo lại là kể cho người
+/// ta nghe chính việc họ vừa bấm.
+#[test]
+fn starting_work_is_not_worth_a_notification() {
+    let prev = book(&[("a", IDLE)]);
+    let now = vec![sess("a", "dwork", "terminal", true)];
+    let (events, next) = changes(&prev, &now, NOW, &[]);
+    assert!(events.is_empty(), "{events:?}");
+    assert!(
+        next.get("a").is_some_and(|m| m.s.starts_with(WORKING)),
+        "{next:?}"
+    );
+}
+
+/// Nhiều phiên đổi cùng lúc thì nói đủ, không gộp mất cái nào.
+#[test]
+fn several_sessions_changing_at_once_are_all_reported() {
+    let prev: BTreeMap<String, Mark> = [
+        working_long("a"),
+        working_long("b"),
+        ("c".to_string(), mark(IDLE, "ttys003", "interactive")),
+    ]
+    .into_iter()
+    .collect();
+    let now = vec![
+        sess("a", "dwork", "terminal", false), // xong
+        sess("c", "huba", "terminal", true),   // bắt đầu — im
+                                               // b biến mất — tắt
+    ];
+    let (events, _) = changes(&prev, &now, NOW, &[]);
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, Change::Finished { id, .. } if id == "a")));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, Change::Ended { id, .. } if id == "b")));
+}
+
+/// Sổ cũ có, danh sách rỗng (mọi phiên đã tắt) — vẫn phải nói, và sổ về rỗng.
+#[test]
+fn everything_disappearing_still_reports_each_one() {
+    let prev: BTreeMap<String, Mark> = [
+        working_long("a"),
+        ("b".to_string(), mark(IDLE, "ttys002", "interactive")),
+    ]
+    .into_iter()
+    .collect();
+    let (events, next) = changes(&prev, &[], NOW, &[]);
+    assert_eq!(events.len(), 2);
+    assert!(next.is_empty());
+    assert_eq!(DEAD, "dead"); // hằng số dùng chung với `state_of`
+}
+
+/// Chạy chớp nhoáng thì KHÔNG phải tin.
+///
+/// Đo thật lượt đầu bật loa (2026-08-10): một phiên có người ngồi gõ bắn "vừa
+/// chạy xong" hai lần trong 75 giây — cả hai đều ĐÚNG, nó chạy hai lượt ngắn
+/// thật. Đúng mà vẫn sai chỗ: người ấy đang nhìn thẳng vào phiên đó. Cái loa
+/// này có giá trị ở phiên KHÔNG ai nhìn.
+#[test]
+fn a_burst_of_short_turns_stays_quiet() {
+    let now = vec![sess("a", "huba-bd", "terminal", false)];
+
+    // Vừa chạy 10 giây rồi dừng: im.
+    let brief: BTreeMap<String, Mark> = [(
+        "a".to_string(),
+        mark(&format!("working@{}", NOW - 10), "ttys009", "interactive"),
+    )]
+    .into_iter()
+    .collect();
+    let (events, _) = changes(&brief, &now, NOW, &[]);
+    assert!(events.is_empty(), "lượt ngắn không được kêu: {events:?}");
+
+    // Chạy quá ngưỡng rồi dừng: nói, và nói luôn nó chạy bao lâu.
+    let long: BTreeMap<String, Mark> = [working_long("a")].into_iter().collect();
+    let (events, _) = changes(&long, &now, NOW, &[]);
+    assert_eq!(events.len(), 1);
+    assert!(
+        events[0].say(&Idle::Prompt, None).contains("phút"),
+        "{}",
+        events[0].say(&Idle::Prompt, None)
+    );
+}
+
+/// Tin phải NÓI RA THỨ NHÌN THẤY, và mỗi tin phải khác nhau.
+///
+/// Hà 2026-08-10, đọc Telegram: *"rõ ràng là lỗi mà sao tele tôi nhận được lại
+/// là phiên đang đứng ở dấu nhắc, chờ lượt sau"* và *"toàn thông báo giống
+/// nhau"*. Vế đầu nặng hơn: câu ấy là một khẳng định huba không hề biết — thứ nó
+/// biết chỉ là "nhật ký thôi lớn lên", mà nhật ký cũng thôi lớn lên khi phiên
+/// KẸT ở hộp thoại. Vế sau: tin nào cũng một câu thì người ta thôi đọc.
+#[test]
+fn the_message_reports_what_was_seen_and_never_repeats_itself() {
+    let e = Change::Finished {
+        id: "a".into(),
+        name: "dwork".into(),
+        ran_sec: 300,
+    };
+
+    // Màn có hộp chọn ⟹ KHÔNG được nói "xong", phải nói là đang kẹt hỏi và
+    // CẦN người trả lời — đó là khác biệt duy nhất người đọc quan tâm.
+    //
+    // Và phải mang NGUYÊN VĂN từng lựa chọn. Hà 2026-08-11: *"cần thêm thông
+    // tin mô tả liên quan tới lựa chọn đó mới hợp lý"* — một cái chuông chỉ nói
+    // "có 3 lựa chọn" vẫn bắt người ta mở máy ra mới biết chọn gì.
+    let asking = e.say(
+        &Idle::Asking {
+            n: 3,
+            options: vec![
+                "Yes, and don't ask again".into(),
+                "Yes".into(),
+                "No, tell Claude what to do differently".into(),
+            ],
+            multi: false,
+        },
+        None,
+    );
+    assert!(
+        asking.contains("HỎI") && asking.contains("cần bạn"),
+        "{asking}"
+    );
+    assert!(
+        asking.contains("don't ask again"),
+        "phải có chữ của lựa chọn: {asking}"
+    );
+    assert!(
+        asking.contains("No, tell Claude"),
+        "phải có ĐỦ các lựa chọn: {asking}"
+    );
+    assert!(
+        !asking.contains("dấu nhắc"),
+        "không được khẳng định đang rảnh: {asking}"
+    );
+
+    // Màn bị giữ lại vì có dấu hiệu bí mật ⟹ chỉ CON SỐ, và phải nói vì sao —
+    // im lặng đưa mỗi con số thì người đọc tưởng huba keo kiệt, rồi lần sau bỏ
+    // qua cả những tin có chữ.
+    let hidden = e.say(
+        &Idle::Asking {
+            n: 2,
+            options: vec![],
+            multi: false,
+        },
+        None,
+    );
+    assert!(hidden.contains('2'), "{hidden}");
+    // 🔴 CẬP NHẬT 2026-08-17: câu cũ đổ cho *"màn có dấu hiệu bí mật"*, mà nhánh
+    // ấy chết từ 16/08 khi `keys::Look::Withheld` bị gỡ — nên nó thành một lời
+    // giải thích SAI cho một sự thật khác (đếm được lựa chọn, không đọc được
+    // chữ). Vẫn phải KHAI vì sao chỉ có con số; chỉ khai cho đúng lý do.
+    assert!(
+        hidden.contains("không đọc được"),
+        "phải khai vì sao không có chữ: {hidden}"
+    );
+
+    // Không đọc được màn ⟹ nói thẳng là không đọc được, đừng đoán.
+    let blind = e.say(&Idle::Unknown, None);
+    assert!(blind.contains("không đọc được màn"), "{blind}");
+
+    // Câu cuối của phiên đi kèm ⟹ hai tin khác nhau đọc ra hai chuyện khác nhau.
+    let a = e.say(&Idle::Prompt, Some("[dwork] đã dựng phiếu chuyển thiết kế"));
+    let b = e.say(&Idle::Prompt, Some("[mailler] soak xong, 0 đỏ"));
+    assert!(a.contains("phiếu chuyển"), "{a}");
+    assert_ne!(a, b, "hai phiên khác nhau mà tin giống hệt nhau");
+}
+
+/// Phiên BẮT ĐẦU HỎI là một sự kiện, và nó không bao giờ bị im.
+///
+/// Hà 2026-08-12: *"có 1 phiên đang đưa lựa chọn nhưng không nhận được trên
+/// tele"*. Trước đây huba chỉ nhận ra "đang hỏi" nếu nó tình cờ đọc màn đúng lúc
+/// phiên vừa im, và luật "đừng kêu vào mặt người đang nhìn" nuốt nốt phần còn
+/// lại. Nay "đang hỏi" là một TRẠNG THÁI đọc từ nhật ký.
+#[test]
+fn a_session_that_starts_asking_is_announced_once_with_its_options() {
+    let mut s = sess("a", "dwork", "terminal", false);
+    s.asking = Some(huba::sessions::Asking {
+        header: "Nửa ngày".into(),
+        question: "Đơn vắng có khai được NỬA NGÀY không?".into(),
+        options: vec!["Thêm ô".into(), "Trọn ngày".into()],
+        multi: false,
+        rest: Vec::new(),
+    });
+    let prev: BTreeMap<String, Mark> = [("a".to_string(), mark(IDLE, "ttys009", "interactive"))]
+        .into_iter()
+        .collect();
+    let (events, next) = changes(&prev, &[s.clone()], NOW, &[]);
+    let said = match events.first() {
+        Some(c @ Change::Asking { .. }) => c.say(&Idle::Unknown, None),
+        other => panic!("phải là Asking: {other:?}"),
+    };
+    assert!(said.contains("dừng lại HỎI"), "{said}");
+    assert!(said.contains("Nửa ngày"), "{said}");
+    assert!(
+        said.contains("1. Thêm ô") && said.contains("2. Trọn ngày"),
+        "{said}"
+    );
+
+    // NÓI MỘT LẦN: vòng sau vẫn đang hỏi thì im.
+    let (again, _) = changes(&next, &[s], NOW + 60, &[]);
+    assert!(again.is_empty(), "kêu lại lần hai: {again:?}");
+}
+// ─────────────────────────────────────────────────────────────────────────────
+// key_points — rút thông tin chốt cho một cái chuông trên điện thoại
+//
+// Mẫu thử là một bản báo cáo THẬT, cắt ngắn: phiên `296972d4` ngày 2026-08-12
+// trả lời "sao máy treo". Nó có đủ bốn hình dạng làm hỏng bản đầu của hàm này —
+// đoạn văn dài có chữ đậm, một cái bảng, một danh sách đánh số, và câu chốt
+// cuối cùng là văn trơn không dấu nhấn nào.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Một báo cáo thật, rút gọn nhưng giữ nguyên hình dạng.
+const REPORT: &str = r#"Tìm ra rồi — **không phải một tiến trình nào treo. Cả máy đang thrash swap.**
+
+## Bằng chứng
+
+| Chỉ số | Giá trị |
+|---|---|
+| RAM vật lý | **16 GB** |
+| Swap đang dùng | **10.7 GB / 12 GB** (còn 1.5 GB) |
+
+10.7 GB swap trên máy 16 GB nghĩa là mỗi lần bạn gõ phím, terminal phải **đọc trang bộ nhớ từ SSD về** mới xử lý được → nhìn y hệt "treo cứng", nhưng thực ra nó đang bò. Bấm `Ctrl+C` cũng vô ích vì không phải lệnh nào treo, và cái làm nó chậm không nằm trong tiến trình nào cả mà nằm ở chỗ bộ nhớ vật lý đã hết từ lâu.
+
+```
+- **pageins** 386 triệu
+uptime 22 ngày
+```
+
+**Đề xuất dọn (chưa làm gì cả — chờ bạn duyệt):**
+
+1. **Đóng Activity Monitor** → lấy lại ~61% CPU của `sysmond`.
+2. **Kill 2 loop chết** (pid 20626, 38879) → chúng đang chờ file không bao giờ tới.
+
+Nói "dọn đi" là mình chạy phần an toàn. Riêng VM thì mình để bạn quyết — mình không biết cái nào đang dở việc."#;
+
+/// Câu CHỐT của một báo cáo nằm ở dòng cuối, và nó thường là văn trơn.
+///
+/// Bản đầu của `key_points` lấy tuần tự từ trên xuống nên dòng này luôn là dòng
+/// rơi — tức bản rút gọn bỏ đi đúng cái nó sinh ra để mang đi. Đo trên ba báo
+/// cáo thật ngày 2026-08-12, cả ba đều đóng bằng một câu văn trơn: *"Nói 'dọn
+/// đi' là mình chạy phần an toàn…"* · *"Tôi nghiêng về (1) rồi tôi chạy tiếp"* ·
+/// *"Hà mở lại phiên là tôi chạy nốt"*.
+#[test]
+fn the_closing_sentence_survives_the_cut() {
+    let out = huba::watch::key_points(REPORT, 700);
+    assert!(
+        out.contains("mình để bạn quyết"),
+        "câu chốt cuối bị cắt mất:\n{out}"
+    );
+}
+
+/// Một đoạn văn dài KHÔNG được ăn hết trần.
+///
+/// Đoạn "10.7 GB swap trên máy 16 GB…" dài hơn 400 ký tự và lọt lưới vì có chữ
+/// đậm. Bản đầu để nguyên nó ⟹ hết trần 700 ký tự ⟹ danh sách việc phải làm ở
+/// dưới không bao giờ tới điện thoại.
+#[test]
+fn one_fat_paragraph_cannot_eat_the_whole_budget() {
+    let out = huba::watch::key_points(REPORT, 700);
+    assert!(
+        out.contains("Đóng Activity Monitor"),
+        "mục việc phải làm bị đoạn văn dài đẩy ra ngoài:\n{out}"
+    );
+    let longest = out.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+    assert!(longest <= 181, "còn một dòng {longest} ký tự:\n{out}");
+}
+
+/// Hàng bảng phải thành chữ đọc được, không phải một hàng rào `|`.
+#[test]
+fn a_table_row_reads_as_a_sentence() {
+    let out = huba::watch::key_points(REPORT, 700);
+    assert!(out.contains("RAM vật lý · 16 GB"), "bảng chưa dọn:\n{out}");
+    assert!(!out.contains('|'), "còn dấu bảng trong tin:\n{out}");
+}
+
+/// Cắt thì NÓI RA còn bao nhiêu dòng — và đếm từ bản GỐC.
+///
+/// Một bản rút gọn im lặng đọc như một bản đầy đủ, và người đọc sẽ quyết định
+/// trên thứ họ tưởng là toàn bộ.
+#[test]
+fn what_is_hidden_is_counted_from_the_original() {
+    let out = huba::watch::key_points(REPORT, 300);
+    let note = out.lines().last().expect("tin rỗng").to_string();
+    assert!(
+        note.starts_with("… (còn "),
+        "không có câu nói phần bị giấu: {note}"
+    );
+    let n: usize = note
+        .trim_start_matches("… (còn ")
+        .trim_end_matches(" dòng)")
+        .parse()
+        .unwrap_or_else(|_| panic!("không đọc được con số: {note}"));
+    let total = REPORT.lines().filter(|l| !l.trim().is_empty()).count();
+    let shown = out.lines().count() - 1 - usize::from(out.contains("⋯\n"));
+    assert_eq!(n, total - shown, "con số nói dối:\n{out}");
+}
+
+/// Không giấu gì thì KHÔNG được dọa là có giấu.
+#[test]
+fn a_short_report_carries_no_warning_about_hidden_lines() {
+    let short = "✅ Xong cả ba việc.\n\nHỏi tiếp gì không?";
+    let out = huba::watch::key_points(short, 700);
+    assert!(
+        !out.contains("còn"),
+        "dọa người đọc là còn phần chưa xem:\n{out}"
+    );
+    assert!(out.contains("Xong cả ba việc"));
+}
+
+/// `10.7 GB…` mở đầu một câu KHÔNG phải mục đánh số.
+///
+/// Nhận nhầm "số rồi chấm" thành mục đánh số thì bản rút gọn đầy những mảnh câu
+/// giữa bài, đúng thứ không quyết được gì.
+#[test]
+fn a_number_starting_a_sentence_is_not_a_list_item() {
+    let text = "Mở đầu.\n\n10.7 GB swap là con số đáng ngại nhưng câu này chỉ là văn.\n\n1. Việc phải làm.\n\nCâu chốt.";
+    let out = huba::watch::key_points(text, 700);
+    assert!(
+        out.contains("1. Việc phải làm"),
+        "mất mục đánh số thật:\n{out}"
+    );
+    assert!(
+        !out.contains("10.7 GB swap"),
+        "câu văn mở đầu bằng số bị đọc thành mục đánh số:\n{out}"
+    );
+}
+
+/// Chữ trong rào mã không lên điện thoại — nhưng vẫn được ĐẾM.
+///
+/// Dòng trong rào cố tình mang **cả hai** dấu nhấn (`- ` và chữ đậm), nên nếu
+/// nó vắng mặt thì chỉ có một lời giải thích: luật rào mã đang chạy. Bản đầu
+/// của phép đo này dùng một dòng trần — thứ bị loại vì nhạt, không phải vì nằm
+/// trong rào — nên nó xanh cả với mã hỏng.
+#[test]
+fn fenced_code_is_dropped_but_still_counted() {
+    let out = huba::watch::key_points(REPORT, 700);
+    assert!(!out.contains("pageins"), "chữ trong rào mã lọt ra:\n{out}");
+}
+
+/// Bản rút gọn không được dán liền hai mẩu cách xa nhau mà không nói.
+#[test]
+fn a_gap_in_the_middle_is_marked() {
+    let out = huba::watch::key_points(REPORT, 300);
+    assert!(out.contains('⋯'), "cắt giữa mà không có dấu đứt:\n{out}");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// KHÔNG NHÌN THẤY ≠ ĐÃ TẮT
+//
+// 🔴 Đo từ chính log của huba, 2026-08-12 14:44:07 — ba dòng liền nhau:
+//
+// ```text
+// claude_agents_list_failed acc1  "spawn claude failed: No such file or directory"
+// claude_agents_list_failed acc2  …
+// claude_agents_list_failed acc3  …
+// session_change  "⏹ projects-71 · games (296972d4) đã tắt hẳn."
+// session_change  "⏹ projects-b3 · AI/huba (37e59209) đã tắt (…)"
+// session_change  "⏹ projects-d8 · AI/huba (69a38c64) đã tắt (…)"
+// ```
+//
+// Ba tin trong 8 giây, cả ba phiên VẪN SỐNG: lúc 16:08 lệnh `/sessions` còn
+// liệt kê `projects-d8 · đang chạy`, và nó làm việc tới 16:41. Thứ hỏng là
+// `npm` đang ghi đè binary `claude` ngay lúc ấy — tức PHÉP ĐO, không phải máy.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Tài khoản không liệt kê được phiên thì phiên của nó KHÔNG được coi là đã tắt.
+#[test]
+fn a_failed_listing_is_not_a_dead_session() {
+    let prev = book(&[("69a38c64", IDLE)]);
+    let (events, next) = changes(&prev, &[], NOW, &["acc1".to_string()]);
+    assert!(
+        events.is_empty(),
+        "danh sách hỏng mà vẫn báo tắt: {events:?}"
+    );
+    // …và SỔ PHẢI CÒN. Xoá sổ là lượt sau phiên quay lại thành "phiên mới", rồi
+    // cái chết THẬT của nó bị báo thêm một lần nữa — đúng thứ đo được hôm nay
+    // (`37e59209` báo 14:44 + 16:08; `69a38c64` báo 14:44 + 16:42).
+    assert!(
+        next.contains_key("69a38c64"),
+        "sổ bị xoá trong lúc mù: {next:?}"
+    );
+}
+
+/// Sổ CŨ chưa ghi tài khoản thì cũng phải im khi có tài khoản mù.
+///
+/// Thà lỡ một tin còn hơn một tin sai: `a` được ghi lại ở mọi lượt nhìn thấy
+/// phiên, nên ca này tự hết sau đúng một vòng lành lặn.
+#[test]
+fn an_old_book_entry_without_an_account_is_kept_while_blind() {
+    let mut m = mark(IDLE, "ttys009", "interactive");
+    m.a = String::new(); // sổ ghi trước 2026-08-12
+    let prev: BTreeMap<String, Mark> = [("cu".to_string(), m)].into_iter().collect();
+    let (events, next) = changes(&prev, &[], NOW, &["acc3".to_string()]);
+    assert!(events.is_empty(), "sổ cũ mà vẫn báo tắt lúc mù: {events:?}");
+    assert!(next.contains_key("cu"), "sổ cũ bị xoá trong lúc mù");
+}
+
+/// Một tài khoản hỏng KHÔNG được làm câm những tài khoản còn nhìn được.
+///
+/// Cửa mù hẹp đúng bằng chỗ huba không nhìn thấy — rộng hơn thì nó thành cái cớ
+/// để im lặng, và một cái loa im lặng thì tệ hơn không có loa.
+#[test]
+fn a_blind_account_does_not_gag_the_others() {
+    let mut m = mark(IDLE, "ttys009", "interactive");
+    m.a = "acc1".into();
+    let prev: BTreeMap<String, Mark> = [("cua-acc1".to_string(), m)].into_iter().collect();
+    let (events, _) = changes(&prev, &[], NOW, &["acc2".to_string()]);
+    assert_eq!(
+        events.len(),
+        1,
+        "acc2 hỏng mà phiên acc1 tắt lại không báo: {events:?}"
+    );
+}
+
+/// Phiên NỀN vắng mặt MỘT vòng chưa phải "đã tắt" — xem `Mark::g` +
+/// `BG_MISS_DEBOUNCE_SEC`. Chạy cho CẢ HAI giá trị `host` thật của "không cửa
+/// sổ" (`sessions.rs:3904`/`:3915`) — bản đầu của bài kiểm này (và của chính
+/// bản vá) chỉ thử `"background"`, xanh, rồi vẫn spam thật trên máy: sổ thật
+/// (`watch:sessions` trong sqlite, đọc tay 2026-09-05) ghi `"detached"` cho
+/// đúng phiên đã đo (`167252e2`), không phải `"background"`. Một bài kiểm chỉ
+/// thử MỘT trong hai giá trị đồng nghĩa là bài kiểm tự khớp giả định của
+/// người viết, không khớp thế giới thật.
+///
+/// 🔴 Đo thật 2026-09-04/05 (`167252e2`, dự án `fbot`): `session_busy_by_shell`
+/// xác nhận tiến trình gốc còn sống, đang bận — CÙNG GIÂY với một dòng "đã
+/// tắt hẳn". `claude agents` thỉnh thoảng không liệt kê ĐÚNG một phiên nền dù
+/// nó còn sống, trong khi các phiên khác CÙNG tài khoản vẫn liệt kê bình
+/// thường — nên cửa `blind` (cả tài khoản mù) không bắt được ca này, cần cửa
+/// riêng cho phiên nền.
+#[test]
+fn a_background_session_missing_once_is_not_reported_as_ended() {
+    for host in ["background", "detached"] {
+        let mut m = mark(IDLE, "", "background");
+        m.o = host.to_string();
+        let prev: BTreeMap<String, Mark> = [("nen-1".to_string(), m)].into_iter().collect();
+
+        // Vòng đầu vắng mặt: phải IM, và phải NHỚ vào sổ để thử lại vòng sau.
+        let (events, next) = changes(&prev, &[], NOW, &[]);
+        assert!(
+            events.is_empty(),
+            "host={host}: một vòng vắng mặt chưa đủ để kết luận đã tắt: {events:?}"
+        );
+        let carried = next.get("nen-1").unwrap_or_else(|| {
+            panic!("host={host}: phải còn giữ trong sổ để thử lại vòng sau, không phải mất trắng")
+        });
+        assert_eq!(
+            carried.g, NOW,
+            "host={host}: phải ghi lại mốc lần đầu vắng mặt"
+        );
+
+        // Vắng mặt tiếp, nhưng CHƯA đủ `BG_MISS_DEBOUNCE_SEC` kể từ mốc đầu — vẫn im.
+        let (events2, next2) = changes(&next, &[], NOW + BG_MISS_DEBOUNCE_SEC - 1, &[]);
+        assert!(
+            events2.is_empty(),
+            "host={host}: chưa đủ ngưỡng debounce mà đã kết luận: {events2:?}"
+        );
+        assert_eq!(
+            next2.get("nen-1").map(|m| m.g),
+            Some(NOW),
+            "host={host}: mốc lần đầu vắng mặt không được dời lại mỗi vòng"
+        );
+
+        // Vắng mặt đủ lâu — giờ mới được kết luận, và đúng MỘT lần.
+        let (events3, next3) = changes(&next2, &[], NOW + BG_MISS_DEBOUNCE_SEC + 1, &[]);
+        assert_eq!(
+            events3.len(),
+            1,
+            "host={host}: vắng đủ lâu mà không kết luận: {events3:?}"
+        );
+        assert!(matches!(&events3[0], Change::Ended { id, .. } if id == "nen-1"));
+        assert!(
+            !next3.contains_key("nen-1"),
+            "host={host}: đã kết luận thì rời sổ hẳn"
+        );
+    }
+}
+
+/// Và khi mọi tài khoản đều trả lời được, luật cũ giữ nguyên: vắng mặt = đã tắt.
+#[test]
+fn with_every_account_answering_a_missing_session_still_ends() {
+    let prev = book(&[("da-tat", IDLE)]);
+    let (events, next) = changes(&prev, &[], NOW, &[]);
+    assert_eq!(events.len(), 1, "phiên biến mất mà không báo: {events:?}");
+    assert!(
+        !next.contains_key("da-tat"),
+        "phiên đã tắt vẫn nằm lại trong sổ"
+    );
+}
+
+/// Lỗi API KHÔNG được đọc thành "đang chờ bạn".
+///
+/// 🔴 Hà 2026-08-12: *"vừa rồi báo lỗi api mà chưa thấy bắt được"*. Hai trạng
+/// thái nhìn giống hệt nhau từ xa — nhật ký thôi lớn lên, màn đứng im — mà việc
+/// phải làm ngược nhau: một bên chờ anh trả lời, một bên chờ anh biết là nó
+/// hỏng.
+#[test]
+fn an_api_error_is_not_reported_as_waiting_for_you() {
+    let c = Change::Finished {
+        id: "s1".to_string(),
+        name: "[amm] projects-fb".to_string(),
+        ran_sec: 600,
+    };
+    let failed = c.say(
+        &Idle::Failed {
+            line: "API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited".to_string(),
+        },
+        None,
+    );
+    assert!(failed.contains("LỖI API"), "{failed}");
+    assert!(
+        failed.contains("Rate limited"),
+        "phải mang nguyên câu lỗi: {failed}"
+    );
+    assert!(
+        !failed.contains("đang chờ bạn"),
+        "vẫn đọc thành chờ người: {failed}"
+    );
+
+    // Và dấu nhắc thật thì vẫn nói như cũ — luật mới không siết lan.
+    let ok = c.say(&Idle::Prompt, None);
+    assert!(ok.contains("đang chờ bạn"), "{ok}");
+}
+
+/// Phiên dừng vì LỖI phải kêu — và kêu khác hẳn "vừa xong".
+///
+/// 🔴 Hà 2026-08-13: *"cần lệnh kiểm các phiên đã xử lý xong và đang dừng, hoặc
+/// tìm phiên đang dừng do lỗi"* · *"vì lỗi chưa thấy cảnh báo gì"*. Trước đó lỗi
+/// chỉ được nhận ra nếu huba tình cờ ĐỌC MÀN đúng lúc phiên vừa im; lỡ nhịp thì
+/// phiên nằm im và nhìn y hệt một phiên đã xong việc.
+#[test]
+fn a_session_stopped_by_an_error_rings_and_says_the_error() {
+    let mut s = sess("s1", "projects-06", "terminal", false);
+    s.folder = "AI/huba".into();
+    s.error = Some("API Error: 500 internal".into());
+    let prev = book(&[("s1", WORKING)]);
+    let (events, next) = changes(&prev, &[s], NOW, &[]);
+    let said = match events.first() {
+        Some(c @ Change::Failed { .. }) => c.say(&Idle::Unknown, None),
+        other => panic!("phải là Failed: {other:?}"),
+    };
+    assert!(said.contains("LỖI"), "{said}");
+    assert!(
+        said.contains("API Error: 500"),
+        "phải mang nguyên dòng lỗi: {said}"
+    );
+    assert!(!said.contains("vừa chạy xong"), "{said}");
+    // …và NÓI MỘT LẦN: lượt sau cùng trạng thái thì im.
+    let (again, _) = changes(
+        &next,
+        &[{
+            let mut s = sess("s1", "projects-06", "terminal", false);
+            s.folder = "AI/huba".into();
+            s.error = Some("API Error: 500 internal".into());
+            s
+        }],
+        NOW + 30,
+        &[],
+    );
+    assert!(again.is_empty(), "kêu lại lần hai: {again:?}");
+}
+
+/// Bỏ phiên VS Code khỏi danh sách KHÔNG được đọc thành một tràng cáo phó.
+///
+/// 🔴 Cùng cái bẫy đã trả giá 2026-08-12 (ba tin `⏹ đã tắt` trong 8 giây cho ba
+/// phiên đang sống), lần này nhìn thấy trước: chiều 08-13 huba thôi liệt kê phiên
+/// editor (Hà: *"nếu đã không thao tác được vào vs code thì bỏ đi, chỉ làm với
+/// terminal thôi"*), mà sổ lúc ấy còn nguyên **8 hàng editor đang sống**. Lượt
+/// chạy đầu tiên sau bản mới, cả 8 "biến khỏi danh sách" cùng một nhịp — vì
+/// LUẬT đổi, không phải vì chúng tắt.
+#[test]
+fn dropping_vs_code_sessions_must_not_ring_eight_funerals() {
+    let mut editor = mark(IDLE, "", "interactive");
+    editor.o = "editor".to_string();
+    editor.n = "projects-f6".to_string();
+    editor.d = "dwork".to_string();
+    let prev: BTreeMap<String, Mark> = [("ba74012c".to_string(), editor)].into_iter().collect();
+
+    let (events, next) = changes(&prev, &[], NOW, &[]);
+    assert!(
+        events.is_empty(),
+        "báo tử một phiên chỉ vì huba thôi nhìn nó: {events:?}"
+    );
+    // BỎ hẳn khỏi sổ — khác cửa MÙ (ở đó phải giữ, vì phiên sẽ quay lại).
+    // Phiên editor sẽ không bao giờ quay lại danh sách nữa.
+    assert!(
+        !next.contains_key("ba74012c"),
+        "giữ lại thì sổ phình ra mãi"
+    );
+
+    // …và một phiên terminal biến mất trong CÙNG lượt ấy vẫn được báo: cửa mới
+    // không được gag cả cái loa.
+    let mut both = prev.clone();
+    both.insert("aaaaaaaa".to_string(), mark(IDLE, "ttys002", "interactive"));
+    let (events, _) = changes(&both, &[], NOW, &[]);
+    assert_eq!(
+        events.len(),
+        1,
+        "đúng một tin, cho phiên terminal: {events:?}"
+    );
+    assert!(matches!(events[0], Change::Ended { .. }), "{:?}", events[0]);
+}
+
+/// Hai phiên cùng dự án KHÔNG được đội chung một cái tên trong tin báo.
+///
+/// 🔴 Hà 2026-08-13: mở phiên mới trong VS Code, xong việc thì nhận tin
+/// `[dwork]`, bấm vào lại rơi đúng phiên terminal. Đo trên máy lúc ấy:
+/// `0a109818` (acc3, terminal) và `ba74012c` (acc1, editor) cùng
+/// `folder = "dwork"`; hai tin cách nhau 78 giây mang y hệt một cái tên. Trong
+/// DANH SÁCH thì còn id ngắn bên cạnh để phân biệt — trong TIN BÁO thì nhãn
+/// đứng một mình.
+#[test]
+fn two_sessions_in_one_project_get_two_different_names() {
+    let mut a = sess(
+        "0a109818-0000-0000-0000-000000000000",
+        "username-53",
+        "terminal",
+        false,
+    );
+    a.folder = "dwork".into();
+    let mut b = sess(
+        "ba74012c-0000-0000-0000-000000000000",
+        "projects-f6",
+        "terminal",
+        false,
+    );
+    b.folder = "dwork".into();
+
+    let prev: BTreeMap<String, Mark> = [
+        working_long("0a109818-0000-0000-0000-000000000000"),
+        working_long("ba74012c-0000-0000-0000-000000000000"),
+    ]
+    .into_iter()
+    .collect();
+    // Nhãn tính ở NGUỒN, trên cả tập — đúng đường mà ảnh chụp thật đi qua.
+    let mut rows = vec![a.clone(), b.clone()];
+    huba::sessions::label_sessions(&mut rows, std::path::Path::new("/Users/username/projects"));
+    let (events, _) = changes(&prev, &rows, NOW, &[]);
+    let names: Vec<String> = events
+        .iter()
+        .map(|c| match c {
+            Change::Finished { name, .. } => name.clone(),
+            other => panic!("phải là Finished: {other:?}"),
+        })
+        .collect();
+    assert_eq!(names.len(), 2, "{events:?}");
+    assert_ne!(
+        names[0], names[1],
+        "hai phiên khác nhau, một cái tên: {names:?}"
+    );
+    // 🔄 ĐẢO CHIỀU 2026-08-31 — Hà: *"Tôi đã bảo Bỏ icon màu đi từ rất lâu rồi
+    // sao giờ nó hiện lại?"*. Từ 14/08 nhãn mở đầu bằng một ô vuông màu theo dự
+    // án; nay ô ấy đi hẳn (xem khối 🔴 trong `sessions::shown`).
+    //
+    // Vế THẬT của bài kiểm không mất — nó gác *"nhãn suy được ra dự án"* — nên
+    // vế ấy giữ nguyên, chỉ vế MÀU là đảo: trước đòi có ô, nay đòi không ô.
+    assert!(
+        names.iter().all(|n| n.contains("[dwork]")),
+        "vẫn phải đọc ra dự án: {names:?}"
+    );
+    let o_mau = ["🟦", "🟩", "🟧", "🟪", "🟫", "🟨", "🟥", "⬜"];
+    assert!(
+        names.iter().all(|n| !o_mau.iter().any(|o| n.contains(o))),
+        "nhãn không được đeo ô màu nữa: {names:?}"
+    );
+    assert!(names.iter().any(|n| n.contains("0a109818")), "{names:?}");
+
+    // Một mình thì KHÔNG gánh chuỗi hex: ca hiếm không được làm phiền ca thường.
+    let solo_book: BTreeMap<String, Mark> = [working_long("0a109818-0000-0000-0000-000000000000")]
+        .into_iter()
+        .collect();
+    let mut solo_rows = vec![a];
+    huba::sessions::label_sessions(
+        &mut solo_rows,
+        std::path::Path::new("/Users/username/projects"),
+    );
+    let (solo, _) = changes(&solo_book, &solo_rows, NOW, &[]);
+    match solo.first() {
+        Some(Change::Finished { name, .. }) => {
+            assert_eq!(name, "[dwork]", "thừa id khi không trùng — và không ô màu")
+        }
+        other => panic!("phải là Finished: {other:?}"),
+    }
+}
+
+/// "Đã bàn giao" không được là một bản án chung thân.
+///
+/// 🔴 Hà 2026-08-15: *"cả 2 phiên hiện tại đều đang gần full rồi, vậy mà huba
+/// không tắt để mở phiên mới"*. Log kể đúng chuyện: 14/08 13:15 bàn giao nổ ở
+/// 67%, phiên kế nhiệm mở xong, nhưng phiên cũ đang chạy dở nên không đóng
+/// được — rồi id ấy vào sổ và **1.791 lượt kiểm sau đó đều trả `AlreadyDone`**,
+/// trong khi phiên cũ phình tiếp lên 80%.
+///
+/// Cuốn sổ ấy trả lời đúng câu "đã bàn giao chưa"; câu cần hỏi là "còn cần bàn
+/// giao nữa không".
+#[test]
+fn a_session_that_refilled_after_a_handover_asks_again() {
+    use huba::pipeline::{auto_handover_why, AutoWhy};
+    // Ngay sau khi bàn giao ở 67%: im lặng, đúng.
+    assert_eq!(
+        auto_handover_why(67, 60, true, true, false, false, 0, 300, 120),
+        AutoWhy::AlreadyDone
+    );
+    // Leo thêm vài điểm vẫn im — một lượt trả lời dài không được tự châm ngòi.
+    assert_eq!(
+        auto_handover_why(74, 60, true, true, false, false, 0, 300, 120),
+        AutoWhy::AlreadyDone
+    );
+    // …nhưng leo hẳn một mốc (≥10) thì phải HỎI LẠI, không im nữa.
+    // (Chỗ gọi tính lại cờ `already_done` theo `done_at + AUTO_RETRY_STEP`, nên
+    // ở đây nó tới như `false`.)
+    assert_eq!(
+        auto_handover_why(78, 60, false, true, false, false, 0, 300, 120),
+        AutoWhy::Do
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sổ QUÁ CŨ = huba chưa từng nhìn, không phải "mọi thứ vừa đổi".
+//
+// Luật 11 đã có nửa câu này: *lượt đầu sau khi khởi động lại thì im*. Nhưng nó
+// đo bằng "sổ rỗng", mà sổ có thể ĐẦY và ÔI. Ca thật, đo trên máy 15/08: ba cỗ
+// máy chạy-mỗi-vòng mất chỗ gọi từ 14/08 13:11 (xem `tests/cycle_wiring.rs`),
+// nên `watch:sessions` đứng im hơn một ngày với hai phiên chết từ hôm kia.
+// Không có cửa này thì lượt so đầu tiên sau bản vá bắn hai tin "⏹ đã tắt" về
+// hai cái chết đã cũ hơn 24 tiếng — sai NGHĨA, không phải sai giờ.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn a_book_older_than_the_watch_window_must_not_speak() {
+    use huba::pipeline::watch_book_usable;
+
+    // Sổ rỗng: cứ đi đường thường — `changes` vốn đã im ở lượt đầu.
+    assert!(watch_book_usable(0, None));
+    assert!(watch_book_usable(0, Some(999_999)));
+
+    // Sổ đầy và mới: nói được.
+    assert!(watch_book_usable(2, Some(0)));
+    assert!(watch_book_usable(2, Some(120)));
+    assert!(
+        watch_book_usable(2, Some(600)),
+        "đúng mốc thì vẫn còn dùng được"
+    );
+
+    // Sổ đầy mà ôi: IM. 601 giây, và ca thật là hơn một ngày.
+    assert!(!watch_book_usable(2, Some(601)));
+    assert!(!watch_book_usable(2, Some(86_400)));
+
+    // Không đọc được mốc: cũng IM. "Không biết mình đã nhìn hay chưa" không đủ
+    // tư cách để tuyên bố một cái chết — cùng luật với `blind` (11b).
+    assert!(!watch_book_usable(2, None));
+}
+
+#[test]
+fn the_book_carries_the_time_it_was_written() {
+    // Phép đo đứng sau cửa trên. Sai chỗ này thì cửa kia luôn mở hoặc luôn đóng
+    // — cả hai đều là một cửa không đo gì cả.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = huba::db::Db::open(&dir.path().join("huba.sqlite")).expect("open db");
+
+    assert_eq!(
+        db.cursor_written_at("watch:sessions"),
+        None,
+        "chưa từng ghi thì không có mốc — và 'không có mốc' phải khác 'mốc = 0'"
+    );
+
+    db.set_cursor("watch:sessions", "{}").expect("ghi sổ");
+    let age = chrono::Utc::now().timestamp()
+        - db.cursor_written_at("watch:sessions")
+            .expect("vừa ghi xong thì phải có mốc");
+    assert!(
+        (0..5).contains(&age),
+        "mốc vừa ghi phải gần bây giờ, đo được {age}s"
+    );
+}

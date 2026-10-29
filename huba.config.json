@@ -1,0 +1,88 @@
+{
+  "db": "data/huba.sqlite",
+  "log_file": "logs/huba.log",
+  "project_roots": [
+    "",
+    "AI"
+  ],
+  "poll_interval_sec": 120,
+  "call": {
+    "max_budget_usd": 0.5,
+    "timeout_sec": 240
+  },
+  "auto_handover": {
+    "enabled": true,
+    "at_percent": 80,
+    "idle_sec": 120,
+    "on_limit": true,
+    "on_limit_wait_min": 30
+  },
+  "auto_run": {
+    "enabled": true
+  },
+  "auto_unstick": {
+    "enabled": false
+  },
+  "confirm": {
+    "enabled": true,
+    "bot_token_env": "HUB_TELEGRAM_BOT_TOKEN",
+    "chat_id_env": "HUB_TELEGRAM_CHAT_ID",
+    "timeout_sec": 90,
+    "delete_after_hours": 36
+  },
+  "projects": {
+    "ai1": {},
+    "codetrail": {},
+    "dwork": {},
+    "sdvi": {},
+    "social": {},
+    "tafalo5": {},
+    "tcc": {},
+    "tfl5": {}
+  },
+  "notify": {
+    "file": "logs/notify.log",
+    "macos_notification": true
+  },
+  "claude_cli": "claude",
+  "claude_accounts": [
+    {
+      "name": "acc1",
+      "launch": "claude",
+      "locked": true
+    },
+    {
+      "name": "acc2",
+      "config_dir": "~/.claude-acc2",
+      "launch": "claude2",
+      "locked": true
+    },
+    {
+      "name": "acc3",
+      "config_dir": "~/.claude-acc3",
+      "launch": "claude3"
+    },
+    {
+      "name": "acc4",
+      "config_dir": "~/.claude-acc4",
+      "locked": true
+    },
+    {
+      "name": "acc5",
+      "config_dir": "~/.claude-acc5"
+    },
+    {
+      "name": "acc6",
+      "config_dir": "~/.claude-acc6"
+    },
+    {
+      "name": "acc7",
+      "config_dir": "~/.claude-acc7"
+    }
+  ],
+  "new_in_terminal": true,
+  "sudo_password_env": {
+    "vps-a": "HUB_VPS_A_SUDO_PASSWORD"
+  },
+  "pin_following": true
+}

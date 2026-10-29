@@ -1,0 +1,688 @@
+//! huba — CLI for the comms huba.
+
+use std::path::PathBuf;
+
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+
+use huba::config::{self, Config};
+use huba::db::Db;
+use huba::exec::{run, truncate, RunOpts};
+use huba::logging;
+use huba::pipeline::{known_projects, run_once};
+
+#[derive(Parser)]
+#[command(
+    name = "huba",
+    about = "huba — quản lý các phiên Claude CLI trên máy này, điều khiển từ Telegram",
+    version
+)]
+struct Cli {
+    /// Path to huba.config.json (default: nearest one walking up from cwd)
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
+    /// Log every step (default: warn for interactive commands)
+    #[arg(long, global = true)]
+    debug: bool,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Check the channel + secrets, honestly
+    Doctor,
+    /// Dựng lại chính huba: build → ký → cài → khởi động lại launchd
+    ///
+    /// Hà 2026-08-13: *"tại sao không phải là luồng chạy độc lập trên rust, tức
+    /// là mọi lệnh và luồng xử lý phải nằm trong binary"*. Đây là bản Rust của
+    /// `install_update.sh`, giữ nguyên hai bước không được bỏ (ký bằng chứng
+    /// chỉ, cài ra đường riêng ngoài tầm với của cargo) — xem
+    /// `runtime::self_install`.
+    SelfInstall {
+        /// Cài xong thì KHÔNG khởi động lại (để tự bấm sau)
+        #[arg(long)]
+        no_restart: bool,
+    },
+    /// Mở trang cấu hình ngay trên máy này rồi ghi huba.env (chmod 600)
+    ///
+    /// Hà 2026-08-13: *"đóng gói huba thành app và cài trên máy có ui để cấu
+    /// hình biến môi trường"*. Trang chạy ở 127.0.0.1, đóng ngay sau khi lưu.
+    Setup,
+    /// Write huba.config.json + create the db
+    Init {
+        #[arg(long)]
+        force: bool,
+    },
+    /// One cycle: run the orders that arrived, then the bookkeeping
+    Once,
+    // 🔴 `huba ingest` đã bỏ 2026-08-14 cùng chặng hỏi vòng: nó đọc phòng chat
+    // tfl5, và Telegram thì tự đẩy tới chứ không chờ ai hỏi. `huba once` vẫn còn
+    // — nó chạy nốt những gì đã tới, thứ vẫn có nghĩa.
+    /// Spend hôm nay + những vòng chạy gần đây
+    Status,
+    /// Every Claude CLI session alive on this machine, across all accounts
+    Sessions {
+        /// Machine-readable, for the portal snapshot and for scripting
+        #[arg(long)]
+        json: bool,
+    },
+    /// Hỏi MỘT phiên khác một câu KHÔNG làm phiền nó — fork đọc-thật
+    /// (`sessions::ask_aside`), không đụng bản gốc, không qua Telegram,
+    /// không cần là chủ máy.
+    ///
+    /// Dựng 2026-09-05 sau một lượt thật: một phiên Claude KHÁC (project
+    /// khác) hỏi thẳng qua `SendMessage` — tin đi thẳng vào giữa dòng hội
+    /// thoại chính của phiên nhận, đúng cái "chen ngang" Hà không muốn. Lệnh
+    /// này bọc CHÍNH cơ chế Telegram `/ask` đã dùng, chỉ đổi cửa vào: gọi
+    /// được từ Bash bởi bất kỳ phiên nào có mặt trên máy này, không cần
+    /// `chat_id` — không phải cửa mới, vì bất kỳ phiên nào đã có quyền chạy
+    /// `claude --fork-session --resume <id>` thẳng tay rồi, lệnh này chỉ gọn
+    /// hoá lại đúng việc đó. Xem `~/projects/GIAO-TIEP-LIEN-PHIEN.md`.
+    Ask {
+        /// id phiên cần hỏi — đủ hoặc rút gọn (khớp tiền tố)
+        session: String,
+        /// câu hỏi — một tham số, đặt trong dấu ngoặc kép ở shell
+        question: String,
+    },
+    /// Đổi tài khoản cho phiên NÀY: đóng sổ, mở cửa sổ mới bằng tài khoản còn chỗ
+    ///
+    /// 🔴 Hà 2026-09-10, khi một phiên đứng chết vì hết hạn mức: *"Giờ phiên
+    /// đang bị kẹt vì limit làm thế nào, tôi đã bảo làm lệnh để chuyển tài khoản
+    /// khi đang đứng ở phiên đó"*.
+    ///
+    /// Cùng ĐƯỜNG với `/handover` trên Telegram — một lõi duy nhất
+    /// (`pipeline::handover_now`), khác mỗi cửa vào. Cửa này là cái terminal,
+    /// nên nó đi được đúng lúc điện thoại không tiện: gõ `!huba handover` ngay
+    /// trong phiên đang kẹt (chế độ bash của Claude Code không gọi model, nên
+    /// một phiên hết hạn mức vẫn chạy được lệnh này).
+    ///
+    /// Phiên nào là "phiên này" thì ĐO, không hỏi: lệnh chạy như con của tiến
+    /// trình `claude` ấy — xem `sessions::session_of_this_terminal`.
+    Handover {
+        /// id phiên (đủ hoặc rút gọn). Bỏ trống = phiên đang chạy ở terminal này
+        session: Option<String>,
+        /// tài khoản mới. `auto` (mặc định) = huba chọn cái còn nhiều chỗ nhất
+        #[arg(short = 'a', long = "acc", default_value = "auto")]
+        acc: String,
+        /// CHỈ đóng sổ, không mở phiên mới — in ra dòng `claude --resume …`
+        #[arg(long)]
+        no_switch: bool,
+        /// In ra phiên + tài khoản sẽ chọn rồi DỪNG — không gọi `claude`, không tốn gì
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Windows: ĐO trên máy thật trước khi tin bản Windows — bảng tiến trình,
+    /// gõ + đọc console (cổ điển VÀ Windows Terminal), `claude --version`, tên
+    /// thư mục nhật ký. Không cần cấu hình. Thoát 0 đạt hết · 1 có mục hỏng ·
+    /// 2 có mục KHÔNG ĐO ĐƯỢC.
+    WindowsTuKiem {
+        /// (nội bộ) lượt đo chạy tách rời, không console — ghi kết quả vào tệp này
+        #[arg(long, hide = true)]
+        chay: Option<std::path::PathBuf>,
+    },
+}
+
+fn main() {
+    if let Err(e) = real_main() {
+        eprintln!("huba: {}", logging::err_chain(&e));
+        std::process::exit(1);
+    }
+}
+
+fn real_main() -> Result<()> {
+    let cli = Cli::parse();
+
+    // Trước `config::load`: phép đo Windows phải chạy được ngay sau khi giải nén,
+    // lúc chưa có `huba.config.json` nào.
+    if let Command::WindowsTuKiem { chay } = &cli.command {
+        std::process::exit(cmd_windows_tu_kiem(chay.as_deref()));
+    }
+
+    let cfg = config::load(cli.config.as_deref())?;
+    logging::set_log_file(&cfg.log_file);
+    // Same secret source as the daemon, so CLI and launchd behave identically.
+    config::load_env_file(&cfg.hub_home);
+    let chatty = matches!(cli.command, Command::Once);
+    if cli.debug {
+        logging::set_level_from_name("debug");
+    } else if !chatty {
+        logging::set_level_from_name("warn");
+    }
+    if let Ok(level) = std::env::var("HUB_LOG_LEVEL") {
+        logging::set_level_from_name(&level);
+    }
+
+    let db = Db::open(&cfg.db)?;
+
+    match cli.command {
+        Command::Doctor => cmd_doctor(&db, &cfg),
+        Command::SelfInstall { no_restart } => {
+            println!("{}", huba::runtime::self_install(&cfg)?);
+            if no_restart {
+                println!("chưa khởi động lại (--no-restart)");
+            } else {
+                println!("đã khởi động lại {}", huba::runtime::restart_daemon()?);
+            }
+            Ok(())
+        }
+        Command::Setup => huba::setup::serve(&cfg.hub_home),
+        Command::Init { force } => cmd_init(&cfg, force),
+        Command::Once => {
+            println!("{}", serde_json::to_string_pretty(&run_once(&db, &cfg)?)?);
+            Ok(())
+        }
+        Command::Status => cmd_status(&db),
+        Command::Sessions { json } => cmd_sessions(&db, &cfg, json),
+        Command::Ask { session, question } => cmd_ask(&cfg, &session, &question),
+        Command::Handover {
+            session,
+            acc,
+            no_switch,
+            dry_run,
+        } => cmd_handover(&db, &cfg, session.as_deref(), &acc, no_switch, dry_run),
+        // Đã xử lý TRƯỚC `config::load` (đầu `real_main`) — tới được đây là lỗi luồng.
+        Command::WindowsTuKiem { .. } => Err(anyhow::anyhow!(
+            "windows-tu-kiem phải được xử lý trước khi nạp cấu hình"
+        )),
+    }
+}
+
+/// `huba windows-tu-kiem` — xem doc-comment của `Command::WindowsTuKiem`.
+///
+/// `huba.exe` là chương trình console nên ĐÃ có console riêng, mà một tiến trình
+/// có console thì không gắn sang console khác được (`keys_win::with_console`).
+/// Nên lượt chính tự chạy lại CHÍNH NÓ ở chế độ tách rời (`DETACHED_PROCESS`,
+/// không console) để đo, chờ, rồi in tệp kết quả. Trả mã thoát: 0 đạt hết · 1
+/// có mục hỏng · 2 có mục không đo được (luật 13②).
+#[cfg(windows)]
+fn cmd_windows_tu_kiem(chay: Option<&std::path::Path>) -> i32 {
+    use huba::keys_win::Ket;
+    use std::os::windows::process::CommandExt;
+    if let Some(out) = chay {
+        let mut text = format!("huba {} — windows-tu-kiem\n", env!("CARGO_PKG_VERSION"));
+        for (ten, ket) in huba::keys_win::tu_kiem() {
+            let (dau, chu) = match ket {
+                Ket::Dat(s) => ("✅", s),
+                Ket::Hong(s) => ("❌", s),
+                Ket::Kdd(s) => ("⏭ KHÔNG ĐO ĐƯỢC", s),
+            };
+            text.push_str(&format!("{dau} {ten} — {chu}\n"));
+        }
+        return match std::fs::write(out, text) {
+            Ok(()) => 0,
+            Err(_) => 1,
+        };
+    }
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    let moc = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let out = std::env::temp_dir().join(format!("huba-windows-tu-kiem-{moc}.txt"));
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("KHÔNG ĐO ĐƯỢC: không biết đường dẫn của chính huba.exe: {e}");
+            return 2;
+        }
+    };
+    println!("Đang đo (mở 2 cửa sổ console rồi tự đóng — đừng bấm vào chúng)…");
+    let status = std::process::Command::new(&exe)
+        .arg("windows-tu-kiem")
+        .arg("--chay")
+        .arg(&out)
+        .creation_flags(DETACHED_PROCESS)
+        .status();
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            eprintln!("KHÔNG ĐO ĐƯỢC: lượt đo tách rời thoát {:?}", s.code());
+            return 2;
+        }
+        Err(e) => {
+            eprintln!("KHÔNG ĐO ĐƯỢC: không chạy được lượt đo tách rời: {e}");
+            return 2;
+        }
+    }
+    let text = match std::fs::read_to_string(&out) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!(
+                "KHÔNG ĐO ĐƯỢC: lượt đo không để lại tệp {}: {e}",
+                out.display()
+            );
+            return 2;
+        }
+    };
+    print!("{text}");
+    println!("\nTệp kết quả (gửi tệp này về): {}", out.display());
+    if text.contains("❌") {
+        1
+    } else if text.contains("KHÔNG ĐO ĐƯỢC") {
+        2
+    } else {
+        0
+    }
+}
+
+#[cfg(not(windows))]
+fn cmd_windows_tu_kiem(_chay: Option<&std::path::Path>) -> i32 {
+    eprintln!("windows-tu-kiem chỉ chạy trên Windows");
+    2
+}
+
+/// `huba handover [id] [-a acc] [--no-switch]` — xem doc-comment của
+/// `Command::Handover`.
+///
+/// Thứ tự ba câu hỏi, và không câu nào được đoán:
+/// 1. **Phiên nào** — id gõ vào thắng; không gõ thì đo từ dây tổ tiên.
+/// 2. **Tài khoản nào** — `auto` hỏi `watch::suggest_account`; tên gõ tay phải
+///    có thật trong cấu hình.
+/// 3. **Có đáng đi tiếp không** — không tìm được tài khoản nào còn chỗ thì DỪNG
+///    ở đây, TRƯỚC lượt gọi `claude`. Đúng luật của `PLAN.md`: một lượt bàn giao
+///    tốn hạn mức thật, và nó sẽ tốn cho một cái đích không tồn tại.
+fn cmd_handover(
+    db: &Db,
+    cfg: &Config,
+    session: Option<&str>,
+    acc: &str,
+    no_switch: bool,
+    dry_run: bool,
+) -> Result<()> {
+    let snap = huba::sessions::snapshot(cfg);
+    let target = match session {
+        Some(want) => snap
+            .sessions
+            .iter()
+            .find(|s| s.session_id == want)
+            .or_else(|| {
+                snap.sessions
+                    .iter()
+                    .find(|s| s.session_id.starts_with(want))
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "không thấy phiên khớp id/tiền tố '{want}' trong danh sách đang sống"
+                )
+            })?,
+        None => huba::sessions::session_of_this_terminal(&snap.sessions).ok_or_else(|| {
+            // KHÔNG bốc bừa một phiên: in ra cái đang có rồi để chủ máy chỉ.
+            let danh_sach = snap
+                .sessions
+                .iter()
+                .map(|s| {
+                    format!(
+                        "  {} · {} · {}",
+                        &s.session_id[..8.min(s.session_id.len())],
+                        s.account,
+                        s.name
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            anyhow::anyhow!(
+                "không đo được phiên nào đang chạy ở terminal này (lệnh phải gõ TRONG phiên \
+                 ấy — trong Claude Code là `!huba handover`). Gõ kèm id một trong số \
+                 này:\n{danh_sach}"
+            )
+        })?,
+    };
+
+    let acc_moi: Option<String> = if no_switch {
+        None
+    } else if acc.eq_ignore_ascii_case("auto") {
+        // Đè bằng phép dò SỐNG y như hai đường trong `pipeline.rs` (15/09):
+        // `-a auto` là lệnh chủ máy gõ khi đang kẹt, nên nó là chỗ ÍT được phép
+        // trả lời bằng một tỉ lệ đông cứng nhất. Xem `quota::kich_tran_can_xac_nhan`.
+        // Sắp MỞ phiên kế nhiệm ⟹ đo lại tài khoản có số cũ hơn 15′ (Hà 24/09).
+        // Trước lượt này lệnh CLI chạy trong tiến trình MỚI nên bộ đệm trong bộ nhớ
+        // luôn rỗng — tức nó chưa từng có số sống nào; nay sổ nằm trong DB.
+        // `--dry-run` hứa "không gọi `claude`" ⟹ chỉ đọc sổ, không đo.
+        let hang = huba::runtime::xep_hang_tai_khoan(
+            cfg,
+            db,
+            (!dry_run).then_some(huba::runtime::USAGE_CU_MO_PHIEN_MS),
+        );
+        let chon = huba::watch::suggest_account(
+            &target.account,
+            &hang,
+            &snap.sessions,
+            huba::pipeline::now_local_min(),
+        );
+        let bang = hang
+            .iter()
+            .map(|a| format!("{}={}", a.name, a.rank.say()))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        match chon {
+            Some(c) => {
+                println!(
+                    "→ chuyển {} ({}) sang {c}   [{bang}]",
+                    target.name, target.account
+                );
+                Some(c)
+            }
+            // "Không còn chỗ" là một câu trả lời, không phải chỗ trống (§13②).
+            None => anyhow::bail!(
+                "không có tài khoản nào còn chỗ để chuyển sang — {bang}.\n\
+                 Muốn vẫn đóng sổ để lấy bản bàn giao thì thêm --no-switch."
+            ),
+        }
+    } else {
+        let biet: Vec<String> = cfg
+            .claude_accounts_or_ambient()
+            .into_iter()
+            .map(|a| a.name)
+            .collect();
+        if !biet.iter().any(|b| b == acc) {
+            anyhow::bail!(
+                "không có tài khoản '{}'. Máy này khai: {}.",
+                truncate(acc, 24),
+                biet.join(" · ")
+            );
+        }
+        // 🔒 Dừng TRƯỚC lượt đóng sổ (tốn hạn mức) — cửa sổ kế nhiệm trên một tài
+        // khoản khoá sẽ bị `sessions::ensure_account_usable` chặn đằng nào cũng vậy.
+        if cfg.account_locked(acc) {
+            anyhow::bail!(huba::sessions::account_locked_text(cfg, acc));
+        }
+        println!("→ chuyển {} ({}) sang {acc}", target.name, target.account);
+        Some(acc.to_string())
+    };
+
+    // `--dry-run` dừng ở ĐÂY, sau khi cả hai câu hỏi đã có câu trả lời thật và
+    // trước lượt gọi `claude` duy nhất. Nó là cái thước để nói "lệnh này nhận ra
+    // đúng phiên" mà không phải tiêu một lượt hạn mức để chứng minh.
+    if dry_run {
+        println!(
+            "🔎 (dry-run) phiên: {} · {} · {} ({})\n   tài khoản mới: {}\n   chưa gọi claude, chưa đổi gì.",
+            &target.session_id[..8.min(target.session_id.len())],
+            target.name,
+            target.account,
+            if target.tty.is_empty() { "không tty" } else { &target.tty },
+            acc_moi.as_deref().unwrap_or("(không đổi — chỉ đóng sổ)")
+        );
+        return Ok(());
+    }
+
+    println!(
+        "{}",
+        huba::pipeline::handover_now(db, cfg, target, acc_moi.as_deref(), false)
+    );
+    Ok(())
+}
+
+/// `huba ask <id> "<câu hỏi>"` — xem doc-comment của `Command::Ask`. In ra
+/// ĐÚNG câu trả lời, không kèm gì khác, để gọi được thẳng từ script/phiên
+/// khác (`$(huba ask <id> "…")`).
+fn cmd_ask(cfg: &Config, session: &str, question: &str) -> Result<()> {
+    let snap = huba::sessions::snapshot(cfg);
+    let target = snap
+        .sessions
+        .iter()
+        .find(|s| s.session_id == session)
+        .or_else(|| {
+            snap.sessions
+                .iter()
+                .find(|s| s.session_id.starts_with(session))
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "không thấy phiên khớp id/tiền tố '{session}' trong danh sách đang sống"
+            )
+        })?;
+    let aside = huba::sessions::ask_aside(cfg, target, question)?;
+    println!("{}", aside.answer);
+    Ok(())
+}
+
+/// What `claude` is doing on this machine right now. Read-only: this lists and
+/// reads transcripts, it never starts, stops, or types into a session.
+fn cmd_sessions(db: &huba::db::Db, cfg: &Config, as_json: bool) -> Result<()> {
+    let mut snap = huba::sessions::snapshot(cfg);
+    // Cùng một nguồn sự thật với ảnh chụp: màn và CLI không được nói khác nhau
+    // về việc ai mở phiên nào.
+    huba::pipeline::mark_started_by_hub(db, &mut snap);
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&snap)?);
+        return Ok(());
+    }
+
+    let counts = huba::sessions::count_by_account(&snap);
+    let per = counts
+        .iter()
+        .map(|(a, n)| format!("{a} {n}"))
+        .collect::<Vec<_>>()
+        .join(" · ");
+    // Ẩn đi mà im lặng thì dòng đếm này nói dối. Trang điện thoại đã nói ra từ
+    // 2026-08-09 (`fe/index.html`), còn dòng CLI thì chưa — mà đây mới là chỗ
+    // người ngồi trước máy đối chiếu với `claude agents`.
+    let mut hidden = match snap.hidden_editor {
+        0 => String::new(),
+        n => format!(
+            "  · {n} phiên trong VS Code không liệt kê (không có cửa sổ Terminal để gõ vào)"
+        ),
+    };
+    if snap.hidden_dead > 0 {
+        hidden.push_str(&format!(
+            "  · {} hàng không liệt kê (phiên tắt từ lâu, hoặc phép dò của chính huba)",
+            snap.hidden_dead
+        ));
+    }
+    println!(
+        "{}  ({per}){hidden}\n",
+        huba::sessions::drive_summary(&snap.sessions)
+    );
+
+    let now = chrono::Utc::now();
+    for s in &snap.sessions {
+        let ago = s
+            .last_activity
+            .as_deref()
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+            .map(|t| {
+                let mins = (now - t.with_timezone(&chrono::Utc)).num_minutes().max(0);
+                if mins < 60 {
+                    format!("{mins}p")
+                } else if mins < 60 * 48 {
+                    format!("{}g", mins / 60)
+                } else {
+                    format!("{}ng", mins / (60 * 24))
+                }
+            })
+            .unwrap_or_else(|| "—".into());
+
+        println!(
+            "  [{}] {:<24} {:>5} trước  pid {:<7} {}",
+            s.account, s.name, ago, s.pid, s.kind
+        );
+        // Only when there is text. A withheld preview prints its reason on the
+        // note line below; printing "(không có chữ)" there would read as "the
+        // session said nothing", which is the opposite of what happened.
+        if let (Some(role), Some(text)) = (&s.last_role, &s.last_text) {
+            println!("        {role}: {}", text.replace('\n', " "));
+        }
+        if let Some(note) = &s.note {
+            println!("        ⚠ {note}");
+        }
+    }
+
+    if !snap.notes.is_empty() {
+        println!("\nTài khoản không trả lời được:");
+        for n in &snap.notes {
+            println!("  ⚠ {n}");
+        }
+    }
+    Ok(())
+}
+
+// ─── commands ────────────────────────────────────────────────────────────
+
+fn cmd_doctor(db: &Db, cfg: &Config) -> Result<()> {
+    println!(
+        "config      {}{}",
+        cfg.config_file.display(),
+        if cfg.config_file.is_file() {
+            ""
+        } else {
+            "  (defaults — file not created yet)"
+        }
+    );
+    println!("db          {}", cfg.db.display());
+    println!("workspace   {}", cfg.workspace_root.display());
+    // Make the third list visible: which folders a project NAME resolves
+    // against. It used to be hardcoded and invisible, so a typo looked
+    // identical to a project with nothing to report.
+    println!(
+        "project dirs {}",
+        config::project_bases(cfg)
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join("  ·  ")
+    );
+
+    // The registry, checked against the folders it claims. A name with no
+    // folder used to be invisible: context came back empty and huba answered
+    // anyway, so a typo read exactly like a quiet project.
+    if !cfg.projects.is_empty() {
+        println!();
+        println!("projects:");
+        for (name, p) in &cfg.projects {
+            let dir = config::project_dir(cfg, name);
+            let bits = [p.note.clone()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · ");
+            match dir {
+                Some(d) => println!("  {name:<14} OK   {}{}", d.display(), if bits.is_empty() { String::new() } else { format!("  ({bits})") }),
+                None => println!("  {name:<14} SAI  không có thư mục nào tên '{name}' trong project dirs — /new sẽ không mở được phiên ở đó"),
+            }
+        }
+    }
+    println!();
+
+    match run(
+        "claude",
+        &["--version"],
+        RunOpts {
+            timeout: Some(std::time::Duration::from_secs(20)),
+            ..Default::default()
+        },
+    ) {
+        Ok(r) if r.code == Some(0) => println!("claude      OK  {}", r.stdout.trim()),
+        Ok(r) => println!(
+            "claude      FAIL {}",
+            truncate(
+                if r.stderr.trim().is_empty() {
+                    &r.stdout
+                } else {
+                    &r.stderr
+                },
+                120
+            )
+        ),
+        Err(e) => println!("claude      FAIL {e}"),
+    }
+    println!(
+        "một lần gọi  trần ${}  ·  tối đa {}s",
+        cfg.call.max_budget_usd, cfg.call.timeout_sec
+    );
+    println!();
+
+    println!("channels:");
+    // Telegram đứng TRƯỚC: nó là kênh chính từ 2026-08-11, và cho tới hôm nay
+    // `doctor` không kiểm nó một dòng nào — người mới làm đúng theo README vẫn
+    // không biết bot nối được chưa (xem `telegram::health`).
+    let tg = huba::telegram::health(cfg);
+    println!(
+        "  {:<9} {}       {}",
+        "telegram",
+        if tg.ok { "OK  " } else { "FAIL" },
+        truncate(&tg.detail, 90)
+    );
+    // 🔴 Vòng dò sức khoẻ các "adapter" đã bỏ 2026-08-14: chỉ còn đúng một
+    // kênh, và nó vừa được in ngay phía trên. Một vòng lặp trên danh sách rỗng
+    // in ra không dòng nào, nhưng nó để lại ấn tượng rằng huba còn nhiều kênh —
+    // và cái ấn tượng ấy là thứ khiến người ta đi tìm một trang không còn tồn
+    // tại.
+
+    println!();
+    let projects = known_projects(cfg);
+    println!(
+        "thư mục dự án nhận ra được: {}",
+        if projects.is_empty() {
+            "(none found)".to_string()
+        } else {
+            projects.join(", ")
+        }
+    );
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    println!("spend hôm nay: ${:.4}", db.owner_cost_on_day(&today)?);
+    Ok(())
+}
+
+fn cmd_init(cfg: &Config, force: bool) -> Result<()> {
+    if cfg.config_file.is_file() && !force {
+        println!(
+            "config already exists: {} (use --force to overwrite)",
+            cfg.config_file.display()
+        );
+    } else {
+        std::fs::write(
+            &cfg.config_file,
+            serde_json::to_string_pretty(&Config::default())? + "\n",
+        )?;
+        println!("wrote {}", cfg.config_file.display());
+    }
+    println!(
+        "db ready at {} (schema v{})",
+        cfg.db.display(),
+        huba::db::SCHEMA_VERSION
+    );
+    Ok(())
+}
+
+fn short(s: Option<&str>, n: usize) -> String {
+    let s = s.unwrap_or("");
+    if s.chars().count() > n {
+        s.chars().take(n.saturating_sub(1)).collect::<String>() + "…"
+    } else {
+        s.to_string()
+    }
+}
+
+fn cmd_status(db: &Db) -> Result<()> {
+    // No message/decision/outbox counts: those tables belonged to the inbox and
+    // nothing writes them any more. What is left is what huba actually does —
+    // what the owner's own calls cost, and whether the room is being read.
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    println!("spend hôm nay  ${:.4}", db.owner_cost_on_day(&today)?);
+    println!();
+    // "last polls" tới 2026-08-14 — mỗi hàng là một lượt hỏi phòng chat. Không
+    // còn ai hỏi vòng, nên hàng nay là một VÒNG (`run_once`), và cái tên phải
+    // đi theo: đọc "polls" trên một máy không poll gì cả là đọc sai.
+    println!("last cycles:");
+    for r in db.last_runs(12)? {
+        println!(
+            "  {}  {:<9} {}  new={}{}{}",
+            r.started_at,
+            r.adapter,
+            match r.ok {
+                None => "running",
+                Some(1) => "ok ",
+                _ => "ERR",
+            },
+            r.n_new.unwrap_or(0),
+            r.skipped
+                .map(|s| format!("  skipped: {}", short(Some(&s), 60)))
+                .unwrap_or_default(),
+            r.err
+                .map(|e| format!("  err: {}", short(Some(&e), 80)))
+                .unwrap_or_default(),
+        );
+    }
+    Ok(())
+}

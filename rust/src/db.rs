@@ -1,0 +1,533 @@
+//! huba.sqlite — the little that has to survive a restart.
+//!
+//!   runs     per-poll health — a failed poll leaves a row
+//!   cursors  poll watermarks, the followed session, the last handover/aside
+//!   spend    what the owner's own calls cost, recorded and never shown
+//!   tin_den  every Telegram update, on disk BEFORE the offset moves — owned
+//!            and created by `crate::tin_den` (own connection, `fullfsync`)
+//!
+//! It used to hold four more tables — `messages`, `decisions`, `outbox`,
+//! `dead_letter` — the whole inbox. They went on 2026-08-08 with the product
+//! that filled them, but the ROWS stayed. This header used to say "nothing here
+//! drops them, because deleting a person's data to tidy up a schema is not a
+//! decision code gets to make" — right, until the owner made the decision. He
+//! made it 2026-08-10, once the rows had been counted: 379 dead rows no query
+//! can reach, stopped dead on 08-08, three of them matching the leak-scan
+//! patterns. Data nobody reads that might carry a secret is not tidiness, it is
+//! a liability — so schema step 4 drops the four tables, once, logging each
+//! table with its row count (`drop_legacy_inbox`).
+
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use anyhow::{Context, Result};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
+
+pub const SCHEMA_VERSION: i64 = 5;
+
+const SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS schema_meta (
+  k TEXT PRIMARY KEY,
+  v TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS runs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  adapter     TEXT NOT NULL,
+  phase       TEXT NOT NULL,
+  started_at  TEXT NOT NULL,
+  finished_at TEXT,
+  ok          INTEGER,
+  n_new       INTEGER DEFAULT 0,
+  skipped     TEXT,
+  err         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_runs_adapter ON runs(adapter, started_at);
+
+-- Money spent OUTSIDE triage. Every `claude` call costs, and the daily ceiling
+-- is only honest if it sees all of them: a handover that quietly spent $0.30
+-- would make `daily_budget_usd` a number about one code path rather than about
+-- the day (non-negotiable #9).
+CREATE TABLE IF NOT EXISTS spend (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts       TEXT NOT NULL,
+  kind     TEXT NOT NULL,
+  ref      TEXT,
+  cost_usd REAL NOT NULL DEFAULT 0,
+  detail   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_spend_ts ON spend(ts);
+
+CREATE TABLE IF NOT EXISTS cursors (
+  k          TEXT PRIMARY KEY,
+  v          TEXT,
+  updated_at TEXT NOT NULL
+);
+
+-- Mỗi lượt gõ một lệnh để lại một dòng, kèm MỐC THỜI GIAN. Menu ☰ xếp bằng cách
+-- đếm 200 dòng gần nhất (Hà 2026-09-02). Một cuốn sổ chứ không phải một con số:
+-- con số cũ (điểm có suy giảm) không nói được "gần đây" nghĩa là gì, và nó gộp
+-- `/enter` với `/right` vào chung một ô vì nó đếm theo `kind`.
+CREATE TABLE IF NOT EXISTS cmd_log (
+  id   INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts   TEXT NOT NULL,
+  name TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cmd_log_id ON cmd_log(id DESC);
+
+"#;
+
+fn now() -> String {
+    crate::logging::now_iso()
+}
+
+// ─── row types ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RunRow {
+    pub id: i64,
+    pub adapter: String,
+    pub phase: String,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub ok: Option<i64>,
+    pub n_new: Option<i64>,
+    pub skipped: Option<String>,
+    pub err: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct RunFinish {
+    pub ok: bool,
+    pub n_new: i64,
+    pub err: Option<String>,
+    pub skipped: Option<String>,
+}
+
+// ─── connection ──────────────────────────────────────────────────────────
+
+pub struct Db {
+    pub conn: Connection,
+}
+
+/// Bốn bảng của sản phẩm hộp thư đã bị xoá — dọn ở bước nâng cấp lược đồ 4.
+///
+/// Vì sao chúng còn nằm đó tới hôm nay: `CLAUDE.md` từng ghi *"nothing drops
+/// them, and no query can see them"*, tức cố ý để lại chứ không phải quên. Đo
+/// lại 2026-08-10 thì lý do "để lại cũng chẳng sao" không còn đứng được:
+/// **379 dòng chết** (messages 200 · outbox 90 · decisions 87 · dead_letter 2),
+/// dừng đúng ngày 08-08 khi nhánh hộp thư bị xoá, và **3 dòng khớp mẫu bí mật**.
+/// Dữ liệu không ai đọc mà có thể mang bí mật thì giữ chỉ là gánh nợ.
+///
+/// Làm bằng BƯỚC NÂNG CẤP chứ không phải một lệnh gõ tay: nó nằm trong mã, có
+/// test, có log, chạy đúng một lần trên mọi máy, và ai đọc lịch sử cũng thấy
+/// được vì sao. Hà chốt 2026-08-10; điểm lùi `data/hub-before-legacy-drop.sqlite`
+/// đã dựng và đã qua `PRAGMA integrity_check` trước khi bước này ra đời.
+fn drop_legacy_inbox(conn: &Connection) -> Result<()> {
+    // TẮT kiểm khoá ngoại trong lúc dọn, rồi bật lại — kể cả khi hỏng.
+    //
+    // Bốn bảng ấy tham chiếu lẫn nhau (outbox → decisions → messages), mà
+    // `open()` bật `foreign_keys = ON` ngay phía trên. Bản đầu bỏ qua điều đó
+    // và daemon CHẾT NGAY LÚC DỰNG LÊN: `FOREIGN KEY constraint failed`
+    // (Error 787), `last exit code = 70`, huba nằm im — đo thật 2026-08-10.
+    // Sửa bằng cách tắt kiểm chứ không phải xếp thứ tự xoá: thứ tự đúng hôm nay
+    // là thứ tự sai vào ngày ai đó thêm một tham chiếu, còn cái này thì không.
+    //
+    // 📌 Con lỗi này lộ ra trong 20 giây là nhờ bản vá sáng nay cho
+    // `bin/hubad.rs`: trước đó nó chết bằng `eprintln!` và lý do sẽ chỉ nằm ở
+    // stderr của launchd, nơi không ai đọc.
+    conn.pragma_update(None, "foreign_keys", "OFF")?;
+    let out = drop_legacy_inbox_inner(conn);
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    out
+}
+
+fn drop_legacy_inbox_inner(conn: &Connection) -> Result<()> {
+    for t in ["messages", "outbox", "decisions", "dead_letter"] {
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                params![t],
+                |_| Ok(true),
+            )
+            .optional()?
+            .unwrap_or(false);
+        if !exists {
+            continue;
+        }
+        // Đếm TRƯỚC khi xoá: một dòng log nói "đã bỏ 200 dòng" là thứ đọc lại
+        // được sau này; "đã dọn xong" thì không nói gì cả.
+        let rows: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {t}"), [], |r| r.get(0))
+            .unwrap_or(-1);
+        conn.execute_batch(&format!("DROP TABLE {t}"))?;
+        crate::logging::info(
+            "schema_legacy_table_dropped",
+            serde_json::json!({ "table": t, "rows": rows }),
+        );
+    }
+    Ok(())
+}
+
+impl Db {
+    pub fn open(path: &Path) -> Result<Db> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .with_context(|| format!("cannot create {}", dir.display()))?;
+        }
+        // 🔴 `Connection::open` DỰNG tệp khi không thấy, và im lặng — đúng hình
+        // dạng lỗi mà điều lệ cấm. Trên máy đã chạy, một DB "mới" nghĩa là
+        // trạng thái vừa bị bỏ rơi ở đâu đó, không phải một khởi đầu sạch.
+        //
+        // Đo 2026-08-20: `data/hub.sqlite` bị đổi tên trong lúc daemon đang
+        // giữ. Kết nối lâu bám inode nên vẫn ghi đúng tệp; còn `telegram.rs`
+        // mở-mới mỗi lượt theo đường dẫn của cấu hình lúc boot, không thấy gì
+        // ở đó, và SQLite dựng một DB rỗng. Từ đó `focus:session` ghi một bên
+        // đọc một bên: `/new` trỏ cửa sổ ttys004, chữ của chủ máy đi vào phiên
+        // dwork — hai lần đọc CÙNG một khoá cách nhau 5,6 giây trả hai giá trị,
+        // không lần ghi nào ở giữa. Suốt đêm không có một dòng nào để mà grep.
+        //
+        // Một dòng ở đây không sửa được gì, nhưng nó biến một đêm truy lỗi
+        // thành một lần tìm. Lần đầu cài thật thì nó kêu đúng một lần.
+        let fresh = !path.exists();
+        let conn =
+            Connection::open(path).with_context(|| format!("cannot open db {}", path.display()))?;
+        if fresh {
+            crate::logging::warn(
+                "db_created",
+                serde_json::json!({
+                    "path": path.display().to_string(),
+                    "why": "không có tệp ở đường dẫn này nên SQLite vừa dựng một DB RỖNG. \
+                            Trên máy đã chạy, đây là dấu hiệu trạng thái bị bỏ rơi chỗ khác \
+                            (tệp bị đổi tên/di chuyển dưới chân, hoặc cấu hình trỏ sai) — \
+                            đối chiếu với DB mà `huba.config.json` gọi tên trước khi dùng tiếp.",
+                }),
+            );
+        }
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "busy_timeout", 5000)?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.execute_batch(SCHEMA)?;
+
+        // Phiên bản CŨ phải đọc trước khi dán phiên bản mới lên.
+        let was: i64 = conn
+            .query_row("SELECT v FROM schema_meta WHERE k = 'version'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        if was < 4 {
+            drop_legacy_inbox(&conn)?;
+        }
+
+        conn.execute(
+            "INSERT INTO schema_meta (k, v) VALUES ('version', ?1) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+            params![SCHEMA_VERSION.to_string()],
+        )?;
+        Ok(Db { conn })
+    }
+
+    // 🔴 ĐÃ XOÁ cả bộ điều khiển giao dịch — `begin`/`commit`/`rollback`
+    // (2026-08-14). Chú thích của chúng nói thẳng chúng phục vụ ai: *"decision
+    // + outbox rows + message status ONE commit point"* — tức cái hộp thư đã bị
+    // xoá ngày 08-08. Không còn giao dịch nhiều bảng nào trong huba.
+    //
+    // Ghi lại một bước hụt của chính lượt dọn này, vì nó đúng loại sai đã ghi
+    // ở luật 7: tôi viết "giữ `commit` lại, nó dùng trong lượt nâng cấp lược
+    // đồ" — nghe hợp lý, và sai. Đếm lại thì `commit()` có ĐÚNG 0 chỗ gọi. Một
+    // mệnh đề nghe hợp lý mà chưa đếm thì vẫn chỉ là một mệnh đề.
+
+    // ── decisions ──
+
+    // ── cursors / runs / dead-letter ──
+
+    pub fn get_cursor(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT v FROM cursors WHERE k = ?1", params![key], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .flatten())
+    }
+
+    /// Mốc đã đặt, và **nói ra khi đọc hỏng**.
+    ///
+    /// `get_cursor` trả `Result<Option<_>>` với hai nghĩa rất khác nhau:
+    /// `Ok(None)` = chưa từng đặt (chuyện thường), còn `Err` = SQLite hỏng thật
+    /// — khoá, tệp hỏng, hết đĩa. Gộp cả hai thành "không có" là bug đã đếm được
+    /// **12 chỗ** trong mã này (9 chỗ `.ok().flatten()`, 3 chỗ `match … _ =>`),
+    /// và hậu quả nhìn từ điện thoại là: bấm ⏹ Dừng trên một phiên đang mở thì
+    /// huba trả lời *"chưa theo phiên nào"* — đúng câu nó nói khi chưa ai chọn gì
+    /// — mà **không dòng log nào** cho biết cơ sở dữ liệu vừa không đọc được.
+    ///
+    /// Đặt chốt Ở ĐÂY chứ không ở từng chỗ gọi: có mười hai chỗ gọi, và chỗ thứ
+    /// mười ba sẽ quên. Ai thật sự cần phân biệt `Err` với `Ok(None)` thì vẫn
+    /// gọi `get_cursor` như cũ.
+    pub fn cursor_or_log(&self, key: &str) -> Option<String> {
+        match self.get_cursor(key) {
+            Ok(v) => v,
+            Err(e) => {
+                crate::logging::error(
+                    "cursor_read_failed",
+                    serde_json::json!({ "key": key, "err": e.to_string() }),
+                );
+                None
+            }
+        }
+    }
+
+    /// Mốc này được GHI lần cuối lúc nào (giây epoch) — `None` nếu chưa từng đặt.
+    ///
+    /// 🔴 Dựng 2026-08-15 cho một câu hỏi mà nội dung cuốn sổ không trả lời
+    /// được: *cuốn sổ này có còn theo kịp thế giới không*. Cái loa (luật 11) so
+    /// ảnh chụp lượt này với sổ lượt trước để nói "vừa xong" / "vừa tắt" — mà
+    /// chữ "vừa" chỉ đúng nếu hai lượt cách nhau một vòng. Sổ `watch:sessions`
+    /// đứng im từ 14/08 13:11 (ngày ba cỗ máy chạy-mỗi-vòng mất chỗ gọi), nên
+    /// lượt so đầu tiên sau khi vá sẽ thấy hai phiên chết từ hôm kia biến mất
+    /// và định gọi đó là tin. Đọc hỏng thì log rồi coi như KHÔNG BIẾT, và
+    /// "không biết" ở đây phải dẫn tới im lặng, không dẫn tới báo động.
+    pub fn cursor_written_at(&self, key: &str) -> Option<i64> {
+        let raw: Option<String> = match self
+            .conn
+            .query_row(
+                "SELECT updated_at FROM cursors WHERE k = ?1",
+                params![key],
+                |r| r.get(0),
+            )
+            .optional()
+        {
+            Ok(v) => v.flatten(),
+            Err(e) => {
+                crate::logging::error(
+                    "cursor_time_read_failed",
+                    serde_json::json!({ "key": key, "err": e.to_string() }),
+                );
+                return None;
+            }
+        };
+        raw.and_then(|t| {
+            chrono::DateTime::parse_from_rfc3339(&t)
+                .map(|d| d.timestamp())
+                .map_err(|e| {
+                    crate::logging::warn(
+                        "cursor_time_unparseable",
+                        serde_json::json!({ "key": key, "raw": t, "err": e.to_string() }),
+                    );
+                })
+                .ok()
+        })
+    }
+
+    pub fn all_cursors(&self) -> Result<BTreeMap<String, String>> {
+        let mut stmt = self.conn.prepare("SELECT k, v FROM cursors")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })?;
+        let mut out = BTreeMap::new();
+        for row in rows {
+            let (k, v) = row?;
+            out.insert(k, v.unwrap_or_default());
+        }
+        Ok(out)
+    }
+
+    pub fn set_cursor(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO cursors (k, v, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(k) DO UPDATE SET v = excluded.v, updated_at = excluded.updated_at",
+            params![key, value, now()],
+        )?;
+        Ok(())
+    }
+
+    /// Xoá một mốc. `Ok(true)` = có xoá thật, `Ok(false)` = vốn không có.
+    ///
+    /// Hai câu trả lời phải phân biệt được, không gộp thành `()`: chỗ gọi duy
+    /// nhất hiện nay ([`crate::watch::reconcile_dead_book`]) chỉ được phép NÓI
+    /// *"tài khoản sống lại"* khi thật sự vừa gỡ một dòng ra khỏi sổ. Trả `()`
+    /// là biến mỗi vòng chạy thành một dòng log về một việc không xảy ra.
+    pub fn del_cursor(&self, key: &str) -> Result<bool> {
+        let n = self
+            .conn
+            .execute("DELETE FROM cursors WHERE k = ?1", params![key])?;
+        Ok(n > 0)
+    }
+
+    // ── sổ TÀI KHOẢN CHẾT ────────────────────────────────────────────────────
+    //
+    // 🔴 Hà 2026-09-02: `/new` lại mở một cửa sổ bằng acc1 trong khi tổ chức đã
+    // khoá tài khoản ấy. Cổng dựng 31/08 chặn đúng ca nó dựng ra và vẫn xanh —
+    // nó loại một tài khoản khi đang NHÌN THẤY một phiên của nó mang dấu khoá.
+    // Nhưng phiên bị khoá chết ngay dòng đầu, cửa sổ ấy đóng, và cùng lúc trí
+    // nhớ duy nhất về cái chết cũng biến mất. Vòng sau `quota` đọc `.claude.json`
+    // ra `92%` già ba ngày ⟹ `Unknown` ⟹ đứng TRƯỚC `Full` ⟹ chọn lại đúng nó.
+    //
+    // Nên cái chết phải nằm trong SỔ. `cursors` là chỗ đúng: nó đã là "thứ ít ỏi
+    // phải sống qua một lượt khởi động lại", và một tài khoản chết đúng là thế.
+
+    /// Tiền tố khoá của sổ. Một khoá một tài khoản, để `del_cursor` gỡ được
+    /// từng cái mà không phải đọc-sửa-ghi cả cuốn.
+    pub const ACC_DEAD_PREFIX: &'static str = "acc_dead:";
+
+    /// Ghi *"tài khoản này đã chết"*, kèm NGUYÊN VĂN dòng đọc được trên màn.
+    ///
+    /// Giữ nguyên văn vì đó là thứ duy nhất trả lời được câu *"chết kiểu gì"* —
+    /// và chủ máy đọc nó ở `/accounts` để tự phán lại luật chọn tài khoản.
+    pub fn mark_account_dead(&self, account: &str, why: &str) -> Result<()> {
+        self.set_cursor(&format!("{}{account}", Self::ACC_DEAD_PREFIX), why)
+    }
+
+    /// Gỡ khỏi sổ. `Ok(true)` = vừa có tên trong sổ và nay đã gỡ.
+    pub fn clear_account_dead(&self, account: &str) -> Result<bool> {
+        self.del_cursor(&format!("{}{account}", Self::ACC_DEAD_PREFIX))
+    }
+
+    /// Cả cuốn sổ: tên tài khoản → lý do.
+    ///
+    /// Đọc hỏng thì KÊU rồi trả sổ RỖNG, và chỗ này phải nói rõ hướng ngã của
+    /// nó: sổ rỗng nghĩa là "không loại tài khoản nào" — tức fail-OPEN. Chọn thế
+    /// có chủ ý, vì hướng ngã kia tệ hơn hẳn: một lượt đọc SQLite hỏng sẽ loại
+    /// sạch mọi tài khoản và huba thôi mở được phiên nào. Cái giá của hướng đã
+    /// chọn là một cú chạm vô ích; cái giá của hướng kia là huba đứng hình.
+    pub fn dead_accounts(&self) -> BTreeMap<String, String> {
+        let all = match self.all_cursors() {
+            Ok(v) => v,
+            Err(e) => {
+                crate::logging::error(
+                    "dead_book_read_failed",
+                    serde_json::json!({ "err": e.to_string() }),
+                );
+                return BTreeMap::new();
+            }
+        };
+        all.into_iter()
+            .filter_map(|(k, v)| {
+                k.strip_prefix(Self::ACC_DEAD_PREFIX)
+                    .map(|n| (n.to_string(), v))
+            })
+            .collect()
+    }
+
+    // ── sổ LƯỢT GÕ LỆNH (menu ☰) ────────────────────────────────────────────
+
+    /// Giữ lại bao nhiêu dòng. Cửa sổ đếm là 200; giữ gấp mấy lần để một lượt
+    /// dọn hụt không cắt mất ngay phần đang đếm.
+    const CMD_LOG_KEEP: i64 = 2_000;
+
+    /// Ghi một lượt gõ lệnh, kèm mốc thời gian.
+    ///
+    /// Chỉ ghi TÊN route — không ghi tham số. Tham số là chữ của chủ máy
+    /// (`/tell <câu>`, `/ask <câu hỏi>`), và sổ này nằm trên đĩa lâu dài; luật 5
+    /// cho phép huba KHÔNG giấu chữ trên màn, nhưng không ai yêu cầu nó chép
+    /// từng câu vào một cái bảng chỉ dùng để đếm.
+    pub fn log_command(&self, name: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO cmd_log (ts, name) VALUES (?1, ?2)",
+            params![now(), name],
+        )?;
+        // Cắt đuôi ngay tại chỗ ghi: một cái bảng chỉ để đếm mà lớn vô hạn thì
+        // sớm muộn thành thứ phải đi dọn bằng tay.
+        self.conn.execute(
+            "DELETE FROM cmd_log WHERE id <= (SELECT MAX(id) FROM cmd_log) - ?1",
+            params![Self::CMD_LOG_KEEP],
+        )?;
+        Ok(())
+    }
+
+    /// `limit` lượt gõ GẦN NHẤT, mới trước cũ sau.
+    ///
+    /// Đọc hỏng thì KÊU rồi trả rỗng — và rỗng ở đây nghĩa là "chưa đếm được",
+    /// tức menu giữ nguyên thứ tự đang có, không phải "mọi lệnh đều 0 lượt".
+    /// Chỗ gọi phải phân biệt hai câu ấy; xem `pipeline::menu_reorder_if_needed`.
+    pub fn recent_commands(&self, limit: i64) -> Vec<String> {
+        let mut stmt = match self
+            .conn
+            .prepare("SELECT name FROM cmd_log ORDER BY id DESC LIMIT ?1")
+        {
+            Ok(s) => s,
+            Err(e) => {
+                crate::logging::error(
+                    "cmd_log_read_failed",
+                    serde_json::json!({ "err": e.to_string() }),
+                );
+                return Vec::new();
+            }
+        };
+        // Gán vào biến rồi mới trả: `query_map` mượn `stmt`, nên để cái `match`
+        // làm biểu thức đuôi của hàm là bắt `stmt` sống lâu hơn chính nó.
+        let out: Vec<String> = match stmt.query_map(params![limit], |r| r.get::<_, String>(0)) {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(e) => {
+                crate::logging::error(
+                    "cmd_log_read_failed",
+                    serde_json::json!({ "err": e.to_string() }),
+                );
+                Vec::new()
+            }
+        };
+        out
+    }
+
+    pub fn start_run(&self, adapter: &str, phase: &str) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO runs (adapter, phase, started_at) VALUES (?1, ?2, ?3)",
+            params![adapter, phase, now()],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn finish_run(&self, id: i64, f: RunFinish) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET finished_at = ?1, ok = ?2, n_new = ?3, err = ?4, skipped = ?5 WHERE id = ?6",
+            params![now(), if f.ok { 1 } else { 0 }, f.n_new, f.err.map(|e| crate::exec::truncate(&e, 2000)), f.skipped, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn last_runs(&self, limit: i64) -> Result<Vec<RunRow>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT * FROM runs ORDER BY id DESC LIMIT ?1")?;
+        let rows = stmt.query_map(params![limit], |r| {
+            Ok(RunRow {
+                id: r.get("id")?,
+                adapter: r.get("adapter")?,
+                phase: r.get("phase")?,
+                started_at: r.get("started_at")?,
+                finished_at: r.get("finished_at")?,
+                ok: r.get("ok")?,
+                n_new: r.get("n_new")?,
+                skipped: r.get("skipped")?,
+                err: r.get("err")?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Today's owner-initiated spend — the `spend` table only.
+    pub fn owner_cost_on_day(&self, day: &str) -> Result<f64> {
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM spend WHERE substr(ts, 1, 10) = ?1",
+            params![day],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Book a non-triage `claude` call against the day.
+    pub fn record_spend(
+        &self,
+        kind: &str,
+        reference: &str,
+        cost_usd: f64,
+        detail: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO spend (ts, kind, ref, cost_usd, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![now(), kind, reference, cost_usd, detail],
+        )?;
+        Ok(())
+    }
+}

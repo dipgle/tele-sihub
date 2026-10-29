@@ -1,0 +1,80 @@
+//! huba — the Claude CLI sessions running on this Mac, driven from a phone.
+//!
+//! One Telegram chat carries ORDERS (`/session`, `/ask`, `/new`, `/tell`,
+//! `/stop`, `/handover`) and carries back what every session is doing. Nothing
+//! here reads mail, and nothing here spends money unless the owner presses a
+//! button.
+//!
+//! 🔴 It carried them alongside a tfl5 chat room and a phone page until
+//! 2026-08-14 (Hà: *"tạm thời không dùng tfl5 để xem cứ xóa hết đi"*). The page
+//! had been dead for two days without anyone noticing — which is what a
+//! one-person product gets for keeping two front doors.
+//!
+//! It used to be an inbox: GitHub notifications, project devlogs, email and
+//! Telegram all fed one queue that a bounded `claude -p` call triaged and
+//! answered. That product was deleted on 2026-08-08 — 65% of what it carried
+//! was CI noise, and the ceiling built to contain its spending ended up
+//! standing between the owner and his own machine.
+
+/// `/accounts <tên> -l` — đăng nhập lại một tài khoản Claude từ điện thoại.
+pub mod account_login;
+pub mod adapters;
+pub mod api_key;
+/// Gửi MỘT phím vào Terminal, không kèm dấu xuống dòng — tệp DUY NHẤT có
+/// `unsafe`, và luật *"no unsafe anywhere"* được gỡ đúng cho nó (Hà 2026-08-19).
+///
+/// Vì sao phải có: `do script` kèm một CR không tắt được, nên trên hộp chọn huba
+/// không có phím nào chỉ DI mà không CHỐT. Đọc đầu `cgkeys.rs` trước khi sửa.
+pub mod browser;
+/// `unsafe`-CoreGraphics, chỉ build trên macOS — `keys.rs` gọi qua các hàm
+/// `#[cfg(target_os = "macos")]` của chính nó, không gọi thẳng từ nơi khác.
+/// Bản Windows tương đương: `keys_win::send_raw` (SendInput, không `unsafe`
+/// ngoài binding của crate `windows`, không cần quyền hệ điều hành nào cho
+/// một tiến trình KHÔNG NÂNG QUYỀN — xem đầu `keys_win.rs`).
+#[cfg(target_os = "macos")]
+pub mod cgkeys;
+pub mod commands;
+pub mod config;
+/// Xác nhận lần hai qua Telegram cho lệnh không lùi lại được.
+pub mod confirm;
+pub mod db;
+pub mod exec;
+/// Gõ phím vào cửa sổ terminal của một phiên, và chụp lại cửa sổ ấy.
+///
+/// Hà chốt 2026-08-09 sau khi tôi nêu rõ đánh đổi. Đọc đầu tệp `keys.rs` trước
+/// khi sửa: đường này **bỏ qua `DENIED_TOOLS`**, và nó là đường DUY NHẤT nhìn
+/// thấy một phiên đang dừng lại hỏi — câu hỏi ấy nằm trên màn hình chứ chưa vào
+/// nhật ký.
+pub mod keys;
+/// Windows — cùng vai trò với `keys.rs`, khác cơ chế. CHƯA CHẠY THỬ TRÊN
+/// WINDOWS THẬT (phiên viết nó không có máy Windows để đo) — đọc mục "Chưa đo
+/// được" ở đầu tệp trước khi tin.
+#[cfg(windows)]
+pub mod keys_win;
+pub mod logging;
+pub mod pipeline;
+/// Tài khoản nào còn nhiều hạn mức nhất — đọc `cachedUsageUtilization` trong
+/// `<config_dir>/.claude.json`, thứ chính CLI ghi. Không spawn, không tốn quota.
+pub mod quota;
+/// Kept from the inbox era on purpose: `sessions.rs` runs every transcript
+/// preview through `leak_scan` before it can travel to a doc on a server. The
+/// product that needed a full outbound leak gate is gone; the gate that stops a
+/// password from leaving this Mac is not optional.
+pub mod redaction;
+/// Bộ nói RESP2 tối giản, đồng bộ — nền của [`so_viec`].
+pub mod redis_mini;
+pub mod runtime;
+pub mod sessions;
+pub mod setup;
+/// Sổ việc một cửa trên Redis Streams: nhận → thực thi → trả, mỗi vai đánh dấu bước.
+pub mod so_viec;
+/// Telegram làm kênh RA LỆNH hai chiều, không chỉ cái loa.
+pub mod telegram;
+/// Sổ tin đến: update Telegram nằm trên ĐĨA trước khi con dấu `offset` tiến.
+pub mod tin_den;
+pub mod verbs;
+pub mod watch;
+pub mod web;
+/// Windows: bảng tiến trình ⟹ console nào chạy phiên nào. Phần THUẦN, biên dịch
+/// và kiểm được trên mọi nền — phần gọi hệ điều hành nằm ở `keys_win.rs`.
+pub mod win_procs;

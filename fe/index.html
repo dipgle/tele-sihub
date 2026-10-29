@@ -1,0 +1,3549 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>huba</title>
+<style>
+  :root {
+    --paper: #f2f4f2;
+    --panel: #ffffff;
+    --ink: #16191b;
+    --ink-2: #545e59;
+    --muted: #7c8681;
+    --rule: #d5dcd7;
+    --signal: #0d6a6d;
+    --signal-ink: #ffffff;
+    --mine: #dceceb;
+    --huba: #ffffff;
+    --warn: #8d6205;
+    --bad: #a2412a;
+    --ok: #2c6647;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #101315; --panel: #171b1d; --ink: #e3e8e5; --ink-2: #b0bab5;
+      --muted: #869089; --rule: #2a3235; --signal: #4fb3b2; --signal-ink: #06211f;
+      --mine: #10312f; --huba: #1c2124; --warn: #cfa03c; --bad: #d97a5c; --ok: #63b189;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--paper); color: var(--ink);
+    font-family: var(--sans); font-size: 15px; line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    display: flex; flex-direction: column;
+  }
+
+  header {
+    display: flex; align-items: center; gap: .75rem;
+    padding: .7rem 1rem; border-bottom: 1px solid var(--rule);
+    background: var(--panel);
+    position: sticky; top: 0; z-index: 5;
+  }
+  header #panelTabs { display: flex; gap: 2px; margin: 0; flex-wrap: nowrap; }
+  /* 44px là chuẩn vùng chạm; hàng tab cũ cao 35px nên trượt tay là chuyện
+     thường (fe-phone-uc đã báo đỏ chỗ này). */
+  /* Tab là ĐIỀU HƯỚNG, không phải nút hành động. Bốn cái hộp viền cạnh nhau
+     đọc như bốn nút bấm ngang hàng với "Chạy 1 vòng" — nên bỏ viền, đánh dấu
+     cái đang mở bằng gạch chân. Vùng chạm vẫn giữ 44px. */
+  header #panelTabs .tab {
+    min-height: 44px; padding: 0 .55rem; font-size: .84rem; white-space: nowrap;
+    border: 0; background: none; border-radius: 0; color: var(--muted);
+    border-bottom: 2px solid transparent; font-weight: 500;
+  }
+  /* Rê chuột vào tab phải THẤY được. Bản trước chỉ đổi con trỏ — trên máy tính
+     đó là menu không phản hồi (Hà 2026-08-09). Trên điện thoại `:hover` không
+     kích hoạt nên không ảnh hưởng gì. */
+  header #panelTabs .tab:hover { color: var(--ink); border-bottom-color: var(--line); }
+  header #panelTabs .tab:active { opacity: .7; }
+  header #panelTabs .tab.on {
+    color: var(--ink); border-bottom-color: var(--accent);
+    background: none; font-weight: 650;
+  }
+  @media (max-width: 560px) {
+    /* Trên điện thoại nhường hết bề ngang cho 4 tab: tên phòng và dự án đã có
+       ở tiêu đề phòng chat, còn trạng thái kết nối đủ nhỏ để ở lại. */
+    header { gap: .4rem; padding: .45rem .5rem; }
+    header h1 { display: none; }
+    header .room { display: none; }
+    header #panelTabs { flex: 1; }
+    /* Cân đúng 390px: 4 tab (270px) + huy hiệu trạng thái (113px) + lề/khe
+       (29px) = 412px ⇒ header tự cuộn ngang 15px. Chữ KHÔNG được nhỏ lại dưới
+       12px nữa (đó là nợ vừa trả), nên phần thừa lấy ở khe chữ và lề tab. */
+    header #panelTabs .tab { flex: 1; padding: 0 .2rem; font-size: .75rem; letter-spacing: 0; }
+    header #status { letter-spacing: .03em; }
+    #status { font-size: .75rem; padding: .15rem .35rem; }
+  }
+  header h1 {
+    font-family: var(--mono); font-size: 1rem; font-weight: 600; margin: 0;
+    letter-spacing: -.01em;
+  }
+  .room {
+    font-family: var(--mono); font-size: .75rem; color: var(--muted);
+    letter-spacing: .04em;
+  }
+  .spacer { flex: 1; }
+  #status {
+    font-family: var(--mono); font-size: .75rem; letter-spacing: .06em;
+    text-transform: uppercase; padding: .2rem .5rem; border-radius: 2px;
+    border: 1px solid var(--rule); color: var(--muted); white-space: nowrap;
+  }
+  #status[data-state="on"] { color: var(--ok); border-color: var(--ok); }
+  #status[data-state="off"] { color: var(--bad); border-color: var(--bad); }
+  #status[data-state="wait"] { color: var(--warn); border-color: var(--warn); }
+
+  main { flex: 1; overflow-y: auto; padding: 1rem; }
+  /* Đường dẫn tuyệt đối không có chỗ nào để xuống dòng, nên nó đẩy cả khối
+     rộng hơn màn (đo được: p.boardnote 412 / khung 300). Cho phép ngắt giữa
+     chữ — đường dẫn bị ngắt vẫn đọc được, khối tràn ngang thì không. */
+  .boardnote, .boardnote code { overflow-wrap: anywhere; }
+  /* Chuẩn chạm 44px (Apple HIG). fe-phone-uc đo được 35–41px trên mọi màn:
+     chạm ĐƯỢC, nhưng trượt — và đây là màn dùng bằng một tay khi đang đi.
+     Trừ các nút phụ chen giữa dòng chữ: kéo chúng lên 44px sẽ xé dòng. */
+  #board button, #board input:not([type="checkbox"]), #board select, #board textarea,
+  #u, #p, #loginBtn, #text {
+    min-height: 44px;
+  }
+  #board .msgtools button, #board .replybtn, #board summary,
+  #board #panelTabs .tab { min-height: 44px; }
+  #board .msgtools button, #board .replybtn { min-height: 32px; }
+  td.runerr {
+    color: var(--bad, #a33); font-size: 12px; padding-top: 0; padding-bottom: 8px;
+    white-space: normal; overflow-wrap: anywhere;
+  }
+  /* Luật cho màn hẹp nằm ở CUỐI bảng kiểu — xem ghi chú ở đó. */
+  .wrap { max-width: 46rem; margin: 0 auto; display: flex; flex-direction: column; gap: .7rem; }
+
+  .msg {
+    border: 1px solid var(--rule); border-radius: 4px;
+    padding: .6rem .8rem; background: var(--huba);
+    display: flex; flex-direction: column; gap: .3rem;
+    max-width: 88%;
+  }
+  .msg.mine { background: var(--mine); align-self: flex-end; }
+  .msg .who {
+    font-family: var(--mono); font-size: .75rem; letter-spacing: .04em;
+    color: var(--muted); display: flex; gap: .5rem;
+  }
+  .msg .body { white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* Lệnh do CHÍNH TRANG gửi (`/session`, `/ask`, `/stop`…) thu về một dòng
+     nhỏ. Chúng là dấu vết máy, không phải lời người: để nguyên khối bong bóng
+     thì phòng chat toàn lệnh, và câu người thật lẫn vào giữa (rà 2026-08-09,
+     đếm được 3 bong bóng lệnh liên tiếp trên một màn). */
+  .msg.cmdline { background: none; border: 0; padding: 2px 0; max-width: none; }
+  .msg.cmdline .who { display: none; }
+  .msg.cmdline .body {
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  .note {
+    align-self: center; color: var(--muted); font-size: .82rem;
+    font-family: var(--mono); padding: .3rem .6rem;
+  }
+  .note.bad { color: var(--bad); }
+
+  /* "huba is working on it" — the wait is the honest part of the UX: a reply
+     goes through triage and, at L0, a human. Say so instead of faking speed. */
+  #pending { display: none; align-self: flex-start; }
+  #pending.on { display: flex; }
+  .dots { display: inline-flex; gap: .2rem; }
+  .dots i {
+    width: .3rem; height: .3rem; border-radius: 50%; background: var(--muted);
+    animation: blink 1.2s infinite;
+  }
+  .dots i:nth-child(2) { animation-delay: .2s; }
+  .dots i:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 60%, 100% { opacity: .25 } 30% { opacity: 1 } }
+  @media (prefers-reduced-motion: reduce) { .dots i { animation: none; opacity: .6 } }
+
+  footer { border-top: 1px solid var(--rule); background: var(--panel); padding: .7rem 1rem; }
+  .composer { max-width: 46rem; margin: 0 auto; display: flex; gap: .5rem; align-items: flex-end; }
+  textarea, input {
+    font: inherit; color: inherit; background: var(--paper);
+    border: 1px solid var(--rule); border-radius: 3px; padding: .5rem .6rem;
+    width: 100%; resize: none;
+  }
+  textarea { min-height: 2.6rem; max-height: 9rem; }
+  button {
+    font: inherit; font-weight: 600; cursor: pointer;
+    background: var(--signal); color: var(--signal-ink);
+    border: 1px solid var(--signal); border-radius: 3px; padding: .5rem 1rem;
+    white-space: nowrap;
+  }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  :focus-visible { outline: 2px solid var(--signal); outline-offset: 1px; }
+
+  .quote {
+    border-left: 2px solid var(--rule); padding-left: .5rem;
+    color: var(--muted); font-size: .8rem; white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .replybtn {
+    align-self: flex-start; background: transparent; color: var(--muted);
+    border: 1px solid transparent; font-weight: 500; font-size: .75rem;
+    font-family: var(--mono); padding: .1rem .3rem; margin-top: .15rem;
+  }
+  .msg:hover .replybtn { border-color: var(--rule); color: var(--ink-2); }
+  .replybar {
+    max-width: 46rem; margin: 0 auto .4rem; display: flex; align-items: center; gap: .4rem;
+    font-size: .78rem; color: var(--muted); font-family: var(--mono);
+  }
+  .replybar button {
+    background: transparent; color: var(--muted); border: 1px solid var(--rule);
+    padding: 0 .35rem; font-size: .75rem; margin-left: auto;
+  }
+
+  /* No permission: keep the conversation panel (it carries the explanation
+     and the way out) and hide everything that reads app data. */
+  #board.denied .panel:not(.keep),
+  #board.denied #panelTabs,
+  #board.denied .boardbar,
+  #board.denied > .boardnote { display: none; }
+  #board.denied .split { grid-template-columns: minmax(0, 1fr); }
+
+  /* conversation inside the board column */
+  #board .wrap { max-width: none; margin: 0; }
+  #board .msg { border-color: var(--line); background: var(--bg); max-width: 92%; }
+  #board .msg.mine { background: var(--accent-soft); }
+  #board .note { color: var(--muted); }
+  #board .composer { max-width: none; margin: 0; }
+  #board .composer textarea { min-height: 2.4rem; max-height: 8rem; }
+  #board .composer button { align-self: flex-end; }
+  #board .quote { border-left-color: var(--line); }
+  #board .msg.linked { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .msgtools { display: flex; gap: .3rem; flex-wrap: wrap; margin-top: .15rem; }
+  #board .linkhint { margin-top: 10px; font-size: 12px; }
+  .tab {
+    font-family: var(--mono); font-size: .75rem; letter-spacing: .04em;
+    background: transparent; color: var(--muted); border-color: var(--rule);
+    padding: .25rem .6rem; font-weight: 500;
+  }
+  .tab.on { background: var(--mine); color: var(--ink); border-color: var(--signal); font-weight: 600; }
+
+  /* board — the console's own design system, ported as-is so the two
+     surfaces look like one product. Tokens are redeclared on #board because
+     the chat shell around it uses a different palette. Source of truth:
+     rust/assets/ui.html. */
+  #board {
+    --bg: #fbfbfa; --panel: #ffffff; --line: #e4e4e1; --ink: #1c1b19; --muted: #6b6a66;
+    --accent: #2f6f4e; --accent-soft: #eaf3ee; --warn: #9a6b1f; --danger: #a33a2c;
+    background: var(--bg); color: var(--ink);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: 16px 20px 60px; flex: 1;
+  }
+  @media (prefers-color-scheme: dark) {
+    #board {
+      --bg: #16171a; --panel: #1e1f23; --line: #33353b; --ink: #e9e8e4; --muted: #9b9a95;
+      --accent: #74c69d; --accent-soft: #1f2f27; --warn: #d9a441; --danger: #e07a63;
+    }
+  }
+  #board button {
+    font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+    border-radius: 8px; padding: 6px 12px; cursor: pointer; white-space: nowrap;
+  }
+  #board button:hover { border-color: var(--accent); }
+  #board button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #board button.danger { color: var(--danger); }
+  #board button:disabled { opacity: .5; cursor: not-allowed; }
+  #board textarea { font: inherit; width: 100%; background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; font-family: var(--mono); font-size: 12px; min-height: 90px; resize: vertical; }
+  #board select { font: inherit; width: 100%; background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; }
+  #board .row-flex { display: flex; gap: 8px; align-items: center; }
+  /* Ô nhập trong hàng ngang phải CO được. Mặc định flex cho mỗi item
+     `min-width: auto`, nên ô giữ nguyên bề rộng nội dung tối thiểu của nó và
+     đẩy cả hàng rộng hơn khung — đo 2026-08-09 trên màn chi tiết phiên:
+     `div.row-flex 300 → 368px`, kéo theo cả `main 390 → 413px`. Lỗi chỉ lộ khi
+     có phiên nền (hàng "nói tiếp" mới hiện), nên nó nằm im tới tận hôm nay. */
+  /// `flex-basis: 0`, KHÔNG phải `auto`: `#board input` có `width: 100%`, nên
+  /// với basis `auto` ô chiếm trọn 300px của hàng rồi nút vẫn cộng thêm ~68px
+  /// nữa — vá lần đầu vì thế không ăn (đo lại: vẫn 368/300).
+  #board .row-flex > input,
+  #board .row-flex > select,
+  #board .row-flex > textarea { min-width: 0; width: auto; flex: 1 1 0; }
+  /* Nút được PHÉP xuống dòng và co lại. Thủ phạm thật của cú tràn 368/300 là
+     hàng chứa nút "📋 Đóng sổ & tiếp tục ở phiên mới" — nhãn dài hơn 300px, và
+     `flex: 0 0 auto` (bản vá đầu của chính tôi) khoá luôn khả năng co của nó.
+     Đoán hai lần mới hỏi trình duyệt xem phần tử ấy là gì; hỏi trước thì đỡ. */
+  #board .row-flex { flex-wrap: wrap; }
+  #board .row-flex > button { flex: 0 1 auto; min-width: 0; white-space: normal; }
+  #board .grid { display: grid; gap: 12px; }
+  #board .g2 { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  #board .g3 { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+  #board .switch { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+  #board .switch input { width: auto; }
+  #board label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  #board a { color: var(--accent); }
+  #board input { font: inherit; width: 100%; background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; }
+  /* Hộp tích mặc định của trình duyệt cao 13px: đo được là vùng chạm nhỏ
+     nhất trên cả trang, mà nó lại là công tắc BẬT/TẮT cả một kênh. */
+  /* Ô tích cỡ THƯỜNG. Bản trước ép 32×32 để lọt luật "vùng chạm ≥32px" của
+     fe-phone-uc — tức là để phép đo quyết định thẩm mỹ, và ra một mảng màu to
+     đùng (Hà 2026-08-09: *"checkbox hiện to đùng thế"*). Vùng chạm đúng ra là
+     CẢ HÀNG NHÃN: bấm vào chữ cũng đổi trạng thái, đó là hành vi sẵn có của
+     `<label>`, và hàng ấy cao 44px. Phép đo phải đo đúng thứ ngón tay chạm. */
+  #board input[type="checkbox"] {
+    width: 18px; height: 18px; flex: none; margin: 0; accent-color: var(--accent);
+  }
+  #board label:has(> input[type="checkbox"]) { cursor: pointer; }
+  #board .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  #board .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 12px; }
+  #board table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  #board th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  #board td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  #board tr.row { cursor: pointer; }
+  #board tr.row:hover td { background: var(--accent-soft); }
+  #board tr.row.on td { background: var(--accent-soft); }
+  #board .tag { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  #board .tag.pending { border-color: var(--warn); color: var(--warn); }
+  #board .tag.bad { border-color: var(--danger); color: var(--danger); }
+  #board .tag.ok { border-color: var(--accent); color: var(--accent); }
+  #board .mono { font-family: var(--mono); font-size: 12px; }
+  #board .nowrap { white-space: nowrap; }
+  /* `max-height + overflow` từng nằm ở ĐÂY, tức áp cho MỌI <pre> trong bảng —
+     kể cả `.ev-body`, thân của từng sự kiện trong luồng phiên. Hệ quả: mỗi sự
+     kiện dài là MỘT hộp cuộn riêng. Hà 2026-08-09: *"vẫn đang hiện một đống
+     thanh cuộn trong danh sách của 1 phiên"* — đo ở khung 1280px: 4 `pre.ev-body`
+     + 1 khung `.scroll` = 5 thanh cuộn lồng nhau trong một màn.
+     Trần đó chỉ dành cho ĐÚNG một chỗ: bãi JSON thô ở tab Cấu hình. */
+  #board pre { white-space: pre-wrap; word-break: break-word; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; font-family: var(--mono); font-size: 12px; margin: 0; }
+  #configBody { max-height: 340px; overflow: auto; }
+  #board .muted { color: var(--muted); }
+  /* Stale data must not look like fresh data (UC-S09). */
+  #board .muted.stale { color: var(--bad, #a33a2c); font-weight: 600; }
+  #board .err { color: var(--danger); }
+  #board .split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  @media (min-width: 960px) { #board .split { grid-template-columns: 560px minmax(0, 1fr); } }
+  @media (min-width: 1400px) { #board .split { grid-template-columns: 640px minmax(0, 1fr); } }
+  @media (min-width: 1800px) { #board .split { grid-template-columns: 760px minmax(0, 1fr); } }
+  /* Five columns of Vietnamese in a fixed-width panel overflow before they
+     wrap; let the table scroll inside its own box instead of clipping. */
+  /* Không còn khung nào tự cuộn: TRANG cuộn, ở mọi bề ngang. Trần `68vh/72vh`
+     sinh ra cho bố cục hai cột; huba chỉ có một cột, nên nó chỉ đẻ ra cuộn lồng
+     cuộn — trên điện thoại là bẫy vuốt, trên máy tính là một rừng thanh cuộn. */
+  #board .scroll { max-height: none; overflow: visible; }
+  /* Session cards, not a table: on a 390px phone a table forces sideways
+     scrolling, and this is the one screen that must read at a glance. */
+  /* On the sessions screen the surrounding chrome is noise: it pushed the
+     first session to 570px on a 844px phone (67% of the screen) before this.
+     The snapshot stamp stays — how old the data is still matters (UC-S09). */
+  #board.on-sessions .boardnote,
+  #board.on-sessions .boardbar button { display: none; }
+  /* …TRỪ nút quay ra danh sách. Luật trên sinh ra để giấu ba nút thao tác
+     (Đọc phòng · Chạy 1 vòng · Tải lại) khỏi màn Phiên; khi nút "← Danh sách"
+     dọn lên hàng này (2026-08-09) nó bị vạ lây — `display: none` trong khi
+     `class` vẫn sạch, nên nhìn DOM tưởng đang hiện. Đo mới thấy: 0×0px. */
+  #board.on-sessions .boardbar #sessBack { display: inline-flex; }
+  #sessNewWho { gap: 6px; }
+  #sessNewWho select { flex: 1 1 0; min-width: 0; }
+  #sessNewBox #sessNewHint { font-size: 12px; margin: 6px 0 0; }
+  #sessNewBox .row-flex { margin-top: 6px; }
+  #sessList { display: flex; flex-direction: column; gap: 8px; }
+  /* Một dòng đã chết không được đọc như việc đang chạy. */
+  .sess.sess-dead { opacity: .62; border-style: dashed; }
+  .sess { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--bg); }
+  .sess-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .sess-head strong { font-size: 15px; overflow-wrap: anywhere; }
+  .sess-head span { white-space: nowrap; font-size: 12.5px; }
+  /* Trạng thái đọc bằng MẮT trước khi đọc bằng chữ: xanh = đang chạy, hổ phách
+     = đang rảnh (chờ mình), xám = đã dừng. Trên màn 390px, ba chấm này thay
+     được cả cột chữ mà vẫn quét được trong một cái liếc. */
+  /* Huy hiệu LOẠI + AI TẠO. Hà 2026-08-09: *"cần một kiểu đánh dấu hoặc ghi chú
+     rõ ràng hơn cho từng loại… nhìn qua cái là biết nó là kiểu nào ai tạo"*.
+     Chấm màu cũ chỉ nói phiên đang bận hay rảnh — nó không trả lời "ai mở cái
+     này", mà đó mới là thứ quyết định mình LÀM GÌ được với nó: phiên huba mở thì
+     nói tiếp và dừng được, phiên ở terminal thì chỉ xem và hỏi bên lề. */
+  .sess-kind {
+    display: inline-flex; align-items: center; gap: 4px; flex: none;
+    font-size: 12px; font-weight: 600; line-height: 1;
+    padding: 3px 7px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted); background: var(--bg);
+    white-space: nowrap;
+  }
+  .sess[data-host="terminal"] .sess-kind {
+    color: #1f5f8b; border-color: #bcd7e8; background: #eef6fb;
+  }
+  .sess[data-huba="1"] .sess-kind {
+    color: var(--accent, #2f6f4e); border-color: #b9dcc7; background: #eef8f2;
+  }
+  .sess[data-host="background"] .sess-kind {
+    color: #6b4fa8; border-color: #d4c9ec; background: #f4f0fb;
+  }
+  .sess[data-host="detached"] .sess-kind {
+    color: #8a6100; border-color: #ead4a3; background: #fdf6e6;
+  }
+  .sess[data-host="dead"] .sess-kind {
+    color: var(--muted); border-style: dashed; background: transparent;
+  }
+  /* Gộp theo NHÓM thay vì rắc huy hiệu lên từng thẻ.
+     Hà 2026-08-09, sau khi xem bản có huy hiệu: *"cách hiển thị dễ nhìn dễ hiểu
+     hơn được không?"*. Huy hiệu trả lời đúng câu hỏi nhưng bắt mắt đọc lại nhãn
+     ở MỌI thẻ; tiêu đề nhóm trả lời một lần cho cả cụm, và tự nó xếp những
+     phiên làm-gì-được-giống-nhau đứng cạnh nhau. */
+  .sess-group {
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+    margin: 16px 0 8px; padding-bottom: 5px;
+    border-bottom: 1px solid var(--line);
+    font-size: 12px; font-weight: 700; letter-spacing: .04em;
+  }
+  .sess-group:first-child { margin-top: 2px; }
+  .sess-group .n { font-weight: 600; color: var(--muted); }
+  .sess-group .what { font-weight: 500; color: var(--muted); font-size: 12px; }
+  .sess-group[data-g="huba"] { color: var(--accent, #2f6f4e); border-color: #b9dcc7; }
+  .sess-group[data-g="terminal"] { color: #1f5f8b; border-color: #bcd7e8; }
+  .sess-group[data-g="background"] { color: #6b4fa8; border-color: #d4c9ec; }
+  .sess-group[data-g="detached"] { color: #8a6100; border-color: #ead4a3; }
+  .sess-group[data-g="dead"] { color: var(--muted); border-style: dashed; }
+  /* "do «X» mở": quan hệ cha-con, chữ nhỏ, không tranh chỗ với nội dung. */
+  .sess-from, .sess-warn { font-size: 12px; margin-top: 2px; }
+  /* Phiên con thụt vào dưới phiên cha, có vạch nối như một lượt trả lời
+     (Hà 2026-08-09). Quan hệ này là THẬT — truy từ cây tiến trình — nên nó
+     đáng được vẽ ra chứ không chỉ ghi thành một dòng chữ. */
+  .sess-kid {
+    margin-left: 14px; border-left: 2px solid var(--line);
+    border-top-left-radius: 0; border-bottom-left-radius: 0;
+    padding-left: 10px; position: relative;
+  }
+  .sess-kid::before {
+    content: '↳'; position: absolute; left: -12px; top: 10px;
+    color: var(--muted); font-size: 12px;
+  }
+  .sess-kindrow { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+  .sess-dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    margin-right: 7px; vertical-align: 1px; background: var(--muted); flex: none;
+  }
+  /* DỰ ÁN — thứ mắt tìm trước cả tên phiên, vì tên do `claude` tự đặt.
+     Không cho nó to hơn tên: nó là NHÃN, tên mới là danh tính. Ở 390px một
+     dòng "AI/huba · projects-ff" vừa khít, và `overflow-wrap: anywhere` của
+     `.sess-head strong` lo phần dài hơn. */
+  .sess-folder { font-weight: 600; color: var(--accent, #2f5d8a); }
+  /* ĐANG HỎI — cái duy nhất trên màn này mà không ai làm gì thì việc đứng yên
+     mãi. Nền hổ phách để mắt bắt được trước cả khi đọc chữ; các lựa chọn có SỐ
+     vì số chính là thứ gõ tiếp được (`/key <id> <n>` hoặc bấm nút trên Telegram). */
+  .sess-asking { margin: 6px 0 0; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid #d8a640; background: #fff6e5; color: #6b4a06; font-size: 13px; }
+  .sess-asking strong { display: block; margin-bottom: 3px; }
+  .sess-asking p { margin: 0 0 6px; }
+  .sess-choice { font-variant-numeric: tabular-nums; padding: 1px 0; }
+  .sess[data-asking] .sess-dot { background: #d8a640; }
+  .sess[data-work="đang chạy"] .sess-dot { background: var(--ok, #2f6f4e); }
+  .sess[data-work="đang rảnh"] .sess-dot { background: #c98a1e; }
+  .sess[data-host="dead"] .sess-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--muted); }
+  /* Hàng phụ là chú thích, không phải nội dung — một dòng, cắt đuôi, không
+     bao giờ được chiếm hai dòng như trước. */
+  .sess-meta {
+    font-size: 12px; margin-top: 3px; letter-spacing: .01em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .sess-body {
+    margin: 6px 0 0; font-size: 13.5px; line-height: 1.45;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .sess-note { margin: 6px 0 0; font-size: 12.5px; }
+  /* Dòng "đang làm gì": cùng cỡ hàng phụ, một dòng, cắt đuôi. Nó thay đổi mỗi
+     nhịp làm mới nên phải đứng yên một chỗ, không được đẩy bố cục. */
+  .sess-act { margin: 4px 0 0; font-size: 12px; font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* ĐANG CHẠY thì phải NHÌN RA NGAY.
+     Hà 2026-08-11: *"thay đổi màu hoặc css làm sao dễ gây chú ý, hiện tại đang
+     hiện tĩnh"*. Chữ đứng im giữa một màn chữ đứng im thì mắt không bắt được —
+     nhất là khi thứ nó nói là "có cái gì đó ĐANG chạy ngay lúc này".
+     Ba lớp, rẻ và không đụng bố cục: chữ đổi màu, một chấm thở, và cả dòng
+     nhấp nháy rất nhẹ. KHÔNG dùng transform/left để tránh reflow mỗi nhịp. */
+  @keyframes huba-pulse { 0%, 100% { opacity: 1 } 50% { opacity: .45 } }
+  @keyframes huba-breathe { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+  .sess-act.live { color: var(--ok, #1a7f37); font-weight: 600; animation: huba-pulse 1.6s ease-in-out infinite; }
+  .sess-act.live .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: currentColor; margin-right: 6px; animation: huba-breathe 1.1s ease-in-out infinite; }
+  /* Dải trạng thái TRONG màn một phiên. Cùng chữ với thẻ ở danh sách, nhưng ở
+     đây nó là câu đầu tiên người ta nhìn thấy khi mở phiên ra. */
+  #sessLive { margin: 0 0 8px; padding: 8px 10px; border-radius: 8px; font-size: 13px;
+    border: 1px solid var(--line, #d7dbe0); background: var(--soft, #f6f8fa);
+    font-variant-numeric: tabular-nums; }
+  #sessLive.live { border-color: #1a7f37; background: #eaf7ee; color: #14611f; font-weight: 600; }
+  #sessLive.live .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: currentColor; margin-right: 7px; animation: huba-breathe 1.1s ease-in-out infinite; }
+  #sessLive.idle { color: #57606a; }
+  @media (prefers-reduced-motion: reduce) {
+    .sess-act.live, .sess-act.live .dot, #sessLive.live .dot { animation: none; }
+  }
+  /* Hàng thao tác ngay trên thẻ phiên. Vùng chạm 44px là chuẩn của trang này
+     (`fe-phone-uc`), và ở đây nó đáng giá hơn mọi chỗ khác: hai nút đứng cạnh
+     nhau mà một trong hai là "Dừng". */
+  .sess-acts { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .sess-acts button { min-height: 44px; font-size: 13px; }
+  .sess { cursor: pointer; }
+  .sess:active { background: var(--soft, #eef2ee); }
+  /* The stream reads like a terminal: monospace, tight, output indented under
+     the command that produced it. */
+  #sessStream { display: flex; flex-direction: column; gap: 6px; }
+  .ev-head {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted);
+  }
+  .ev-body {
+    margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px; line-height: 1.45;
+  }
+  .ev-say .ev-body { font-family: inherit; font-size: 14px; }
+
+  /* ── Nhìn như đang ngồi trước terminal ────────────────────────────────
+     Hà 2026-08-09: *"làm sao giống như đang nhìn thực sự trên terminal cli"*.
+     Bản trước mỗi sự kiện là một cái thẻ có viền, nhãn in hoa, nền sáng — đọc
+     ra một BẢNG BÁO CÁO về phiên, không phải phiên. Terminal thì: một nền
+     tối liền mạch, chữ đều một cỡ, lệnh có dấu nhắc `$`, đầu ra không viền,
+     và không có gì đóng khung từng lượt.
+     Giữ lại đúng hai thứ không phải terminal nhưng cần thiết: dòng bị ẩn vì
+     nghi có bí mật (đỏ), và nút mở đoạn dài. */
+  #sessScreenBox {
+    border: 1px solid var(--line); border-radius: 8px;
+    background: #14161a; padding: 8px 10px; margin-bottom: 8px;
+  }
+  #sessScreen {
+    margin: 0; background: none; border: 0; padding: 0;
+    color: #c8ccd4; font-family: var(--mono); font-size: 12px; line-height: 1.4;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  /* Đang hỏi thì phải nhìn ra ngay: viền vàng, chữ sáng, đứng trên cùng. */
+  #sessChoices {
+    margin-bottom: 6px; padding-bottom: 6px;
+    border-bottom: 1px solid #3a3320; color: #f0c674;
+    font-size: 13px; font-weight: 600;
+  }
+  #sessChoices div { padding: 2px 0; }
+  #sessStream.term {
+    background: #14161a; border: 1px solid #2a2d34; border-radius: 8px;
+    padding: 10px 12px; gap: 0;
+  }
+  #sessStream.term .ev { display: block; margin: 0 0 2px; }
+  #sessStream.term .ev-head { display: none; }
+  #sessStream.term .ev-body {
+    background: none; border: 0; border-radius: 0; padding: 0; margin: 0;
+    color: #c8ccd4; font-size: 12.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  /* Lệnh: dấu nhắc `$` như mọi terminal, chữ sáng hơn đầu ra. */
+  #sessStream.term .ev-tool .ev-body { color: #e8eaef; }
+  #sessStream.term .ev-tool .ev-body::before { content: '$ '; color: #6ee7a8; }
+  /* Đầu ra: mờ hơn một bậc, đúng như chữ máy in ra. */
+  #sessStream.term .ev-result .ev-body { color: #9aa1ad; }
+  /* Lời người và lời máy: có dấu nhắc riêng để phân biệt mà không cần nhãn. */
+  #sessStream.term .ev-say .ev-body { color: #dfe3ea; font-family: inherit; font-size: 13.5px; }
+  #sessStream.term .ev-say .ev-body::before { content: '❯ '; color: #7aa2f7; }
+  #sessStream.term .ev-think .ev-body { color: #6b7280; font-style: italic; }
+  #sessStream.term .ev-hidden .ev-body { color: #f08c7a; }
+  #sessStream.term .ev-more {
+    color: #9aa1ad; border-color: #2a2d34; background: none; margin: 2px 0 6px;
+  }
+  /* Ô chọn cách hiển thị nằm cạnh dòng đếm sự kiện. */
+  /* Hàng nhãn phải đủ cao để chạm: đo được 23px, dưới ngưỡng 32px — cùng
+     lỗi với ô tích ở màn cấu hình, lặp lại vì tôi thêm hàng mới mà quên. */
+  .term-toggle {
+    display: flex; align-items: center; gap: 6px; font-size: 12px;
+    min-height: 36px; cursor: pointer;
+  }
+
+  /* Bảng tình trạng: mỗi dòng một câu hỏi có câu trả lời dứt khoát. */
+  .rt { margin-bottom: 14px; }
+  .rt-row {
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+    padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px;
+  }
+  .rt-row:last-child { border-bottom: 0; }
+  .rt-k { color: var(--muted); flex: 0 0 auto; min-width: 116px; }
+  /* Trong lý lịch phiên, khung hẹp hơn hẳn tab Sức khoẻ: nhãn cứng 116px làm
+     hàng rộng gấp đôi khung (đo 116/61). Cho nhãn co lại và hàng xuống dòng. */
+  /* `#sessDetail` là flex column; một `<details>` trong đó bị co về bề rộng
+     nội dung của `<summary>` (đo: khung 61px trong khi hàng 116px). Ép nó
+     chiếm trọn bề ngang như mọi khối khác. */
+  #sessInfoBox { width: 100%; box-sizing: border-box; }
+  #sessInfo { width: 100%; box-sizing: border-box; }
+  #sessInfo .rt-k { min-width: 0; }
+  #sessInfo .rt-row { flex-wrap: wrap; gap: 4px 8px; }
+  .rt-v { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+  .rt-v.ok { color: var(--accent, #2f6f4e); font-weight: 600; }
+  .rt-v.bad { color: var(--danger, #a33a2c); font-weight: 600; }
+  .rt-v.warn { color: var(--warn, #9a6b1f); font-weight: 600; }
+  .rt-fix {
+    display: block; margin-top: 4px; font-family: var(--mono);
+    font-size: 12px; color: var(--ink); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  /* KHÔNG trần + KHÔNG overflow ở đây: `max-height: 12em; overflow: auto` từng
+     nằm đúng chỗ này và là nguồn cuối cùng của "một đống thanh cuộn" — nó tóm
+     mọi đoạn cao 144px trở lên, tức gần như mọi kết quả lệnh. Việc kẹp giao
+     hẳn cho `.clamp` + nút mở, để chỉ có MỘT cơ chế và không có kẽ hở giữa
+     hai ngưỡng (bản trước kẹp từ 281px, nên khoảng 144–281px vẫn cuộn). */
+  .ev-tool .ev-body, .ev-result .ev-body {
+    background: var(--soft, #f2f5f2); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 8px;
+  }
+  /* Ô nhập và nút Gửi đứng MỘT dòng (Hà 2026-08-09). `.row-flex` có
+     `flex-wrap: wrap` — cần cho hàng nút "Đóng sổ" nhãn dài — nhưng ở hàng
+     nhập thì nó đẩy nút xuống dòng dưới, ngốn thêm 44px ngay chỗ ngón tay
+     đang chạm. Hàng này khoá `nowrap`: ô co lại, nút giữ nguyên. */
+  #sessSayRow { flex-wrap: nowrap; }
+  #sessSayRow > input { flex: 1 1 0; min-width: 0; }
+  #sessSayRow > button { flex: 0 0 auto; white-space: nowrap; }
+  #sessCompose {
+    position: sticky; bottom: 0; z-index: 3;
+    background: var(--panel);
+    padding: 8px 0 6px;
+    border-top: 1px solid var(--line); margin-top: 8px;
+  }
+  #scrollDock {
+    position: fixed; right: 10px; z-index: 6;
+    display: flex; flex-direction: column; gap: 8px;
+    bottom: 16px;
+  }
+  /* Đang mở một phiên thì ô nhập chiếm đáy — nâng bong bóng lên khỏi nó. */
+  body:has(#sessDetail:not(.hidden)) #scrollDock { bottom: 124px; }
+  /* Vòng ngoài là THƯỚC: cung tô đậm = phần đã cuộn qua. `conic-gradient` vẽ
+     thẳng trên nền của lớp bọc, nút nằm đè lên giữa nên chỉ còn thấy vành. */
+  .dock-ring {
+    display: block; padding: 3px; border-radius: 50%;
+    background: conic-gradient(var(--accent) calc(var(--p, 0) * 360deg), var(--line) 0);
+    box-shadow: 0 2px 8px rgba(0,0,0,.14);
+  }
+  .dock-ring.hidden { display: none; }
+  #scrollDock button {
+    width: 40px; height: 40px; border-radius: 50%;
+    border: 0; background: var(--panel); color: var(--ink);
+    font-size: 17px; line-height: 1;
+    display: flex; align-items: center; justify-content: center; padding: 0;
+  }
+  /* Chân trang GỌN: ô tích và hai nút thao tác đứng CHUNG một hàng, ô tích
+     bên trái, nút dạt phải. Ba hàng chồng nhau (nhập · tích · nút) ngốn ~130px
+     đáy màn 844px — một phần sáu màn hình chỉ để chứa thao tác, trong khi màn
+     này sinh ra để ĐỌC (Hà 2026-08-09: *"làm gọn lại thành phần footer"*). */
+  /* MỌI thứ trong chân trang cao bằng nhau. Trước đó ô nhập 44px, nút Gửi
+     44px, hàng tích 36px, nút thao tác 34px — bốn chiều cao trong một khung
+     nhỏ đọc ra lộn xộn (Hà 2026-08-09: *"các thành phần footer đang không cân
+     đối chiều cao"*). Một con số duy nhất, khai ở đây. */
+  #sessCompose { --ctl: 40px; }
+  #sessCompose #sessSayRow > input,
+  #sessCompose #sessSayRow > button,
+  #sessCompose #sessActs button,
+  #sessCompose .sess-mode {
+    height: var(--ctl); min-height: var(--ctl); box-sizing: border-box;
+  }
+  #sessFootRow {
+    display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;
+    margin-top: 6px;
+  }
+  #sessFootRow .sess-mode { margin: 0; flex: 0 0 auto; }
+  #sessActs { margin: 0 0 0 auto; gap: 6px; flex-wrap: nowrap; }
+  #sessActs button {
+    font-size: 12px; padding: 0 10px;
+    max-width: 42vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* Chú thích cuối cùng: chữ nhỏ, một hàng, không đội chỗ. */
+  #sessNote {
+    display: flex; align-items: center; gap: 10px;
+    margin-top: 4px; flex-wrap: nowrap;
+  }
+  #sessNote p {
+    margin: 0; font-size: 12px; flex: 1 1 auto; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* Vẫn phải đủ cao để chạm. `min-height: 0` (bản trước, để cho gọn) kéo
+     hàng xuống 23px — đúng cái ngưỡng vừa sửa hai lần hôm nay. Gọn không được
+     đổi bằng việc không bấm trúng. */
+  #sessNote .term-toggle { min-height: 32px; flex: 0 0 auto; }
+  .sess-mode {
+    display: flex; align-items: center; gap: 8px; margin: 6px 0 2px;
+    font-size: 13px; color: var(--muted); min-height: 44px;
+  }
+  .sess-mode.forced { opacity: .85; }
+  .ev-result { padding-left: 10px; border-left: 2px solid var(--line); }
+  /* Đầu ra dài thì KẸP rồi cho bấm mở, chứ không nhét vào hộp cuộn: một hộp
+     cuộn trong trang cuộn là hai thứ tranh nhau ngón tay. */
+  .ev-body.clamp { max-height: 12em; overflow: hidden; }
+  .ev-more {
+    align-self: flex-start; margin-top: 4px; padding: 2px 8px;
+    font-size: 12px; color: var(--muted); background: none;
+    border: 1px solid var(--line); border-radius: 999px; min-height: 32px;
+  }
+  .ev-think .ev-body { opacity: .72; font-style: italic; }
+  .ev-hidden .ev-body { color: var(--bad, #a33a2c); }
+  /* 520px là dấu vết của bảng NĂM cột hồi còn hộp thư: nó ép bảng rộng gấp
+     rưỡi khung 300px, nên cột cuối trôi hẳn khỏi màn và người đọc tưởng bảng
+     chỉ có hai cột (thấy trên ảnh v62/v63 — đo được: table 520 / khung 300).
+     Ba cột ngắn bây giờ vừa khít; cột giờ giữ nguyên chiều, hai cột còn lại
+     chia phần dư. */
+  #board #runsTable { min-width: 0; table-layout: fixed; }
+  #board #runsTable th:first-child, #board #runsTable td:first-child { width: 42%; }
+  #board #runsTable th:last-child, #board #runsTable td:last-child { width: 22%; text-align: right; }
+  #board .scroll td { padding: 7px 6px; }
+  #board nav.subtabs { display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap; }
+  #board nav.subtabs button.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+  #board .boardbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+  /* Chỗ trả lời của các nút gửi lệnh. 12.5px là sàn của trang (luật ≥12px), và
+     nó ăn `.hidden` như mọi thứ khác nên khi rỗng thì không chiếm dòng nào. */
+  #cmdStatus { margin: -6px 0 10px; font-size: 12.5px; line-height: 1.4; }
+  #cmdStatus.bad { color: var(--danger, #a33a2c); font-weight: 600; }
+  /* Hàng trên cùng GHIM ĐỈNH ở màn Phiên. Nó nay mang nút "← Danh sách" và tên
+     phiên đang đọc (Hà 2026-08-09) — mà một luồng dài thì cuộn vài màn là nút
+     ấy biến mất, tức đưa lên head xong lại với không tới. Sticky chứ không
+     phải khung riêng: trang vẫn một thanh cuộn. */
+  /* Sticky không đi quá khối cha: ở đáy trang, ô nhập dừng lại ở mép dưới của
+     `#sessDetail` chứ không phải mép màn hình — đo được hụt 87px, đúng bằng
+     lề dưới của panel + `#board`. Cắt phần thừa ấy ở màn Phiên. */
+  /* Hai khe 8px trên–dưới là lề của `main`; nội dung cuộn qua đó nên nhìn
+     thấy chữ chạy phía trên head và phía dưới ô nhập. Chuyển lề ấy vào trong
+     `#board` để thanh ghim dính sát mép. */
+  body:has(#board.on-sessions) main { padding-top: 0; padding-bottom: 0; }
+  #board.on-sessions { padding-top: 0; padding-bottom: 0; }
+  /* Cao trọn khung nhìn, xếp dọc: luồng giãn ra, ô nhập bị đẩy xuống CHÂN.
+     Không có nó thì phiên ít sự kiện sẽ hiện ô nhập lửng lơ giữa trang với
+     một mảng trắng bên dưới — `sticky` chỉ ghim khi nội dung ĐỦ DÀI để tràn,
+     nên màn ngắn trông như ô nhập "chưa hiện dưới chân trang" (Hà, 08-09). */
+  #board.on-sessions #sessDetail {
+    /* padding-bottom = 0: `sticky` dừng ở mép dưới KHỐI CHA, nên mỗi pixel lề
+       dưới của panel là một pixel nội dung lọt ra dưới ô nhập khi cuộn hết. */
+    margin-bottom: 0; padding-bottom: 0;
+    display: flex; flex-direction: column;
+    min-height: calc(100dvh - 150px);
+  }
+  #board.on-sessions #sessStream { flex: 1 1 auto; }
+  /* Head khi đang mở một phiên: MỘT dòng, và nút quay ra thôi làm hộp viền.
+     Đo bản trước: hàng này cao 89px vì xuống hai dòng, và cái nút viền to lấn
+     át dòng chữ bên cạnh (Hà 2026-08-09: *"nút danh sách hiện không cân đối,
+     ui hơi tệ"*). Nút điều hướng nên đọc như đường quay ra, không như một
+     hành động ngang hàng với "Gửi".
+     Thanh ghim tràn HẾT bề ngang khung nhìn: bản trước rộng 334/390px và
+     `main` còn 8px lề trên–dưới, nên nội dung cuộn LỌT QUA cả bốn khe — thấy
+     chữ chạy phía trên head và phía dưới ô nhập. */
+  #board.on-sessions .boardbar {
+    position: sticky; top: 0; z-index: 4;
+    background: var(--panel);
+    padding: 8px 0 7px;
+    margin-bottom: 8px; border-bottom: 1px solid var(--line);
+    flex-wrap: nowrap; gap: 8px; align-items: center; line-height: 1.2;
+  }
+  /* Ba thành phần cùng một đường: `min-height` khác nhau đẩy hộp chữ lệch
+     nhau dù `align-items: center` — nút có hộp 40px, tên và giờ chỉ cao bằng
+     dòng chữ (Hà 2026-08-09: *"các thành phần head lệch dòng"*). Cho cả ba
+     cùng `line-height` và cùng cách canh, vùng chạm 40px lấy bằng padding. */
+  #board.on-sessions .boardbar > * { align-self: center; line-height: 1.2; }
+  /* Bỏ khoảng đệm giữa: nó nằm SAU dấu thời gian nên đẩy dấu ấy vào giữa hàng.
+     Không có nó thì tên phiên (flex:1) nuốt hết chỗ dư và dấu thời gian dạt
+     hẳn sang phải — đúng chỗ mắt tìm nó. */
+  #board.on-sessions .boardbar .spacer { display: none; }
+  #board.on-sessions .boardbar #sessBack {
+    border: 0; background: none; padding: 10px 6px 10px 0;
+    min-height: 0; flex: 0 0 auto;
+    color: var(--muted); font-size: 14px; font-weight: 500; white-space: nowrap;
+  }
+  #board.on-sessions .boardbar #sessTitle {
+    flex: 1 1 auto; min-width: 0; font-size: 14.5px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* Co được + cắt đuôi: đo bản trước, ô này giữ nguyên 244px chữ đầy đủ và đẩy
+     cả hàng tràn 352/334, bóp tên phiên còn 0px. Chữ ngắn là chuyện của JS;
+     CSS phải bảo đảm dù chữ dài cỡ nào hàng cũng không tràn. */
+  #board.on-sessions .boardbar #boardStamp {
+    flex: 0 1 auto; min-width: 0; font-size: 12px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* CẢNH BÁO thì được xuống dòng — luật "một dòng, cắt đuôi" ở trên sinh ra cho
+     dòng mốc thời gian bình thường, thứ không đọc hết cũng không sao. Câu cảnh
+     báo thì ngược lại: nửa sau của nó (*"Số dưới đây là của lúc đó, không phải
+     bây giờ"*) mới là phần đổi hành vi người đọc. Đo 2026-08-10 trên ảnh chụp
+     cũ THẬT: màn chỉ hiện tới `⚠ huba chưa đẩy dữ liệu mới — Ảnh chụp lúc
+     19:50:59 1…`, tức đúng nửa quan trọng bị cắt. Một lời cảnh báo không đọc
+     hết được thì chưa phải lời cảnh báo. */
+  #board.on-sessions .boardbar #boardStamp.stale {
+    white-space: normal; overflow: visible; text-overflow: clip;
+    flex: 1 1 100%; line-height: 1.35;
+  }
+  #board .boardbar .spacer { flex: 1; }
+  #board .boardnote { margin: 0 0 12px; font-size: 12px; }
+  #board .boardnote code { font-family: var(--mono); font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+  #board .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+  #board .chip { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; }
+  #board .chip b { color: var(--ink); }
+  #board .chip.warn { border-color: var(--warn); color: var(--warn); }
+  #board .chip.bad { border-color: var(--danger); color: var(--danger); }
+  #board .detail dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0 0 12px; }
+  #board .detail dt { color: var(--muted); font-size: 12px; }
+  #board .detail dd { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+  #board .detail h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 12px 0 6px; }
+  #board .detail-title { font-size: 14px; font-weight: 600; margin: 0 0 10px; overflow-wrap: anywhere; }
+  #board .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  #board .actions .reason { flex: 1 1 14rem; min-width: 10rem; }
+  #board .cmdstatus { flex-basis: 100%; font-size: 12px; color: var(--muted); }
+  #board .cmdstatus.bad { color: var(--danger); }
+
+  /* login */
+  #login { max-width: 20rem; margin: 3rem auto; display: flex; flex-direction: column; gap: .6rem; }
+  #login h2 { font-family: var(--mono); font-size: 1rem; margin: 0 0 .3rem; }
+  #login p { margin: 0; color: var(--muted); font-size: .85rem; }
+  .hidden { display: none !important; }
+
+  /* ── Màn hẹp: luật này PHẢI đứng cuối ────────────────────────────────────
+     Bản đầu đặt khối này ngay dưới `main {}`, tức TRƯỚC `#board .panel
+     { padding: 16px }`. Cùng độ đặc hiệu thì luật sau thắng, nên nó chưa từng
+     có tác dụng — đo ngày 2026-08-09 mới lộ: `getComputedStyle` trên
+     `#sessListPanel` ở khung 390px vẫn trả về `padding-top: 16px`.
+     *Viết CSS xong phải ĐO computed style, không tin vào việc mình đã gõ.* */
+  @media (max-width: 560px) {
+    main { padding: .5rem; }
+    #board > .panel, #board .panel { padding: 11px 10px; }
+    .sess { padding: 9px 10px; }
+    .boardbar { margin-bottom: 6px; }
+
+    /* MỘT màn hình, MỘT thanh cuộn.
+       Hà 2026-08-09: *"ui đang bị hiện quá nhiều thanh cuộn"*. Đo ra đúng vậy:
+       mỗi tab có thanh của trang CỘNG thêm một thanh của khối bên trong —
+       `#sessList` (574→1211), `#thread` (574→6866), `#configBody` (338→1460).
+       Trần `68vh/72vh/340px` sinh ra cho màn rộng, nơi khung trái-phải đứng
+       cạnh nhau và mỗi cột cần cuộn riêng; trên điện thoại nó chỉ tạo ra cái
+       bẫy "vuốt trúng khung trong thì trang không nhúc nhích".
+       Bỏ trần ⟹ nội dung chảy vào trang, trang cuộn như mọi trang khác. */
+    /* Trần chiều cao đã bỏ ở luật gốc cho MỌI bề ngang; chỉ còn bãi JSON thô
+       là vẫn có trần, và trên điện thoại thì nó cũng nên chảy vào trang. */
+    #configBody { max-height: none; overflow: visible; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>huba</h1>
+  <!-- Bốn tab sống ở đây, không phải trong thân trang: trên màn 390px, một
+       hàng nav riêng + thanh công cụ + ghi chú đẩy phiên đầu tiên xuống quá
+       nửa màn. Header vốn đã luôn hiện, nên đây là chỗ rẻ nhất để đặt chúng. -->
+  <nav id="panelTabs" class="subtabs">
+    <button type="button" class="tab on" data-panel="sessions">Phiên</button>
+    <button type="button" class="tab" data-panel="chat">Trao đổi</button>
+    <button type="button" class="tab" data-panel="health">Sức khoẻ</button>
+    <button type="button" class="tab" data-panel="config">Cấu hình</button>
+  </nav>
+  <span class="spacer"></span>
+  <span class="room" id="roomLabel"></span>
+  <span id="status" data-state="off">chưa kết nối</span>
+</header>
+
+<main>
+  <form id="login" autocomplete="on">
+    <h2>Đăng nhập</h2>
+    <p>Dùng tài khoản tfl5 của bạn.</p>
+    <input id="u" name="username" placeholder="tên đăng nhập" autocomplete="username" required />
+    <input id="p" name="password" type="password" placeholder="mật khẩu" autocomplete="current-password" required />
+    <button type="submit" id="loginBtn">Vào phòng</button>
+    <p id="loginErr" class="hidden" style="color:var(--bad)"></p>
+  </form>
+
+  <!-- A read-only snapshot of this Mac, fetched from tfl5 (same origin, app
+       ACL). Everything that CHANGES anything goes through the chat room as a
+       command, so every action leaves a trace where a person can read it. -->
+  <section class="board hidden" id="board">
+    <div class="boardbar">
+      <!-- Chỉ hiện khi đang mở một phiên; lúc ở danh sách thì hàng này chỉ có
+           dấu thời gian như cũ. -->
+      <button type="button" id="sessBack" class="hidden">← Danh sách</button>
+      <strong id="sessTitle" class="hidden"></strong>
+      <span id="boardStamp" class="muted">đang tải…</span>
+      <span class="spacer"></span>
+      <button type="button" id="btnIngest">Đọc phòng</button>
+      <button type="button" id="btnCycle" class="primary">Chạy 1 vòng</button>
+      <button type="button" id="boardReload">Tải lại</button>
+    </div>
+    <!-- Chỗ trả lời cho mọi nút gửi lệnh. Nó từng tồn tại, bị xoá nhầm cùng
+         đợt gỡ nhánh hộp thư (393db8f, 2026-08-08) trong khi `cmdNote()` vẫn
+         gọi tới — nên từ hôm ấy bấm "Đọc phòng"/"Chạy 1 vòng" là bấm vào hư
+         không: lệnh có đi, mà màn không nói một chữ. Hà 2026-08-10: *"header
+         chung dẫn đến hiện mà bấm không có tác dụng"*.
+         Nằm NGOÀI mọi panel nên nó nói được ở bất cứ tab nào — cùng chỗ với
+         cái nút vừa bấm. -->
+    <p id="cmdStatus" class="muted hidden" role="status" aria-live="polite"></p>
+    <!-- Đoạn này là tài liệu, không phải trạng thái: đọc một lần rồi thôi,
+         nhưng trước đây nó chiếm 5 dòng đầu của MỌI tab. Gấp lại. -->
+    <details class="boardnote">
+      <summary class="muted">Nút bấm ở đây làm gì?</summary>
+      <p class="muted">
+        Mỗi nút gửi đúng một lệnh vào phòng chat (<code>/session</code> ·
+        <code>/new</code> · <code>/ask</code> · <code>/tell</code> ·
+        <code>/stop</code> · <code>/handover</code>), nên mọi thao tác đều để
+        lại dấu vết ở nơi đọc được. Chỉ chủ máy ra lệnh được; huba bỏ qua lệnh
+        của người khác.
+      </p>
+    </details>
+
+    <!-- What `claude` is doing on the Mac right now. Read-only: this screen
+         shows, it does not steer (UC-S01). Previews are already leak-gated in
+         `sessions.rs`, so nothing is re-filtered here. -->
+    <div id="panel-sessions">
+      <div class="panel" id="sessListPanel">
+        <!-- Tab đã tên là "Phiên"; một chữ H2 "Phiên đang chạy" ngay dưới nó
+             chỉ lấy mất một dòng của màn 844px mà không thêm thông tin nào. -->
+        <p class="muted" id="sessSummary">đang tải…</p>
+        <div id="sessNotes"></div>
+        <!-- UC-S06: mở một phiên làm việc mới ngay từ điện thoại. Nó chạy
+             không hỏi ai, nên câu cảnh báo dưới đây là một phần của tính năng
+             chứ không phải trang trí. -->
+        <details id="sessNewBox">
+          <summary>➕ Mở phiên làm việc mới</summary>
+          <!-- Hai hàng: dự án + TÀI KHOẢN chung một hàng, việc + nút Mở một
+               hàng. Ô chọn tài khoản là thứ còn thiếu hẳn — máy có ba tài khoản
+               mà `/new` luôn chạy trên acc1 (Hà nhắc 2026-08-09, đã yêu cầu từ
+               trước và tôi bỏ sót). -->
+          <div class="row-flex" id="sessNewWho">
+            <select id="sessNewProject" aria-label="Dự án"></select>
+            <select id="sessNewAccount" aria-label="Tài khoản"></select>
+          </div>
+          <div class="row-flex">
+            <input type="text" id="sessNewTask" placeholder="Việc cần làm…" autocomplete="off" />
+            <button type="button" id="sessNew">Mở</button>
+          </div>
+          <p class="muted" id="sessNewHint">Phiên nền chạy không hỏi ai — nhớ dừng khi xong.</p>
+        </details>
+        <div id="sessNewNote" class="hidden"></div>
+        <div id="sessList" class="scroll"></div>
+      </div>
+      <!-- closes #sessListPanel -->
+
+      <!-- UC-S02: one session the way the terminal shows it — what was said,
+           every command with its arguments, and every command's output. -->
+      <div class="panel hidden" id="sessDetail">
+        <!-- Nút "← Danh sách" và tên phiên KHÔNG còn ở đây: chúng lên hàng
+             `boardbar`, đứng cùng dòng với "Ảnh chụp lúc…" (Hà 2026-08-09).
+             Lý do thật là chỗ ngồi: trên 390px một hàng riêng chỉ để chứa một
+             nút và một cái tên ngốn ~44px, đẩy nội dung phiên xuống — trong
+             khi hàng ảnh-chụp ngay trên nó còn trống hơn nửa bề ngang. -->
+        <!-- Dòng trạng thái và ô chọn cách hiển thị đã dọn XUỐNG CHÂN TRANG
+             (Hà 2026-08-09): chúng là chú thích về màn, không phải nội dung
+             của phiên, mà lại đứng chắn ngay trên thứ người ta vào để đọc. -->
+        <!-- Luồng phiên đứng TRƯỚC các nút. Màn này để ĐỌC việc đang chạy; đặt
+             "Đóng sổ" và ô hỏi lên đầu thì mỗi lần mở ra phải lướt qua hai
+             thao tác mới tới thứ mình vào xem — và càng nhiều sự kiện, thao
+             tác càng đẩy nội dung xuống xa. -->
+        <!-- MÀN HÌNH SỐNG: chữ đang hiện trên cửa sổ terminal của phiên, tự
+             cập nhật theo ảnh chụp. Đứng TRÊN luồng sự kiện vì nó là hiện tại,
+             còn luồng là quá khứ — và nó là thứ DUY NHẤT nói được rằng phiên
+             đang dừng lại hỏi (nhật ký lúc ấy đứng yên). -->
+        <!-- DẢI TRẠNG THÁI SỐNG — câu đầu tiên khi mở một phiên ra.
+             Hà 2026-08-11: *"cũng chưa có bên trong 1 phiên đang mở"*. Trước đó
+             "đang làm gì" chỉ nằm trong hộp *Thông tin phiên* đang GẤP LẠI, tức
+             muốn biết phiên có chạy không thì phải bấm mở một hộp — trong khi
+             đó đúng là câu hỏi đầu tiên người ta mở màn này để hỏi. -->
+        <div id="sessLive" class="idle"></div>
+        <div id="sessScreenBox" class="hidden">
+          <div id="sessChoices" class="hidden"></div>
+          <pre id="sessScreen"></pre>
+        </div>
+        <div id="sessStream" class="scroll"></div>
+        <!-- UC-S07: đóng sổ phiên này để mở phiên mới làm tiếp. Không giết
+             tiến trình nào — mạch việc nằm ở nhật ký, cái cần là bản bàn giao
+             và id để nối tiếp. -->
+        <!-- MỘT ô nhập, hai việc. Hà 2026-08-09: *"làm gọn 2 input… mặc định
+             là hỏi phiên nếu đó là phiên có thể gõ vào được, còn muốn hỏi bên
+             lề thì tích chọn checkbox"*.
+             Trước đây hai ô đứng cạnh nhau và người dùng phải tự biết ô nào
+             làm gì — trong khi hai việc ấy loại trừ nhau, và với phần lớn
+             phiên thì một trong hai còn KHÔNG dùng được.
+             · nói tiếp = lượt ở lại trên chính phiên đó (phiên DÀI RA)
+             · hỏi bên lề = phiên CÓ cửa sổ thì hỏi thẳng bằng `/btw` (bảng
+               bên trong TUI, nhật ký không dài thêm, ăn ngữ cảnh đang chạy);
+               phiên không gõ vào được thì chạy trên bản sao
+             claude từ chối nối vào phiên nền đang chạy, nên "nói tiếp" chỉ mở
+             cho phiên huba quản được; phiên khác thì ô tự khoá ở chế độ bên lề
+             và nói rõ vì sao. -->
+        <p class="muted boardnote" id="sessAskHint"></p>
+        <!-- Ô nhập GHIM ĐÁY, chỉ nội dung cuộn. Hà 2026-08-09: *"để phần input
+             đứng im thanh cuộn chỉ cuộn nội dung danh sách"*. Dùng `position:
+             sticky` chứ KHÔNG dựng thêm khung cuộn riêng — trang vẫn chỉ có
+             MỘT thanh cuộn, ô nhập chỉ thôi trôi khỏi tầm tay. -->
+        <!-- Câu trả lời đứng TRÊN ô nhập, và ô nhập là phần tử CUỐI. Đặt
+             ngược lại thì đáp án rơi xuống dưới chỗ vừa gõ, và ô nhập ghim đáy
+             bị chính mấy hộp ấy đội lên (đo: đáy 836 → 748px khi cuộn hết). -->
+        <div id="sessTellBox" class="hidden"></div>
+        <div id="sessHandoverBox" class="hidden"></div>
+        <div id="sessAskBox" class="hidden"></div>
+        <div id="sessCompose">
+          <div class="row-flex" id="sessSayRow">
+            <input type="text" id="sessSayInput" placeholder="Nói tiếp vào phiên này…" autocomplete="off" />
+            <button type="button" id="sessSay">Gửi</button>
+          </div>
+          <!-- Một hàng: chế độ bên trái, thao tác dạt phải. -->
+          <div id="sessFootRow">
+            <label class="sess-mode" id="sessAsideLabel">
+              <input type="checkbox" id="sessAside" />
+              <span id="sessAsideText">Hỏi bên lề</span>
+            </label>
+            <!-- Hai nút thao tác nặng nằm cùng chân trang với ô nhập (Hà
+                 2026-08-09): chúng là VIỆC LÀM VỚI PHIÊN, cùng họ với ô nhập,
+                 chứ không phải nội dung để đọc. -->
+            <div class="row-flex" id="sessActs">
+              <button type="button" id="sessHandover" title="Đóng sổ &amp; tiếp tục ở phiên mới">📋 Đóng sổ</button>
+              <!-- Chỉ hiện với phiên do huba mở: huba không lái phiên người khác
+                   mở trong terminal/VS Code (Hà chốt 08-08). -->
+              <button type="button" id="sessStop" class="hidden">⏹ Dừng</button>
+            </div>
+          </div>
+          <!-- Phím điều khiển: hộp chọn của `claude` đi bằng mũi tên + Enter,
+               gửi chữ "xuống" vào đó thì nó gõ ra chữ chứ không di chuyển. Đây
+               là thứ trả lời được một phiên đang dừng lại hỏi — thứ mà tới
+               2026-08-09 từ điện thoại hoàn toàn bó tay. -->
+          <!-- KHÔNG có hàng nút. Hà 2026-08-10: *"bỏ các nút đi… vì tôi muốn
+               mọi thao tác là đồng bộ giống như remote desktop"*. Phím đi thẳng
+               từ bàn phím vào phiên, và màn hình tự phản chiếu về — nút bấm chỉ
+               là một lớp trung gian nữa. Nút 📷 cũng bỏ: màn đã tự cập nhật,
+               không còn gì để "xem". -->
+          <!-- Phím điều khiển: hộp chọn của `claude` đi bằng mũi tên + Enter,
+               gửi chữ "xuống" vào đó thì nó gõ ra chữ chứ không di chuyển. Đây
+               là thứ trả lời được một phiên đang dừng lại hỏi — thứ mà tới
+               2026-08-09 từ điện thoại hoàn toàn bó tay. -->
+          <!-- Chú thích về màn, MỘT hàng, dưới cùng: trạng thái luồng bên trái
+               (cắt đuôi nếu dài), cách hiển thị bên phải. Nó là chú thích, nên
+               nó xuống cuối và không bao giờ được chiếm hai dòng. -->
+          <!-- Lý lịch phiên: gấp sẵn để không đẩy luồng xuống, mở một chạm khi
+               cần đối chiếu. Số liệu vốn đã đi kèm ảnh chụp.
+               ⚠ Khối này NẰM NGOÀI `#sessNote`, và chỗ đứng ấy là cả một con
+               bug: `#sessNote` là một HÀNG NGANG (`display:flex; nowrap`) dựng
+               cho hai thứ — dòng trạng thái co giãn và ô tích "kiểu terminal".
+               Bản trước nhét `<details>` vào trong hàng ấy, nên nó thành đứa con
+               thứ ba và bị bóp còn **108px trên màn 390px**: mọi giá trị gãy
+               dòng, đường dẫn vỡ giữa từ, nửa phải màn bỏ trống. Không assert
+               nào bắt được vì tất cả đều đọc CHỮ, mà chữ thì vẫn đủ — chỉ mở
+               ảnh ra nhìn mới thấy (Hà 2026-08-10: *"tự mở playwright lên"*). -->
+          <details id="sessInfoBox">
+            <summary class="muted">Thông tin phiên</summary>
+            <div id="sessInfo" class="rt"></div>
+          </details>
+          <div id="sessNote">
+            <p class="muted" id="sessStatus"></p>
+            <label class="term-toggle muted">
+              <input type="checkbox" id="termMode" checked />
+              <span>kiểu terminal</span>
+            </label>
+          </div>
+        </div>
+
+      </div>
+    </div>
+    <!-- Bong bóng cuộn nhanh (Hà 2026-08-09). Luồng một phiên dài vài nghìn
+         pixel; vuốt tay từ giữa về đầu hay về cuối là việc lặp đi lặp lại.
+         Đặt `fixed` để không dính vào ô nhập ghim đáy, và tự ẩn từng nút khi
+         đã ở sẵn đầu/cuối — một nút bấm mà không đi đâu là một nút nói dối. -->
+    <div id="scrollDock" class="hidden" aria-hidden="true">
+      <!-- Viền bong bóng khép dần theo tỉ lệ đã cuộn (Hà 2026-08-09), nên nó
+           vừa là nút vừa là thước đo "đang ở đoạn nào của luồng". -->
+      <span class="dock-ring" id="dockRingTop"><button type="button" id="dockTop" title="Lên đầu">↑</button></span>
+      <span class="dock-ring" id="dockRingEnd"><button type="button" id="dockEnd" title="Xuống cuối">↓</button></span>
+    </div>
+
+    <!-- Same shape as the console: ask-box on top, then list + detail. -->
+    <div class="hidden" id="panel-chat">
+      <div class="panel keep">
+        <h2>Trao đổi <span class="muted" id="head"></span></h2>
+        <div class="wrap hidden" id="thread">
+          <div class="msg" id="pending">
+            <div class="who">huba</div>
+            <div class="body"><span class="dots"><i></i><i></i><i></i></span> đang xử lý — câu trả lời cần người duyệt trước khi gửi</div>
+          </div>
+        </div>
+        <div class="hidden" id="foot">
+          <form class="composer" id="composer">
+            <textarea id="text" placeholder="Viết câu hỏi… (Enter để gửi)" rows="1"></textarea>
+            <button type="submit" id="send">Gửi</button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div class="hidden" id="panel-health">
+      <div class="panel">
+        <h2>Kênh &amp; công cụ</h2>
+        <div id="runtimeBox"></div>
+        <div id="healthProbe" class="muted"></div>
+        <button type="button" id="btnDoctor" style="margin-top:12px">Kiểm tra</button>
+      </div>
+      <div class="panel">
+        <h2>Lần poll gần đây <span id="runsSummary" class="muted"></span></h2>
+        <div class="scroll">
+          <table id="runsTable">
+            <!-- Ba cột, không phải năm. Trên 390px, năm cột đẩy hai cột cuối ra
+                 khỏi màn (thấy trên ảnh v62): người đọc tưởng bảng chỉ có bấy
+                 nhiêu. Cột "kênh" bỏ hẳn vì tfl5 là kênh DUY NHẤT còn lại —
+                 một cột hằng số không phân biệt được dòng nào với dòng nào.
+                 Lỗi không nhét vào cột hẹp mà xuống hẳn một dòng riêng. -->
+            <thead><tr><th>lúc</th><th>kết quả</th><th>mới</th></tr></thead>
+            <tbody id="runsRows"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="hidden" id="panel-config">
+      <div class="panel">
+        <h2>Kênh</h2>
+        <div class="grid g2" id="cfgChannels"></div>
+        <div class="grid g2" id="cfgChannelFields" style="margin-top:12px"></div>
+        <p class="muted boardnote" style="margin-top:10px">
+          Token/API key <strong>không</strong> lưu ở đây — chỉ lưu <em>tên biến môi trường</em>.
+          Thiếu biến thì adapter tự skip và ghi log.
+        </p>
+      </div>
+
+      <div class="panel">
+        <h2>Vòng chạy</h2>
+        <div class="grid g3" id="cfgLoop"></div>
+        <p class="muted boardnote" style="margin-top:10px">
+          huba đọc phòng theo chu kỳ này; khi đang theo một phiên thì nhanh hơn.
+        </p>
+      </div>
+
+      <div class="panel">
+        <h2>Ai ra lệnh được</h2>
+        <div class="grid g2" id="cfgTrust"></div>
+        <p class="muted boardnote" style="margin-top:8px">
+          Vào phòng được là quyết định của tfl5. Ra lệnh cho máy này là quyết định của bạn —
+          hai danh sách tách nhau có chủ đích. Ai không có trong danh sách này thì gõ
+          <code>/new</code> cũng chỉ là gõ chữ.
+        </p>
+      </div>
+
+      <!-- Nút Lưu đứng NGAY SAU các trường, TRƯỚC bãi JSON. Trước đây nó nằm
+           tít dưới cùng: sửa một ô ở trên rồi phải cuộn qua ~800px JSON thô mới
+           tới chỗ bấm Lưu (rà 2026-08-09). -->
+      <div class="panel">
+        <div class="row-flex">
+          <button type="button" id="cfgSave" class="primary">Lưu cấu hình</button>
+          <span id="cfgMsg" class="muted"></span>
+        </div>
+        <p class="muted boardnote">
+          Tệp: <span id="configFile" class="mono"></span> · mỗi thay đổi đi qua phòng chat
+          dưới dạng <code>/set &lt;trường&gt; &lt;giá trị&gt;</code> và được huba kiểm tra kiểu
+          + validate trước khi ghi.
+        </p>
+        <!-- JSON thô GẤP LẠI: nó là bản đối chiếu khi nghi ngờ, không phải thứ
+             đọc mỗi lần mở tab — mở ra là hàng trăm dòng nuốt cả màn. -->
+        <details id="configRaw">
+          <summary class="muted">Xem JSON thô</summary>
+          <pre id="configBody"></pre>
+        </details>
+      </div>
+    </div>
+  </section>
+</main>
+
+
+<script>
+(() => {
+  'use strict';
+
+  // The app this page belongs to is the subdomain it is served from
+  // (`<app_tid>.test.localhost` / `<app_tid>.test.tafalo.com`), so the bundle
+  // is not pinned to one tenant at build time.
+  const appTid = location.hostname.split('.')[0];
+  const room = new URLSearchParams(location.search).get('room') || 'huba';
+
+  const $ = (id) => document.getElementById(id);
+  // The panels, read off the markup instead of copied into a literal. The copy
+  // went stale the moment the "Chi phí" tab was deleted (2026-08-08): both
+  // call sites still listed 'cost', so `$('panel-cost')` came back null and the
+  // very first `.classList` threw — no panel would show at all. A list derived
+  // from the tabs cannot drift from the tabs.
+  const PANELS = [...document.querySelectorAll('#panelTabs button[data-panel]')].map(
+    (b) => b.dataset.panel
+  );
+  const statusEl = $('status');
+  const thread = $('thread');
+  const pending = $('pending');
+  const head = $('head');
+
+  // The full app tid is 38 characters and ate two header lines on a phone —
+  // the room name is what a person needs, the id is for support. Keep the id
+  // reachable (title + long-press) without spending the top of the screen.
+  $('roomLabel').textContent = room;
+  $('roomLabel').title = appTid;
+
+  let me = null;
+  let ws = null;
+  let seen = new Set();
+  // `stopped` latches when the server gave a final answer (no permission, or
+  // signed out): reconnecting would just repeat the same refusal.
+  let stopped = false;
+  let retryMs = 3000;
+  let lostNoteShown = false;
+
+  const setStatus = (state, label) => {
+    statusEl.dataset.state = state;
+    statusEl.textContent = label;
+  };
+
+  const fmtTime = (ms) => {
+    const d = new Date(ms);
+    return d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+  };
+
+  function addMessage({ tid, from, text, ts }) {
+    // The same row can arrive twice: once from history, once from the bus.
+    if (tid && seen.has(tid)) return;
+    if (tid) seen.add(tid);
+    // A reply carries `↩[tid]` at the front (tfl5's chat has no reply field).
+    // Show it as a quote and keep the plumbing out of sight.
+    const m = /^↩\[([^\]]+)\]\s*/.exec(text || '');
+    const parentTid = m ? m[1] : null;
+    const shown = m ? (text || '').slice(m[0].length) : (text || '');
+    if (tid) msgText.set(tid, shown);
+
+    const el = document.createElement('div');
+    el.className = 'msg' + (from === me ? ' mine' : '');
+    if (tid) el.dataset.tid = tid;
+    const who = document.createElement('div');
+    who.className = 'who';
+    who.innerHTML = `<span>${escapeHtml(from || '?')}</span><span>${fmtTime(ts)}</span>`;
+    el.append(who);
+
+    if (parentTid) {
+      const quote = document.createElement('div');
+      quote.className = 'quote';
+      quote.textContent = '↩ ' + (msgText.get(parentTid) || 'tin trước đó').slice(0, 90);
+      el.append(quote);
+    }
+
+    const body = document.createElement('div');
+    body.className = 'body';
+    body.textContent = shown;
+    el.append(body);
+
+    // Reply = "this is about that". No command to remember, and huba inherits
+    // the project of the message being answered.
+    // Nút "↩ Trả lời" trên MỌI tin đã bỏ (rà 2026-08-09).
+    //
+    // Nó là di sản của sản phẩm hộp thư, nơi mỗi tin là một VIỆC và trả lời
+    // đúng việc nào là chuyện quan trọng. Phòng này chỉ có hai người nói: chủ
+    // máy và huba. Đo được: 51 nút trên một màn, mỗi nút một vùng chạm 35px,
+    // và không lần nào cần tới — huba thừa hưởng dự án từ tin trước đó rồi.
+    void tid;
+
+    // Một dòng bắt đầu bằng `/` và do chính chủ máy gửi là LỆNH của trang,
+    // không phải câu nói. Nhận ra bằng hình dạng chứ không bằng cờ: trang gửi
+    // lệnh qua cùng một đường với tin thường, nên không có cờ nào để đọc.
+    if (/^\/[a-z]/.test((shown || '').trim())) el.classList.add('cmdline');
+
+    thread.insertBefore(el, pending);
+    scrollDown();
+  }
+
+  /// tid → the text as displayed, so a quote can show what is being answered.
+  const msgText = new Map();
+  function note(text, bad) {
+    const el = document.createElement('div');
+    el.className = 'note' + (bad ? ' bad' : '');
+    el.textContent = text;
+    thread.insertBefore(el, pending);
+    scrollDown();
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  /// Khối THẬT SỰ cuộn được cho `el`: chính nó, hoặc tổ tiên gần nhất.
+  ///
+  /// Trên điện thoại các khung trong đã bỏ trần chiều cao (xem media query),
+  /// nên `el.scrollTop = el.scrollHeight` thành lệnh rỗng — bám đáy phải cuộn
+  /// đúng cái đang cuộn, chứ không cuộn cái mình MONG là đang cuộn.
+  function scrollerFor(el) {
+    let n = el;
+    while (n && n !== document.body) {
+      const cs = getComputedStyle(n);
+      if (/(auto|scroll)/.test(cs.overflowY) && n.scrollHeight > n.clientHeight + 2) return n;
+      n = n.parentElement;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+
+  /// Đáy của `el` đang trong tầm nhìn? (dùng cho cả hai kiểu cuộn)
+  function atBottomOf(el) {
+    const sc = scrollerFor(el);
+    // Đo trên KHUNG CUỘN, không đo mép dưới của khối nội dung: khối luồng kết
+    // thúc phía trên ô nhập ghim đáy, nên "mép dưới đã vào tầm nhìn" là đúng
+    // ngay cả khi còn cả trăm pixel chưa cuộn tới. Ngưỡng nới lên 72px để cái
+    // ô nhập ấy không tự biến người đang ở đáy thành người đã cuộn lên.
+    // 24px: đủ để bù sai số làm tròn, KHÔNG đủ để coi người vừa cuộn lên một
+    // đoạn là đang ở đáy. Ngưỡng 72px của bản trước biến mọi lần làm mới gần
+    // đáy thành một cú kéo xuống.
+    return sc.scrollHeight - sc.scrollTop - sc.clientHeight < 24;
+  }
+
+  /// Đưa dòng cuối của `el` vào tầm nhìn, dù `el` tự cuộn hay trang cuộn.
+  function stickToBottom(el) {
+    // KHÔNG dán đáy cho thứ đang không ở trên màn. Bốn tab dùng chung khung
+    // cuộn `main`, nên `stickToBottom(thread)` lúc tab Trao đổi đang ẩn sẽ kéo
+    // TAB ĐANG XEM xuống đáy. Đó là điều Hà thấy 2026-08-10: *"danh sách phiên
+    // bấm nút nào nó cũng kéo xuống cuối trang"* — bấm nút gửi một lệnh, huba trả
+    // lời trong phòng, mỗi tin mới gọi `scrollDown()`, và `sendCommand` còn làm
+    // mới thêm 8 lượt trong 40 giây nên nó giật đi giật lại.
+    //
+    // `offsetParent === null` nghĩa là có tổ tiên `display:none` — đúng trạng
+    // thái của panel bị ẩn. Đặt chốt Ở ĐÂY chứ không ở từng chỗ gọi: có bốn chỗ
+    // gọi và chỗ thứ năm sẽ quên.
+    if (!el.offsetParent) return;
+    const sc = scrollerFor(el);
+    // Cuộn tới ĐÁY THẬT của khung cuộn, không phải "đưa dòng cuối vào tầm
+    // nhìn". `scrollIntoView({block:'nearest'})` KHÔNG làm gì khi dòng ấy đã
+    // hơi ló ra — mà "hơi ló" là đúng trạng thái khi ô nhập ghim đáy che mất
+    // 132px cuối. Kết quả: có nội dung mới mà màn đứng im, đúng như Hà thấy
+    // (2026-08-09).
+    sc.scrollTop = sc.scrollHeight;
+  }
+
+  function scrollDown() {
+    stickToBottom(thread);
+  }
+
+  async function api(path, body) {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(body || {}),
+    });
+    let data = null;
+    try { data = await res.json(); } catch (_) { /* handled below */ }
+    if (!data) {
+      const e = new Error(`${path}: máy chủ trả về nội dung không đọc được (HTTP ${res.status})`);
+      e.status = res.status;
+      throw e;
+    }
+    // tfl5 answers some failures with HTTP 200 + {result:false} for wire
+    // compat, and answers 401 with {result:TRUE, code:"unauthorized"} — so
+    // neither the status nor `result` alone is the verdict. Read both, and
+    // carry `code` on the error: the caller needs to tell "you are not signed
+    // in" from "you are signed in but this app is not yours".
+    if (data.result === false || res.status >= 400) {
+      const e = new Error(data.msg || data.code || `${path} thất bại (HTTP ${res.status})`);
+      e.code = data.code || null;
+      e.status = res.status;
+      throw e;
+    }
+    return data;
+  }
+
+  // A refusal is not an outage. These two codes mean "the server understood
+  // you and said no" — retrying cannot change the answer, so the UI must stop
+  // and say what to do instead of blinking "reconnecting" forever.
+  const isDenied = (e) => e && e.code === 'access_denied';
+  const isSignedOut = (e) => e && (e.code === 'unauthorized' || e.status === 401);
+
+  /// Everything that happens once we know who the user is. Shared by the
+  /// login submit and the session restore below so the two can never drift.
+  async function enterRoom(username) {
+    me = username;
+    $('login').classList.add('hidden');
+    thread.classList.remove('hidden');
+    $('foot').classList.remove('hidden');
+    $('board').classList.remove('hidden');
+    // History and the socket sit behind the SAME permission gate, so if
+    // history says "no", opening the socket can only produce a close event
+    // with no reason attached. Ask once, here, where the answer is readable.
+    if (!(await loadHistory())) return;
+    connect();
+    // Pull the snapshot once on entry so the header can say which project this
+    // room is about — that has to be visible from the chat tab, not only after
+    // opening the board.
+    loadBoard();
+    goPanel(panel);
+    // Vòng tự làm mới phải móc vào ĐÂY. Bản v70 móc nó vào `showTab()` — một
+    // hàm KHÔNG CÓ CHỖ NÀO GỌI, nên nó chưa từng chạy: đo 2026-08-09, 40 giây
+    // đứng ở tab Phiên sinh **0** lần đọc ảnh chụp. Tôi đã báo là "danh sách tự
+    // làm mới 15s/lần"; sai. *Móc xong phải ĐO thấy nó chạy, đừng tin vào việc
+    // mình đã gọi hàm.*
+    startBoardPoll();
+    // Lần dựng đầu: ghi trạng thái vào địa chỉ mà KHÔNG đẩy thêm một bước —
+    // người dùng chưa "đi" đâu cả, họ vừa mở trang.
+    writeUrl({ tab: panel, session: urlGet('session') }, false);
+  }
+
+  // Nút Back của trình duyệt là một cái menu nữa: nó phải đưa về đúng màn
+  // trước đó, không phải nhảy ra khỏi app.
+  window.addEventListener('popstate', () => {
+    const tab = urlGet('tab');
+    if (tab && PANELS.includes(tab) && tab !== panel) goPanel(tab);
+    const want = urlGet('session') || null;
+    if (want === wantSession) return;
+    if (!want) {
+      // Quay về danh sách: thôi theo phiên, đúng như bấm "← Danh sách".
+      if (wantSession && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'msg', text: '/session -' }));
+      }
+      wantSession = null;
+      clearInterval(streamPoll);
+      $('sessDetail').classList.add('hidden');
+      $('sessListPanel').classList.remove('hidden');
+      clearHeadSession();
+      return;
+    }
+    const found = (lastSnap && (lastSnap.sessions || {}).list || []).find((r) => r.session_id === want);
+    if (found) openSession(found, { fromUrl: true });
+  });
+
+  /// The room refused this account. Nothing to retry: say who was refused,
+  /// on what, and what fixes it — then stop.
+  function denied(detail) {
+    stopped = true;
+    setStatus('off', 'không có quyền');
+    $('foot').classList.add('hidden');
+    // The board reads through the same app ACL, so it would refuse too — but
+    // the conversation panel has to stay: it holds this message and the button
+    // out of here.
+    $('board').classList.remove('hidden');
+    $('board').classList.add('denied');
+    thread.classList.remove('hidden');
+    // The explanation and the way out live in the conversation panel.
+    PANELS.forEach((p) => {
+      $(`panel-${p}`).classList.toggle('hidden', p !== 'chat');
+    });
+    head.textContent = '';
+    note(
+      `Tài khoản "${me}" chưa được cấp quyền vào phòng "${room}" của app ${appTid}` +
+      (detail ? ` (${detail})` : '') +
+      '. Nhờ người quản trị app thêm bạn vào mục "Can view" rồi tải lại trang.',
+      true
+    );
+    // Without this the page is a dead end: the cookie is still valid, so a
+    // reload lands on the same refusal with no way to try another account.
+    const again = document.createElement('button');
+    again.id = 'switchUser';
+    again.textContent = 'Đăng nhập bằng tài khoản khác';
+    again.addEventListener('click', async () => {
+      again.disabled = true;
+      try {
+        await api('/logout', {});
+      } catch (ex) {
+        note(`Đăng xuất không thành công: ${ex.message}`, true);
+        again.disabled = false;
+        return;
+      }
+      location.reload();
+    });
+    thread.insertBefore(again, pending);
+    scrollDown();
+  }
+
+  /// The session is gone (expired cookie, password change). Put the login
+  /// form back instead of pretending the network is down.
+  function signedOut() {
+    stopped = true;
+    me = null;
+    setStatus('off', 'chưa đăng nhập');
+    $('foot').classList.add('hidden');
+    thread.classList.add('hidden');
+    $('board').classList.add('hidden');
+    $('login').classList.remove('hidden');
+    const err = $('loginErr');
+    err.textContent = 'Phiên đăng nhập đã hết hạn — đăng nhập lại.';
+    err.classList.remove('hidden');
+  }
+
+  // ---- restore an existing session --------------------------------------
+  // The `_token` cookie outlives the tab. Without this, every reload dumped
+  // the user back on the login form while they were already authenticated —
+  // caught by the smoke test on the deployed bundle, not in review.
+  async function restore() {
+    try {
+      const r = await api('/user', {});
+      if (r && r.user && r.user.username) {
+        await enterRoom(r.user.username);
+        return true;
+      }
+    } catch (ex) {
+      // No session — the login form is the right answer, quietly. Anything
+      // else (server down, unreadable body) must NOT masquerade as "please
+      // log in"; that reading cost a session of debugging on 2026-08-07.
+      if (!isSignedOut(ex)) {
+        thread.classList.remove('hidden');
+        head.textContent = '';
+        note(`Không kiểm tra được phiên đăng nhập: ${ex.message}`, true);
+      }
+    }
+    return false;
+  }
+
+  // ---- login -------------------------------------------------------------
+  $('login').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = $('loginBtn');
+    const err = $('loginErr');
+    err.classList.add('hidden');
+    btn.disabled = true;
+    try {
+      const r = await api('/login', { username: $('u').value, password: $('p').value });
+      await enterRoom(r.user && r.user.username);
+    } catch (ex) {
+      err.textContent = ex.message;
+      err.classList.remove('hidden');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // ---- history -----------------------------------------------------------
+  /// Returns false when the caller must NOT go on to open the socket.
+  async function loadHistory() {
+    try {
+      const r = await api('/app/chat/history', { app_tid: appTid, room, limit: 50 });
+      const rows = (r.messages || []).slice().reverse();
+      // With the conversation inside a scrolling panel, "đầu hội thoại" is
+      // noise on every load; only the empty case is worth a line.
+      head.textContent = rows.length ? '' : 'Chưa có tin nào. Hỏi gì đó đi.';
+      rows.forEach(addMessage);
+      return true;
+    } catch (ex) {
+      head.textContent = '';
+      if (isDenied(ex)) { denied(ex.message); return false; }
+      if (isSignedOut(ex)) { signedOut(); return false; }
+      // Anything else (server down, 500, bad JSON) IS worth a retry, so the
+      // socket still gets its chance — but the reason stays on screen.
+      note(`Không tải được hội thoại: ${ex.message}`, true);
+      return true;
+    }
+  }
+
+  // ---- live socket -------------------------------------------------------
+  //
+  // A WebSocket `close` carries no HTTP status: a 403 upgrade refusal and a
+  // yanked network cable look identical here. Before 2026-08-07 both printed
+  // "Mất kết nối, đang thử lại…" every 3s forever, so an account without
+  // permission was told the wrong thing, endlessly. Now a close asks the REST
+  // twin (same auth gate) what actually happened, and only a genuine outage
+  // retries — with backoff, and saying so once.
+  function connect() {
+    if (stopped) return;
+    setStatus('wait', 'đang kết nối');
+    const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+    const url = `${scheme}://${location.host}/ws/chat?app_tid=${encodeURIComponent(appTid)}&room=${encodeURIComponent(room)}`;
+    ws = new WebSocket(url);
+
+    ws.addEventListener('open', () => {
+      retryMs = 3000;
+      lostNoteShown = false;
+      setStatus('on', 'đang mở');
+    });
+    ws.addEventListener('message', (ev) => {
+      let f;
+      try { f = JSON.parse(ev.data); } catch (_) { return; }
+      if (f.type === 'msg') {
+        // Anything from someone else answers the pending state.
+        if (f.from !== me) pending.classList.remove('on');
+        noteSessionReply(f);
+        addMessage(f);
+      } else if (f.type === 'error') {
+        // Never swallow a rejection: the row did NOT get written.
+        pending.classList.remove('on');
+        note(`Máy chủ từ chối: ${f.msg || f.code || 'không rõ lý do'}`, true);
+      }
+    });
+    ws.addEventListener('close', async () => {
+      if (stopped) return;
+      setStatus('off', 'mất kết nối');
+      const verdict = await whyClosed();
+      if (verdict === 'denied') return;     // `denied()` already explained it
+      if (verdict === 'signed-out') return; // `signedOut()` already did
+      // A real outage: say it once, then back off instead of hammering the
+      // server (and the log) every 3 seconds.
+      if (!lostNoteShown) {
+        note('Mất kết nối, đang thử lại…');
+        lostNoteShown = true;
+      }
+      setTimeout(connect, retryMs);
+      retryMs = Math.min(retryMs * 2, 30000);
+    });
+    ws.addEventListener('error', () => setStatus('off', 'lỗi kết nối'));
+  }
+
+  /// Ask the REST endpoint that sits behind the SAME gate as the socket why
+  /// the socket is gone. Returns 'denied' | 'signed-out' | 'outage'.
+  async function whyClosed() {
+    try {
+      await api('/app/chat/history', { app_tid: appTid, room, limit: 1 });
+      return 'outage';
+    } catch (ex) {
+      if (isDenied(ex)) { denied(ex.message); return 'denied'; }
+      if (isSignedOut(ex)) { signedOut(); return 'signed-out'; }
+      return 'outage';
+    }
+  }
+
+  // ---- board: the console's read-only view, read from tfl5 ---------------
+  //
+  // The data is a snapshot `hubad` writes into this app's `hub_status`
+  // resource. Reading it goes through the app's own ACL (Reader+), same
+  // origin, same cookie — the loopback console at :9200 is never contacted,
+  // so nothing here can drive an approval.
+  const RESOURCE_MA = 'hub_status';
+  let boardLoaded = false;
+  // Hai dạng của cùng một dấu thời gian: đầy đủ cho màn danh sách, ngắn cho
+  // head khi đang mở phiên (head còn phải chứa nút quay ra + tên phiên).
+  let stampFull = '';
+  let stampShort = '';
+
+  const fmtStamp = (iso) => {
+    const d = new Date(iso);
+    return isNaN(d) ? String(iso || '?') : d.toLocaleString('vi-VN');
+  };
+  const fmtAge = (iso) => {
+    if (!iso) return '—';
+    const then = new Date(iso).getTime();
+    if (isNaN(then)) return '—';
+    const mins = Math.max(0, Math.round((Date.now() - then) / 60000));
+    if (mins < 60) return `${mins}p`;
+    if (mins < 1440) return `${Math.round(mins / 60)}h`;
+    return `${Math.round(mins / 1440)}n`;
+  };
+
+  // `showTab()` từng ở đây và KHÔNG AI GỌI — mã chết, nhưng đủ giống thật để
+  // tôi móc vòng tự-làm-mới vào nó và tưởng xong (v70→v83). Xoá hẳn: đường vào
+  // phòng duy nhất là `enterRoom()`.
+
+  /// Màn theo dõi phải tự làm mới, nếu không nó là ảnh chụp một lần rồi thôi.
+  ///
+  /// Lỗi thật, bắt được 2026-08-09 khi `/new` lần đầu chạy qua được hộp thoại
+  /// MCP: bấm "Mở phiên mới" xong thì phiên KHÔNG BAO GIỜ hiện lên danh sách.
+  /// Lý do: cả trang chỉ có đúng một cú `loadBoard()` sau 6 giây kể từ lúc gửi
+  /// lệnh, mà huba cần tới ~14 giây mới dựng xong phiên nền (nó còn phải rình
+  /// xem phiên có kẹt ở hộp thoại không). Sau 6 giây ấy thì không còn gì làm
+  /// mới danh sách nữa — người dùng phải bấm "Tải lại" hoặc F5 mới thấy.
+  ///
+  /// Vòng làm mới này KHÔNG tốn hạn mức: nó đọc một tài liệu tfl5 đã có sẵn,
+  /// không gọi `claude`. Dừng khi tab bị ẩn (điện thoại khoá màn hình) và khi
+  /// đang theo một phiên — đường đó đã có vòng 4 giây riêng.
+  const BOARD_REFRESH_MS = 15000;
+  let boardPoll = null;
+  function stopBoardPoll() { clearInterval(boardPoll); boardPoll = null; }
+  function startBoardPoll() {
+    stopBoardPoll();
+    boardPoll = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      if (wantSession) return;                 // màn chi tiết tự lo, 4s/lần
+      if (panel !== 'sessions') return;        // tab khác thì không cần
+      loadBoard();
+    }, BOARD_REFRESH_MS);
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && panel === 'sessions' && !wantSession) loadBoard();
+  });
+
+  $('boardReload').addEventListener('click', () => loadBoard());
+  $('btnIngest').addEventListener('click', (e) => sendCommand('/ingest', e.target));
+  $('btnCycle').addEventListener('click', (e) => sendCommand('/run', e.target));
+  $('btnDoctor').addEventListener('click', (e) => sendCommand('/doctor', e.target));
+
+  // "Hỏi huba": an ordinary message, not a command — it goes through triage
+  // exactly like anything else typed in the room, which is the point.
+  async function loadBoard() {
+    const stamp = $('boardStamp');
+    stamp.textContent = 'đang tải…';
+    let snap;
+    try {
+      const r = await api('/app/doc/list', { app_tid: appTid, resource_ma: RESOURCE_MA, limit: 1 });
+      const row = (r.data || [])[0];
+      snap = row && row.data && row.data.snapshot;
+    } catch (ex) {
+      // A resource that does not exist yet is the "huba has never pushed"
+      // case, not a failure of this page — say which one it is.
+      stamp.textContent = isDenied(ex)
+        ? 'Bạn không có quyền xem bảng này.'
+        : `Không tải được: ${ex.message}`;
+      return;
+    }
+    if (!snap) {
+      stamp.textContent = 'huba chưa đẩy dữ liệu lên (chạy: huba portal-push).';
+      return;
+    }
+    if (snap.schema > 4) {
+      stamp.textContent = `Bản dữ liệu mới hơn trang này (schema ${snap.schema}) — cập nhật bundle.`;
+      return;
+    }
+    boardLoaded = true;
+    lastSnap = snap;
+    // UC-S09 — the page can only ever show what huba last pushed, so it has to
+    // say HOW OLD that is. A timestamp alone reads as "now" to anyone not doing
+    // arithmetic, which is exactly the wrong answer when hubad is dead: the
+    // screen would keep showing yesterday's sessions as if they were live.
+    // hubad cycles every ~120s (4s while following a session), so anything past
+    // 5 minutes means it is not running.
+    const ageMin = (Date.now() - Date.parse(snap.generated_at)) / 60000;
+    const stale = !(ageMin < 5);   // NaN (unparseable stamp) counts as stale
+    // Trong một phiên, head phải chứa cả nút quay ra + tên phiên, nên dấu
+    // thời gian rút về đúng phần người ta cần liếc: ảnh chụp CŨ bao lâu. Bản
+    // đầy đủ giữ cho màn danh sách, nơi hàng này chỉ có mình nó.
+    stampFull = `Ảnh chụp lúc ${fmtStamp(snap.generated_at)} (${agoOf(snap.generated_at)})`;
+    stampShort = agoOf(snap.generated_at);
+    const when = wantSession ? stampShort : stampFull;
+    stamp.classList.toggle('stale', stale);
+    stamp.textContent = stale
+      ? `⚠ huba chưa đẩy dữ liệu mới — ${when}. Số dưới đây là của lúc đó, không phải bây giờ.`
+      : when;
+    renderSessions(snap.sessions || {});
+    renderProjectPicker((snap.config || {}).projects);
+    renderHealth(snap.health || {});
+    renderRuntime(snap.runtime);
+    renderConfig(snap.config || {});
+  }
+
+  // ---- sub-panels ---------------------------------------------------------
+  //
+  // ĐỊA CHỈ LÀ TRẠNG THÁI. Trước đây tab nằm trong localStorage: URL không đổi
+  // khi bấm, nút Back của trình duyệt nhảy ra khỏi app, và gửi link cho chính
+  // mình thì mở ra một màn khác. Nay tab và phiên đang theo đều nằm trong query
+  // (`?room=huba&tab=phien&session=<id>`), nên F5 về đúng chỗ đang làm, Back đi
+  // ngược đúng thứ tự, và một cái link mở đúng cái người gửi đang nhìn.
+  //
+  // Query chứ không phải hash: trang này đã đọc `?room=` từ trước, giữ một quy
+  // ước thay vì hai.
+  const url = () => new URL(location.href);
+  const urlGet = (k) => url().searchParams.get(k);
+
+  /// Ghi trạng thái vào địa chỉ. `push` cho một thao tác của người (bấm tab, mở
+  /// phiên) để Back quay lại được; `replace` cho lần dựng đầu, thứ người dùng
+  /// không "đi tới".
+  function writeUrl({ tab, session }, push) {
+    const u = url();
+    if (tab) u.searchParams.set('tab', tab);
+    if (session) u.searchParams.set('session', session);
+    else u.searchParams.delete('session');
+    const next = u.pathname + u.search;
+    if (next === location.pathname + location.search) return;
+    history[push ? 'pushState' : 'replaceState']({ tab, session: session || null }, '', next);
+  }
+
+  let panel = (() => {
+    // Địa chỉ trước, rồi mới tới lựa chọn ghi nhớ, rồi mới tới mặc định —
+    // "Phiên" là màn Hà mở điện thoại lên để xem.
+    const fromUrl = urlGet('tab');
+    if (fromUrl && PANELS.includes(fromUrl)) return fromUrl;
+    try { return localStorage.getItem('huba.panel') || 'sessions'; } catch (_) { return 'sessions'; }
+  })();
+  let lastSnap = null;
+
+  /// Bốn tab dùng CHUNG một khung cuộn (`main`), nên chỗ đang đứng của tab này
+  /// là chỗ mở đầu của tab kia. Đo 2026-08-10, đúng thứ Hà tả *"các ui theo menu
+  /// đang bị ảnh hưởng nhau … luôn bị nhảy cuộn xuống cuối trang"*:
+  ///
+  /// | thao tác | `main.scrollTop` / tối đa |
+  /// |---|---|
+  /// | mở tab Phiên | 0 / 148 |
+  /// | sang Trao đổi (tự dán đáy) | **3006 / 3006** |
+  /// | sang Sức khoẻ ngay sau đó | **68 / 68** ⇒ mở ra đã ở ĐÁY |
+  /// | sang Cấu hình | 68 / 589 |
+  /// | quay lại Phiên | 68 / 148 |
+  ///
+  /// Gốc: `stickToBottom(thread)` đặt `scrollTop = scrollHeight` trên khung cuộn
+  /// tìm được — và khung ấy là `main`, không phải riêng luồng chat. Không sửa
+  /// bằng cách bỏ dán đáy (chat PHẢI dán đáy), mà bằng cách cho mỗi tab một
+  /// chỗ đứng riêng.
+  const scrollMemory = Object.create(null);
+  const mainEl = () => document.querySelector('main');
+  function rememberScroll(p) {
+    const m = mainEl();
+    if (m && p) scrollMemory[p] = m.scrollTop;
+  }
+  function restoreScroll(p) {
+    const m = mainEl();
+    if (!m) return;
+    // Sau khi đổi lớp `hidden`, chiều cao mới chưa được tính xong — đặt
+    // `scrollTop` ngay lúc này thì trình duyệt kẹp nó về tối đa CŨ. Chờ một
+    // khung hình rồi mới đặt.
+    requestAnimationFrame(() => { m.scrollTop = scrollMemory[p] || 0; });
+  }
+
+  $('panelTabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-panel]');
+    if (!btn) return;
+    rememberScroll(panel);
+    panel = btn.dataset.panel;
+    try { localStorage.setItem('huba.panel', panel); } catch (_) { /* private mode */ }
+    // Giữ id phiên trong địa chỉ cho tới khi trang dựng lại xong.
+    //
+    // Lúc mở trang, `goPanel()` bấm tab bằng mã và chạy đúng handler này — khi
+    // đó `wantSession` còn null vì ảnh chụp chưa về, nên ghi thẳng nó vào địa
+    // chỉ là XOÁ MẤT phiên người dùng đang theo, ngay trước khi khôi phục. Đó
+    // chính là con F5-mất-chỗ mà kịch bản bắt được (2026-08-09).
+    writeUrl(
+      { tab: panel, session: wantSession || (restoredFromUrl ? null : urlGet('session')) },
+      true
+    );
+    [...$('panelTabs').querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b === btn));
+    PANELS.forEach((p) => {
+      $(`panel-${p}`).classList.toggle('hidden', p !== panel);
+    });
+    $('board').classList.toggle('on-sessions', panel === 'sessions');
+    // The composer lives in the conversation panel; make sure it is usable the
+    // moment that panel is on screen, whatever order things loaded in.
+    if (panel === 'chat' && me && !stopped) {
+      $('foot').classList.remove('hidden');
+      thread.classList.remove('hidden');
+      // Trao đổi là tab DUY NHẤT có lý do dán đáy: tin mới nằm dưới cùng.
+      scrollDown();
+    } else {
+      restoreScroll(panel);
+    }
+  });
+
+  // UC-S01 — every Claude CLI session alive on the Mac, newest activity first.
+  // Built with DOM calls rather than innerHTML: session names and previews are
+  // text the machine produced, and this screen must never be able to run it.
+  function renderSessions(sessions) {
+    const list = $('sessList');
+    const notes = $('sessNotes');
+    const summary = $('sessSummary');
+    // NEO trước khi dựng lại. Danh sách nay tự làm mới 15s/lần, mà `renderSessions`
+    // dựng lại toàn bộ thẻ — đúng cơ chế đã làm luồng phiên nhảy. Thẻ ít nên
+    // không cần dựng-theo-khoá như luồng; chỉ cần trả người đọc về đúng thẻ họ
+    // đang nhìn, nhận diện bằng `session_id` chứ không bằng vị trí (thứ tự có
+    // thể đổi khi một phiên vừa động).
+    //
+    // Trừ khi người ta đang ở ĐỈNH: lúc ấy thứ họ đang nhìn là cái đỉnh, không
+    // phải một thẻ cụ thể. Neo theo thẻ ở đỉnh thì mỗi phiên mới chèn lên trên
+    // sẽ đẩy trang xuống đúng một thẻ — và đẩy đi mất chính cái vừa đến. Đo
+    // 2026-08-10: chạy `fe-board` ngay sau khi daemon khởi động lại (lúc danh
+    // sách mọc dần vì các tài khoản được dò lần lượt) thì trang tự đi **151px**
+    // trong 16 giây dù không ai chạm vào.
+    const atTop = scrollerFor(list).scrollTop <= 2;
+    const keepAnchor = atTop ? null : (() => {
+      for (const n of list.querySelectorAll('.sess')) {
+        const r = n.getBoundingClientRect();
+        if (r.bottom > 0) return { id: n.dataset.session, top: r.top };
+      }
+      return null;
+    })();
+
+    list.textContent = '';
+    notes.textContent = '';
+
+    const rows = sessions.list || [];
+    // Đếm theo NƠI phiên sống, không theo tài khoản. Hỏi thật ngày 2026-08-09:
+    // "máy chỉ mở 3 terminal sao màn hiện 13 phiên?" — cả hai đều đúng: 3
+    // terminal, 8 phiên chạy trong VS Code/Cursor, 2 dòng đã chết mà `claude
+    // agents` vẫn liệt kê. Con số tổng không sai; nó chỉ không nói ra điều đó.
+    const byHost = {};
+    rows.forEach((s) => { byHost[s.host || 'unknown'] = (byHost[s.host || 'unknown'] || 0) + 1; });
+    // 'detached' = tiến trình claude còn sống nhưng KHÔNG gắn cửa sổ nào (script,
+    // cron, hoặc thứ gì đó huba không mở). Trước 2026-08-09 nó bị gộp vào
+    // 'terminal' vì nhãn suy bằng loại trừ — Hà hỏi đúng chỗ đó: *"danh sách
+    // phiên thực sự đang liệt kê terminal hay chỉ claude?"*
+    const LABEL = {
+      terminal: 'terminal', editor: 'trong editor', background: 'chạy nền',
+      detached: 'không gắn cửa sổ', dead: 'đã dừng', unknown: 'chưa rõ',
+    };
+    const per = ['terminal', 'editor', 'background', 'detached', 'dead', 'unknown']
+      .filter((k) => byHost[k])
+      .map((k) => `${byHost[k]} ${LABEL[k]}`)
+      .join(' · ');
+    const live = rows.length - (byHost.dead || 0);
+    // Phiên chạy trong editor bị bỏ khỏi danh sách — và PHẢI nói ra ngay đây.
+    //
+    // Câu hỏi gốc là "máy chỉ mở 3 terminal sao màn hiện 13 phiên?". Ẩn đi mà
+    // im lặng thì dựng lên đúng câu hỏi ngược lại: lúc này máy chạy 11 phiên,
+    // màn liệt kê 3. Đo được 2026-08-09: huba ẩn 8 phiên mỗi vòng, con số ấy chỉ
+    // vào log — nơi không ai cầm điện thoại đọc được.
+    const hiddenEditor = sessions.hidden_editor || 0;
+    const hiddenNote = hiddenEditor
+      ? ` · ${hiddenEditor} phiên trong editor không hiện ở đây`
+      : '';
+    // Chia theo loại đã nằm ở TIÊU ĐỀ TỪNG NHÓM ngay bên dưới, nên nhắc lại ở
+    // đây là nói hai lần cùng một điều — và trên 390px nó ngốn 3 dòng, đẩy thẻ
+    // phiên đầu tiên từ 300px xuống 336px. Giữ lại đúng phần các nhóm KHÔNG
+    // nói được: tổng số đang sống, và số phiên bị ẩn hẳn khỏi danh sách.
+    void per;
+    summary.textContent = rows.length || hiddenEditor
+      ? `${live} phiên đang sống${hiddenNote}`
+      : 'Không có phiên nào đang chạy.';
+
+    // An account that failed to answer is not an account with no sessions.
+    (sessions.notes || []).forEach((n) => {
+      const p = document.createElement('p');
+      p.className = 'muted boardnote';
+      p.style.color = 'var(--bad, #a33a2c)';
+      p.textContent = `⚠ ${n}`;
+      notes.append(p);
+    });
+
+    // Thứ tự nhóm = thứ tự người ta cần: thứ ĐIỀU KHIỂN được trước, thứ chỉ xem
+    // được sau, thứ cần dọn xuống cuối. Trong mỗi nhóm vẫn vừa-động-trước.
+    const GROUPS = [
+      { g: 'huba',        title: '📱 huba mở từ điện thoại', what: 'điều khiển được',
+        pick: (x) => x.started_by_hub && x.host !== 'dead' },
+      // Hai nhóm, không phải một: "có tty" và "huba gõ vào được" là hai chuyện
+      // khác nhau, và ngày 2026-08-11 chúng khác nhau tốn thật — một phiên
+      // trong terminal tích hợp của VS Code khai `host: terminal`, trang mời
+      // gõ, còn Terminal.app thì không biết cái tty ấy. `can_type` là câu trả
+      // lời ĐO ĐƯỢC (huba hỏi Terminal.app giữ những tty nào), không phải suy.
+      { g: 'terminal',   title: '⌨ Bạn mở ở terminal',     what: 'gõ vào được',
+        pick: (x) => x.host === 'terminal' && x.can_type },
+      { g: 'terminal-x', title: '⌨ Terminal khác (VS Code · iTerm)', what: 'huba không gõ vào được',
+        pick: (x) => x.host === 'terminal' && !x.can_type },
+      { g: 'background', title: '⚙ Chạy nền',              what: 'không có cửa sổ',
+        pick: (x) => x.host === 'background' },
+      { g: 'detached',   title: '❓ Không gắn cửa sổ',      what: 'không tty',
+        pick: (x) => x.host === 'detached' },
+      { g: 'dead',       title: '⏹ Đã dừng',               what: 'dọn được',
+        pick: (x) => x.host === 'dead' },
+    ];
+    // Con gắn vào CHA, không đứng riêng trong nhóm. Chỉ khi cha không có mặt
+    // trên màn (ví dụ cha là phiên editor đã bị ẩn) thì con mới đứng một mình —
+    // mất hẳn một phiên còn tệ hơn một phiên hiển thị lệch chỗ.
+    const onScreen = new Set(rows.map((x) => x.session_id));
+    const kidsOf = new Map();
+    rows.forEach((x) => {
+      const pid = x.parent_session_id;
+      if (pid && onScreen.has(pid) && pid !== x.session_id) {
+        if (!kidsOf.has(pid)) kidsOf.set(pid, []);
+        kidsOf.get(pid).push(x);
+      }
+    });
+    const isKid = (x) => {
+      const pid = x.parent_session_id;
+      // Con đã đóng KHÔNG được tính là con nữa — nếu tính, nó vừa bị loại khỏi
+      // nhóm (vì là con) vừa bị loại khỏi chỗ của cha (vì đã đóng) và biến mất
+      // hẳn khỏi màn. Mất một phiên êm ru là thứ tệ nhất một danh sách làm được.
+      return !!(pid && onScreen.has(pid) && pid !== x.session_id && x.host !== 'dead');
+    };
+
+    const taken = new Set();
+    const buckets = GROUPS.map((grp) => {
+      const items = rows.filter((x) => !taken.has(x.session_id) && !isKid(x) && grp.pick(x));
+      items.forEach((x) => taken.add(x.session_id));
+      return { g: grp.g, title: grp.title, what: grp.what, items };
+    });
+    // Phiên không rơi vào nhóm nào vẫn PHẢI hiện: mất một dòng còn tệ hơn một
+    // dòng khó phân loại.
+    const leftover = rows.filter((x) => !taken.has(x.session_id) && !isKid(x));
+    if (leftover.length) buckets.push({ g: 'unknown', title: '• Chưa phân loại', what: '', items: leftover });
+
+    buckets.filter((b) => b.items.length).forEach((b) => {
+      const h = document.createElement('div');
+      h.className = 'sess-group';
+      h.dataset.g = b.g;
+      h.dataset.count = String(b.items.length);
+      const t = document.createElement('span'); t.textContent = b.title;
+      const n = document.createElement('span'); n.className = 'n'; n.textContent = b.items.length;
+      h.append(t, n);
+      if (b.what) { const w = document.createElement('span'); w.className = 'what'; w.textContent = b.what; h.append(w); }
+      list.append(h);
+      b.items.forEach((x) => {
+        renderSessionCard(x);
+        // Con vẽ NGAY SAU cha, thụt vào — đọc như một lượt trả lời.
+        // Con ĐÃ ĐÓNG thì thôi liệt kê (Hà 2026-08-09). Một phiên con đã chết
+        // không còn gì để làm với nó: không nói tiếp, không dừng, và mở ra
+        // cũng không thấy việc đang chạy. Nó chỉ làm dài danh sách của phiên
+        // cha đang sống. Phiên ĐỘC LẬP đã chết thì vẫn giữ, vì nhóm "Đã dừng"
+        // chính là danh sách cần dọn.
+        (kidsOf.get(x.session_id) || [])
+          .filter((kid) => kid.host !== 'dead')
+          .forEach((kid) => renderSessionCard(kid, true));
+      });
+    });
+
+    function renderSessionCard(s, asKid) {
+      const card = document.createElement('div');
+      card.className = s.host === 'dead' ? 'sess sess-dead' : 'sess';
+      if (asKid) card.classList.add('sess-kid');
+      card.dataset.session = s.session_id;
+      // Đo được từ DOM: thứ tự "vừa động trước" là tính chất phải kiểm được
+      // mà không cần chọc vào biến nội bộ của trang.
+      card.dataset.activity = s.last_activity || '';
+
+      const head = document.createElement('div');
+      head.className = 'sess-head';
+      const name = document.createElement('strong');
+      const dot = document.createElement('span');
+      dot.className = 'sess-dot';
+      // DỰ ÁN đứng trước tên (Hà 2026-08-12: *"phải thêm thông tin để biết phiên
+      // đang làm dự án hay thư mục nào"*). Tên phiên do `claude` tự đặt —
+      // "projects-ff" không nói được gì — còn `cwd` thì giống hệt nhau ở mọi
+      // dòng trên máy này (mọi phiên mở từ thư mục cha), đó là lý do hàng phụ đã
+      // bỏ nó từ trước. `folder` là thứ khác: huba đếm đường dẫn tệp phiên thật
+      // sự đụng vào trong nhật ký (`sessions::folder_from_tail`), nên nó phân
+      // biệt được. Chưa đủ bằng chứng thì trường này rỗng và dòng này chỉ còn
+      // tên — không bịa một cái nhãn.
+      const folder = document.createElement('span');
+      folder.className = 'sess-folder';
+      folder.textContent = s.folder || '';
+      name.append(dot);
+      if (s.folder) {
+        name.append(folder, document.createTextNode(' · '));
+        card.dataset.folder = s.folder;
+      }
+      name.append(document.createTextNode(s.name || '(không tên)'));
+      const when = document.createElement('span');
+      when.className = 'muted';
+      when.textContent = agoOf(s.last_activity);
+      head.append(name, when);
+
+      const meta = document.createElement('div');
+      meta.className = 'muted sess-meta';
+      // cwd is the parent folder for every session on this machine, so it is
+      // shown but never used as the project label.
+      // Chế độ quyền: phiên chạy `auto`/`dontAsk` là phiên KHÔNG hỏi ai —
+      // đứng từ xa mà không biết điều đó thì nguy hiểm hơn là không thấy gì.
+      const mode = { auto: 'tự duyệt', dontAsk: 'không hỏi', default: 'hỏi trước' }[s.permission_mode] || s.permission_mode;
+      // `working` trả lời cho MỌI phiên, kể cả phiên terminal.
+      //
+      // Trước đây hàng này đọc `status`/`state`, mà hai trường ấy chỉ có ở phiên
+      // nền (`sessions.rs`) — nên mọi thẻ phiên terminal mang chấm xám vĩnh
+      // viễn: nhìn danh sách không biết cái nào đang chạy, đúng câu hỏi đầu tiên
+      // người ta mở điện thoại ra để hỏi. Đường đắt là đọc màn từng phiên (kéo
+      // một vòng từ ~18 giây lên 90 giây); đường rẻ là mtime nhật ký, thứ huba đã
+      // đọc sẵn mỗi vòng — `sessions::is_working` gộp nó với số subagent và
+      // `status`.
+      const work = s.working
+        ? 'đang chạy'
+        : (s.host === 'dead' ? '' : ({ done: 'đã xong' })[s.state] || 'đang rảnh');
+      // `kind` nói "interactive" cho cả cửa sổ terminal lẫn phiên do extension
+      // của VS Code/Cursor chạy — nên hàng này hiện `host`, thứ phân biệt được.
+      const where = { terminal: 'terminal', editor: 'trong editor', background: 'chạy nền', detached: 'không gắn cửa sổ', dead: 'đã dừng' }[s.host] || s.kind;
+      // `cwd` bỏ đi: mọi phiên trên máy này đều mở từ ~/projects nên
+      // nó giống hệt nhau ở mọi dòng — chiếm chỗ mà không phân biệt được gì.
+      // `work` cũng bỏ khỏi chữ: đã có chấm màu nói điều đó rồi.
+      // `where` giờ nằm ở huy hiệu, nên hàng phụ thôi lặp lại nó — chỉ còn tài
+      // khoản và chế độ quyền, thứ huy hiệu không nói.
+      void where;
+      // Subagent đang chạy: phiên giao việc cho subagent trông ĐỨNG IM từ bên
+      // ngoài — lượt hội thoại cuối đã vài phút và không có gì mới cho tới khi
+      // subagent quay về. Con số này là khác biệt giữa "đang chạy" và "treo".
+      // Chữ NGẮN, vì hàng này cố ý một dòng cắt đuôi (`.sess-meta`): bản dài
+      // "N subagent đang chạy" đẩy `ngữ cảnh N%` ra khỏi màn 390px — mà con số
+      // ngữ cảnh chính là thứ quyết định "có nên đóng sổ chưa". Nghĩa không mất:
+      // hàng chỉ hiện khi CÓ subagent chưa về, và màn chi tiết nói đủ câu.
+      const kid = s.pending_subagents ? `${s.pending_subagents} subagent` : '';
+      // THƯỚC NGỮ CẢNH. `cache_read + cache_creation + input` của lượt gần nhất
+      // chính là số token model phải đọc để trả lời — tức cả hội thoại đang
+      // mang theo. Phiên đầy ngữ cảnh thì mỗi lượt sau vừa chậm vừa tốn, và
+      // tới ngưỡng thì tự nén, mất chi tiết. Đây là con số nói "nên đóng sổ".
+      const WIN = { haiku: 200000 };
+      const win = Object.entries(WIN).find(([k]) => (s.model || '').includes(k))?.[1] || 1000000;
+      const pct = s.context_tokens ? Math.round((s.context_tokens / win) * 100) : 0;
+      const ctx = pct ? `ngữ cảnh ${pct}%` : '';
+      meta.textContent = [s.account, mode, kid, ctx].filter(Boolean).join(' · ');
+      if (pct) card.dataset.ctx = String(pct);
+      // ≥60%: đủ đầy để nên đóng sổ khi vừa xong một việc — nói ra ngay trên
+      // thẻ chứ không bắt người ta tự nhẩm.
+      if (pct >= 60 && s.host !== 'dead') {
+        const warn = document.createElement('div');
+        // Lớp RIÊNG, không dùng lại `sess-from`: dòng ấy là "do phiên nào mở",
+        // và phép đo đọc đúng nó — thêm một phần tử cùng lớp là làm phép đo
+        // đọc nhầm (đỏ ngay lần chạy đầu, 2026-08-09).
+        warn.className = 'muted sess-warn';
+        warn.style.color = 'var(--warn, #9a6b1f)';
+        warn.textContent = `⚠ ngữ cảnh ${pct}% — xong việc thì nên đóng sổ để mở phiên mới`;
+        card.dataset.ctxWarn = '1';
+        card.append(warn);
+      }
+      if (kid) card.dataset.subagents = String(s.pending_subagents);
+      // ĐANG LÀM GÌ — chữ terminal đang hiện, không phải chữ huba tự nghĩ ra.
+      //
+      // Hà 2026-08-10: *"ui chưa thể hiện được phiên đang làm gì ví dụ Brewing…;
+      // Perambulating"*. Chấm màu mới trả lời CÓ/KHÔNG chạy; cái người ta nhìn
+      // trên terminal là động từ đang quay cùng đồng hồ. Chỉ có ở phiên đang
+      // chạy (huba chỉ đọc màn của những phiên ấy), nên nó không ngốn dòng nào
+      // của các thẻ đang rảnh.
+      let actLine = null;
+      if (s.activity) {
+        actLine = document.createElement('div');
+        // `live` chỉ bật khi CÓ dòng đang-làm-gì, tức có đồng hồ trên màn thật.
+        // Không bật theo cờ `working` cũ: cờ ấy tới từ vòng đầy đủ và có thể
+        // già hơn hai phút, mà một chấm nhấp nháy nói dối thì tệ hơn không có.
+        actLine.className = 'sess-act live';
+        const dot = document.createElement('span');
+        dot.className = 'dot';
+        actLine.append(dot, document.createTextNode(s.activity));
+        card.dataset.activity2 = s.activity;
+      }
+      // Phiên không cửa sổ thì "ở đâu ra?" không có chỗ nào trả lời — trừ cây
+      // tiến trình. Đo 2026-08-09: cả hai phiên nền trên máy đều truy được về
+      // đúng một phiên đang nằm trong danh sách (dwork ← projects-a0 ở ttys003,
+      // tfl5 ← projects-11 ở ttys006).
+      let fromLine = null;
+      if (s.parent_name) {
+        fromLine = document.createElement('div');
+        fromLine.className = 'muted sess-from';
+        fromLine.append(document.createTextNode('↳ do '));
+        const who = document.createElement('b');
+        who.textContent = s.parent_name;
+        fromLine.append(who, document.createTextNode(' mở'));
+      } else if (s.host === 'background' && !s.started_by_hub) {
+        fromLine = document.createElement('div');
+        fromLine.className = 'muted sess-from';
+        fromLine.textContent = '↳ không truy được phiên đã mở nó';
+      }
+      if (s.host) card.dataset.host = s.host;
+      if (s.started_by_hub) card.dataset.huba = '1';
+      if (work) card.dataset.work = work;
+
+      card.append(head, meta);
+      // Dòng "đang làm gì" đứng NGAY DƯỚI tên và hàng phụ. Đặt nó trước `head`
+      // (như dòng cảnh báo ngữ cảnh đang làm) thì mắt đọc "Brewing…" trước khi
+      // biết đó là phiên nào — đúng thứ tự ngược.
+      if (actLine) card.append(actLine);
+      if (fromLine) card.append(fromLine);
+
+      // PHIÊN ĐANG HỎI — thứ duy nhất trên màn này mà không ai làm gì thì việc
+      // đứng yên mãi. Hà 2026-08-12: *"có 1 phiên đang đưa lựa chọn nhưng không
+      // nhận được trên tele"*. Câu hỏi đọc từ NHẬT KÝ (`sessions::asking`) chứ
+      // không từ màn, nên nó có cả với phiên trong VS Code/iTerm — thứ huba không
+      // đọc được màn. Đứng TRƯỚC dòng xem trước, và thay chỗ nó: câu cuối của
+      // một phiên đang hỏi chỉ là lời dẫn vào chính câu hỏi ấy.
+      if (s.asking) {
+        const ask = document.createElement('div');
+        ask.className = 'sess-asking';
+        const h = document.createElement('strong');
+        h.textContent = s.asking.header ? `⚠ ${s.asking.header}` : '⚠ Đang hỏi';
+        ask.append(h);
+        if (s.asking.question) {
+          const q = document.createElement('p');
+          q.textContent = s.asking.question;
+          ask.append(q);
+        }
+        (s.asking.options || []).slice(0, 9).forEach((o, i) => {
+          const row = document.createElement('div');
+          row.className = 'sess-choice';
+          row.textContent = `${i + 1}. ${o}`;
+          ask.append(row);
+        });
+        card.dataset.asking = String((s.asking.options || []).length);
+        card.append(ask);
+      }
+      if (s.last_text && !s.asking) {
+        const body = document.createElement('p');
+        body.className = 'sess-body';
+        // Dòng xem trước là để biết phiên ĐANG NÓI GÌ. Bảng markdown lọt vào
+        // đây thành "| |---|---|---| | 1. Chi phí…" — đúng ký tự, vô nghĩa với
+        // mắt. Ép về một dòng văn xuôi; "assistant:" cũng bỏ, vì mặc định phiên
+        // nói là máy nói — chỉ khi lượt cuối là NGƯỜI gõ mới đáng nêu ra.
+        const flat = s.last_text
+          .replace(/\|\s*-{2,}[-|\s]*\|/g, ' ')   // đường kẻ bảng
+          .replace(/[|`*_#>]+/g, ' ')             // ký hiệu markdown
+          .replace(/\s+/g, ' ')
+          .trim();
+        body.textContent = s.last_role === 'user' ? `bạn: ${flat}` : flat;
+        card.append(body);
+      }
+      if (s.note) {
+        const note = document.createElement('p');
+        note.className = 'muted sess-note';
+        note.textContent = `⚠ ${s.note}`;
+        card.append(note);
+      }
+      // Hai việc làm được NGAY TỪ DANH SÁCH (Hà 2026-08-10: *"hiện tại bắt buộc
+      // mở nó mới có hơi bất tiện"*). Chỉ hai — và đúng hai thứ Hà chọn:
+      // "Dừng" và "Đóng sổ". Gõ vào phiên và hỏi bên lề vẫn ở màn chi tiết, vì
+      // chúng cần chỗ để đọc câu trả lời.
+      //
+      // Phiên đã chết thì không có gì để dừng cũng không có gì để bàn giao.
+      if (s.host !== 'dead') {
+        const acts = document.createElement('div');
+        acts.className = 'sess-acts';
+        const act = (label, cls, run) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = cls;
+          b.textContent = label;
+          b.addEventListener('click', (e) => {
+            // Thẻ phiên là một vùng chạm lớn mở màn chi tiết; không chặn ở đây
+            // thì mỗi lần bấm Dừng là một lần vừa gửi lệnh vừa nhảy màn.
+            e.stopPropagation();
+            run(e);
+          });
+          acts.append(b);
+          return b;
+        };
+        // ⏹ Dừng CHỈ hiện với phiên do huba mở. `sessions::stop_background` từ
+        // chối thẳng phiên terminal (*"chỉ dừng được phiên do huba mở"*), nên đặt
+        // nút ấy lên mọi dòng là đặt một nút chỉ biết báo lỗi — đúng cái Hà vừa
+        // mắng sáng nay. Màn chi tiết đã có luật này từ trước và tôi vẫn chép
+        // thiếu; luật ghi ở `#sessStop`: *một cái nút không thể chạy còn tệ hơn
+        // không có nút, vì nó bảo rằng huba đang nắm một thứ nó không nắm*.
+        //
+        // Dừng đi qua chốt xác nhận Telegram ở phía huba (`confirm.rs`); trang
+        // KHÔNG tự dựng hộp thoại "chắc chưa?" — hỏi lại trên cùng cái điện
+        // thoại vừa chạm nhầm thì chỉ chặn được tay nhầm, không chặn được mất máy.
+        if (s.kind === 'background') {
+          act('⏹ Dừng', 'danger', (e) => sendCommand(`/stop ${s.session_id}`, e.target));
+        }
+        // Đóng sổ chạy trên BẢN FORK nên dùng được với mọi phiên, kể cả phiên
+        // terminal huba không điều khiển.
+        act('📋 Đóng sổ', '', (e) => sendCommand(`/handover ${s.session_id}`, e.target));
+        card.append(acts);
+      }
+
+      // Tapping asks huba to follow this session; the stream arrives with the
+      // next snapshot. There is no direct call to the Mac — the page only ever
+      // reads what huba pushes.
+      card.addEventListener('click', () => openSession(s));
+      list.append(card);
+    }
+
+    // Trả về đúng thẻ đang nhìn, đúng khoảng cách cũ tới mép trên khung nhìn.
+    if (keepAnchor) {
+      const again = list.querySelector(`.sess[data-session="${keepAnchor.id}"]`);
+      if (again) {
+        const sc = scrollerFor(list);
+        sc.scrollTop += again.getBoundingClientRect().top - keepAnchor.top;
+      }
+      // Thẻ ấy biến mất (phiên vừa dừng hẳn) thì KHÔNG đoán chỗ mới: để nguyên.
+    }
+
+    // F5 giữa lúc đang theo một phiên: địa chỉ mang id, danh sách vừa về, nên
+    // đây là thời điểm sớm nhất dựng lại được. Một lần duy nhất — mỗi ảnh chụp
+    // mà mở lại phiên là mỗi ảnh chụp gửi thêm một lệnh /session vào phòng.
+    if (!wantSession && !restoredFromUrl) {
+      const want = urlGet('session');
+      const found = want && rows.find((r) => r.session_id === want);
+      restoredFromUrl = true;
+      if (found) {
+        openSession(found, { fromUrl: true });
+        return;
+      }
+      if (want) {
+        // Phiên trong link không còn trên máy: nói ra, đừng im lặng bỏ qua rồi
+        // để người ta tưởng link hỏng.
+        cmdNote(`Phiên ${want.slice(0, 8)} trong địa chỉ không còn chạy nữa.`, true);
+        writeUrl({ tab: 'sessions', session: null }, false);
+      }
+    }
+
+    if (wantSession) {
+      renderStream(sessions.focus || null);
+      // Lý lịch + dải trạng thái sống vẽ lại theo MỖI ảnh chụp, không chỉ lúc mở
+      // phiên: "đang làm gì" là một con số đang chạy, vẽ một lần rồi bỏ đấy thì
+      // nó đứng im đúng cái kiểu Hà nói *"hiện tại đang hiện tĩnh"*.
+      const row = (sessions.list || []).find((x) => x.session_id === wantSession);
+      if (row) renderSessInfo(row);
+      renderHandover(sessions.handover || null);
+      renderAside(sessions.aside || null);
+    }
+  }
+
+  /// Which projects `/new` will accept — the same list huba validates against,
+  /// so the picker can never offer a name the command will reject.
+  function renderProjectPicker(projects) {
+    // Tài khoản lấy từ chính cấu hình trong ảnh chụp — không gõ cứng ở trang,
+    // vì thêm tài khoản thứ tư là việc của `huba.config.json`.
+    const accSel = $('sessNewAccount');
+    // `renderProjectPicker` chỉ nhận danh sách dự án, nên đọc cấu hình từ ảnh
+    // chụp gần nhất — biến chung của trang, luôn là bản vừa vẽ.
+    const accounts = (((lastSnap || {}).config || {}).value || {}).claude_accounts || [];
+    // Dựng lại khi NHÃN đổi, không chỉ khi số lượng đổi. Hòm thư đến từ khối
+    // chậm (cache 10 phút) nên nó về MUỘN hơn danh sách tài khoản: bản cũ so
+    // `options.length` nên ô chọn đứng nguyên "acc2" mãi mãi và email không bao
+    // giờ hiện — đúng thứ vừa thêm vào lại không thấy đâu.
+    const wantLabels = accounts
+      .map((a, i) => {
+        const rtx = ((lastSnap || {}).runtime || {});
+        const mail = ((rtx.slow || {}).auth || {})[a.name]?.email;
+        const uu = ((rtx.usage || {}).accounts || {})[a.name];
+        const who = i === 0 ? `${a.name} (mặc định)` : a.name;
+        let s = mail ? `${who} — ${mail}` : who;
+        if (uu && (uu.session_pct != null || uu.week_pct != null)) {
+          s += ` · phiên ${uu.session_pct ?? '?'}% · tuần ${uu.week_pct ?? '?'}%`;
+        }
+        return s;
+      })
+      .join('|');
+    const haveLabels = accSel ? [...accSel.options].map((o) => o.textContent).join('|') : '';
+    if (accSel && wantLabels !== haveLabels) {
+      const keep = accSel.value;
+      accSel.textContent = '';
+      const authAll = ((lastSnap || {}).runtime || {}).slow?.auth || {};
+      accounts.forEach((a, i) => {
+        const o = document.createElement('option');
+        o.value = a.name;
+        // Tài khoản đầu là mặc định của máy — nói ra để không ai phải đoán.
+        // Và kèm HÒM THƯ: chọn tài khoản mà chỉ thấy "acc2" thì phải mở
+        // terminal ra mới biết vừa chọn ai (Hà 2026-08-10).
+        const mail = (authAll[a.name] || {}).email;
+        const who = i === 0 ? `${a.name} (mặc định)` : a.name;
+        o.textContent = mail ? `${who} — ${mail}` : who;
+        // Hạn mức ngay trong ô chọn: chọn tài khoản là lúc DUY NHẤT con số ấy
+        // đổi được quyết định. Đo 2026-08-10: acc2 phiên 100% — mở phiên bằng
+        // nó là mở vào tường.
+        const uu = (((lastSnap || {}).runtime || {}).usage || {}).accounts?.[a.name];
+        if (uu && (uu.session_pct != null || uu.week_pct != null)) {
+          o.textContent += ` · phiên ${uu.session_pct ?? '?'}% · tuần ${uu.week_pct ?? '?'}%`;
+        }
+        accSel.append(o);
+      });
+      if (keep) accSel.value = keep;
+    }
+
+    const sel = $('sessNewProject');
+    const names = projects || [];
+    if (sel.dataset.filled === names.join(',')) return;   // don't fight the user's choice
+    const keep = sel.value;
+    sel.textContent = '';
+    names.forEach((p) => {
+      const o = document.createElement('option');
+      o.value = p;
+      o.textContent = p;
+      sel.append(o);
+    });
+    sel.dataset.filled = names.join(',');
+    if (names.includes(keep)) sel.value = keep;
+  }
+
+  let wantSession = null;   // session id the reader asked for
+  let wantName = '';
+  /// Địa chỉ chỉ được dựng lại một lần cho mỗi lần tải trang.
+  let restoredFromUrl = false;
+
+  let streamPoll = null;
+
+  function openSession(s, opts) {
+    wantSession = s.session_id;
+    wantName = s.name || s.session_id.slice(0, 8);
+    renderSessInfo(s);
+    // Mở một phiên là một bước đi, trừ khi chính địa chỉ vừa yêu cầu nó (dựng
+    // lại sau F5 hoặc Back) — lúc đó ghi đè, đừng đẩy thêm một bước vào lịch sử.
+    writeUrl({ tab: 'sessions', session: wantSession }, !(opts && opts.fromUrl));
+    $('sessListPanel').classList.add('hidden');
+    $('sessDetail').classList.remove('hidden');
+    $('sessTitle').textContent = wantName;
+    // Hàng trên cùng đổi vai theo màn: ở danh sách thì chỉ là dấu thời gian,
+    // vào một phiên thì mang luôn đường quay ra và tên phiên đang đọc.
+    $('sessBack').classList.remove('hidden');
+    $('sessTitle').classList.remove('hidden');
+    // Đổi NGAY, không chờ lượt vẽ sau: lượt vẽ hiện tại đã xong trước khi
+    // `wantSession` được đặt, nên lần sơn đầu vẫn là chữ dài và hàng tràn.
+    if (stampShort) $('boardStamp').textContent = stampShort;
+    $('sessStream').textContent = '';
+    $('sessHandoverBox').classList.add('hidden');
+    $('sessHandoverBox').textContent = '';
+    // A previous session's answer on a new session's screen would read as this
+    // session's answer, so clear it with everything else.
+    $('sessAskBox').classList.add('hidden');
+    $('sessAskBox').textContent = '';
+    $('sessSayInput').value = '';
+    $('sessTellBox').classList.add('hidden');
+    $('sessTellBox').textContent = '';
+    // Steering is only offered for sessions huba started. Showing "Dừng phiên"
+    // on a terminal session would be a button that can only fail — and a
+    // button that cannot work is worse than no button, because it says huba is
+    // in charge of something it is not.
+    const mine = s.kind === 'background';
+    // Từ 2026-08-11 `/new` mở CỬA SỔ THẬT, nên "huba mở nó" không còn đồng
+    // nghĩa với "phiên nền". Nút Dừng đi theo QUYỀN SỞ HỮU (`started_by_hub`),
+    // không theo hạng phiên — nếu không thì huba mở được cửa sổ mà không đóng
+    // được, một cây cầu một chiều. Cửa sổ chủ máy tự mở vẫn không có nút:
+    // đóng cửa sổ của người khác không phải việc của huba.
+    const canStop = mine || (s.started_by_hub && !!s.tty && s.host === 'terminal');
+    $('sessStop').classList.toggle('hidden', !canStop);
+    // Chữ trên nút phải là thứ SẮP xảy ra: phiên nền chỉ dừng lại (hội thoại
+    // còn, nói tiếp được), phiên cửa sổ thì thoát CLI và đóng luôn cửa sổ.
+    $('sessStop').textContent = mine ? '⏹ Dừng' : '⏹ Tắt hẳn';
+    // Phiên huba quản được: mặc định NÓI TIẾP, muốn hỏi bên lề thì tự tích.
+    // Phiên khác: hỏi bên lề là đường DUY NHẤT, nên tích sẵn và khoá lại — cho
+    // chọn một thứ chắc chắn hỏng còn tệ hơn không cho chọn.
+    // BA đường, không phải hai (từ 2026-08-09):
+    //  · phiên nền huba mở  → `/tell`  (mở một lượt mới trên nhật ký)
+    //  · phiên có cửa sổ   → `/type`  (gõ THẲNG vào terminal đang chạy)
+    //  · còn lại           → `/ask`   (hỏi trên bản sao)
+    // Phiên có cửa sổ mới là phiên trả lời được hộp chọn đang chờ, nên hàng
+    // phím điều khiển chỉ hiện ở đó.
+    // ĐO, không suy. Trước đây: `tty && host === 'terminal'` — thứ chỉ nói
+    // "phiên có một tty". Huba gõ được hay không lại phụ thuộc Terminal.app có
+    // giữ tty ấy không, và một phiên trong terminal tích hợp của VS Code trả
+    // lời KHÁC cho hai câu đó. `can_type` do huba đo mỗi vòng (một lời gọi
+    // AppleScript cho cả danh sách), nên trang thôi phải đoán hộ.
+    const canType = s.can_type === true;
+    // Kept outside the function on purpose: what the screen PROMISES about a
+    // side question depends on this exact condition. A session with a window
+    // gets asked straight (`/btw`) and therefore GAINS a turn; one without a
+    // window is forked and stays byte-identical. Same fact, two contracts.
+    sessCanType = canType;
+    sessHostTerminal = s.host === 'terminal';
+    sayMode = mine ? 'tell' : (canType ? 'type' : 'ask');
+    const cb = $('sessAside');
+    cb.checked = sayMode === 'ask';
+    cb.disabled = !(mine || canType);
+    $('sessAsideLabel').classList.toggle('forced', cb.disabled);
+    applySayMode(mine || canType);
+    // An answer that arrives after the reader moved on belongs to the session
+    // they left, not the one they are looking at.
+    waitingFor = null;
+    lastAsideTs = '';
+    askedAfterTs = '';
+    $('sessStatus').textContent = 'Đang mở phiên — huba đọc nhật ký và đẩy về…';
+    sendCommand(`/session ${s.session_id}`, $('sessBack'));
+
+    // huba answers on its own cycle, so one refresh is a coin flip: the first
+    // build reloaded once after 6s and hung forever on any session huba pushed
+    // slower than that. Keep asking, with a deadline and an honest ending.
+    clearInterval(streamPoll);
+    const started = Date.now();
+    let arrived = false;
+    streamPoll = setInterval(() => {
+      if (!wantSession) { clearInterval(streamPoll); return; }
+      const got = lastSnap && lastSnap.sessions && lastSnap.sessions.focus;
+      if (got && got.session_id === wantSession) arrived = true;
+      // Keep refreshing while the screen is open — huba follows the file and
+      // re-publishes as it grows, so stopping at first arrival would freeze
+      // the view on whatever the session was doing a minute ago.
+      if (!arrived && Date.now() - started > 120000) {
+        clearInterval(streamPoll);
+        $('sessStatus').textContent =
+          'Quá 2 phút chưa nhận được luồng của phiên này — huba có thể đang bận hoặc đã dừng. Thử lại hoặc mở phiên trên máy.';
+        return;
+      }
+      loadBoard();
+    }, 4000);
+  }
+
+  /// Trả hàng trên cùng về vai "chỉ có dấu thời gian".
+  function clearHeadSession() {
+    $('sessBack').classList.add('hidden');
+    $('sessTitle').classList.add('hidden');
+    $('sessTitle').textContent = '';
+    if (stampFull) $('boardStamp').textContent = stampFull;
+  }
+
+  $('sessBack').addEventListener('click', () => {
+    // Stop following: otherwise huba keeps carrying a stream nobody reads.
+    if (wantSession && ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'msg', text: '/session -' }));
+    }
+    wantSession = null;
+    clearInterval(streamPoll);
+    $('sessDetail').classList.add('hidden');
+    $('sessListPanel').classList.remove('hidden');
+    clearHeadSession();
+    writeUrl({ tab: 'sessions', session: null }, true);
+  });
+
+  $('sessHandover').addEventListener('click', (e) => {
+    if (!wantSession) return;
+    $('sessHandoverBox').classList.remove('hidden');
+    $('sessHandoverBox').textContent = 'Đang xin bản bàn giao — huba hỏi chính phiên đó, mất khoảng nửa phút…';
+    waitingFor = 'handover';
+    sendCommand(`/handover ${wantSession}`, e.target);
+  });
+
+  /// Một ô, hai việc — chữ trên màn phải nói rõ đang là việc nào.
+  ///
+  /// Không đổi placeholder/nhãn theo chế độ thì gõ xong không biết câu vừa gõ
+  /// sẽ CHEN VÀO phiên hay chạy trên bản sao — hai kết quả khác hẳn nhau, và
+  /// một trong hai làm nhật ký phiên gốc dài ra.
+  /// Chế độ hiện tại của ô nhập: 'tell' · 'type' · 'ask'.
+  let sayMode = 'ask';
+  /// Lượt `focus` mới nhất từ ảnh chụp — mang màn hình sống và các lựa chọn.
+  let lastFocus = null;
+  /// Phiên đang mở có cửa sổ gõ được không — quyết định đường của "hỏi bên lề".
+  let sessCanType = false;
+  /// Phiên có tty nhưng huba không gõ vào được (VS Code · iTerm · tmux) — nói
+  /// đúng LÝ DO thay vì gộp chung với phiên nền.
+  let sessHostTerminal = false;
+
+  function applySayMode(canTell) {
+    const aside = $('sessAside').checked;
+    if (!aside && sayMode === 'ask') sayMode = 'type';
+    if (aside) sayMode = 'ask';
+    const input = $('sessSayInput');
+    const btn = $('sessSay');
+    const hint = $('sessAskHint');
+    input.placeholder = {
+      ask: 'Hỏi bên lề phiên này…',
+      type: 'Gõ thẳng vào cửa sổ phiên…',
+      tell: 'Nói tiếp vào phiên này…',
+    }[sayMode];
+    btn.textContent = { ask: '💬 Hỏi', type: '⌨ Gõ', tell: 'Gửi' }[sayMode];
+    // Hỏi bên lề có HAI đường và chúng hứa ngược nhau ở đúng chỗ người ta cần
+    // biết. Nói một câu cho cả hai là nói sai một nửa số lần: từ 2026-08-11
+    // phiên CÓ cửa sổ được hỏi thẳng bằng `/btw` — rẻ, sát việc, nhưng nhật ký
+    // phiên gốc DÀI RA. Câu cũ ("phiên gốc không bị đụng") vẫn nằm nguyên trên
+    // màn cho tới hôm nay, tức trang hứa hộ một điều sản phẩm thôi làm.
+    hint.textContent = {
+      ask: sessCanType
+        ? 'Huba gõ /btw thẳng vào cửa sổ phiên — nhật ký phiên KHÔNG dài thêm, nhưng câu hỏi ăn vào ngữ cảnh đang chạy của nó.'
+        : sessHostTerminal
+        ? 'Phiên này ngồi trong cửa sổ huba không gõ vào được (VS Code · iTerm · tmux), nên câu hỏi chạy trên một bản sao — phiên gốc không bị đụng.'
+        : canTell === false
+        ? 'Phiên này không gõ vào được, nên chỉ hỏi bên lề: câu hỏi chạy trên một bản sao, phiên gốc không bị đụng.'
+        : 'Câu hỏi chạy trên bản sao — phiên gốc không bị đụng và không dừng lại.',
+      type: 'Gõ THẲNG vào cửa sổ terminal của phiên (sẽ kéo cửa sổ đó lên trước trên máy).',
+      tell: 'Lượt này ở lại trên chính phiên đó, nên nhật ký phiên dài ra.',
+    }[sayMode];
+  }
+  $('termMode').addEventListener('change', () => {
+    $('sessStream').classList.toggle('term', $('termMode').checked);
+  });
+
+  $('sessAside').addEventListener('change', () => {
+    applySayMode(!$('sessAside').disabled);
+    // Đổi chế độ xong là sắp gõ: đưa con trỏ vào ô luôn, đừng bắt chạm thêm
+    // một lần nữa (Hà 2026-08-09).
+    $('sessSayInput').focus();
+  });
+
+  /// Gửi: chế độ nào thì đi verb đó. Cùng một ô, hai đường hoàn toàn khác nhau.
+  function sendSay(e) {
+    if (sayMode === 'ask') { askAside(e); return; }
+    if (sayMode === 'tell') { tellSession(e); return; }
+    typeIntoSession(e);
+  }
+
+  // Nút gửi phải có tay bấm. Nghe thì hiển nhiên, nhưng nó đã KHÔNG có: đợt bỏ
+  // hàng nút phím (Hà 2026-08-09 "bỏ các nút đi") cắt luôn chỗ nối, `sendSay`
+  // nằm đó không ai gọi, và trên điện thoại chạm "⌨ Gõ" thì tuyệt đối không có
+  // gì xảy ra — đúng câu Hà báo hôm sau: *"không thấy hiện tượng gì"*. Cả hai
+  // kịch bản UI lúc ấy đều xanh, vì không cái nào bấm thử chính cái nút này.
+  $('sessSay').addEventListener('click', (e) => sendSay(e));
+
+  /// UC-S05 — nói tiếp vào chính phiên đó. Không phải hỏi bên lề: lượt này ở
+  /// lại trên thread cũ, nên phiên gốc DÀI RA (ngược hẳn với `/ask`).
+  function tellSession(e) {
+    if (!wantSession) return;
+    const input = $('sessSayInput');
+    const text = input.value.trim();
+    if (!text) { input.focus(); return; }
+    $('sessTellBox').classList.remove('hidden');
+    $('sessTellBox').textContent = 'Đang nói tiếp vào phiên — lượt này ở lại trên chính phiên đó…';
+    waitingFor = 'tell';
+    // Id ĐI CÙNG mệnh lệnh. Gửi `/session` rồi `/tell` là hai bản ghi rời
+    // nhau trong phòng chat, và thứ tự KHÔNG được bảo đảm — đo 2026-08-11:
+    // một `/ask` vượt lên trước `/session` của chính nó và huba gõ vào NHẦM
+    // phiên đang làm việc.
+    sendCommand(`/tell ${wantSession} ${text}`, e && e.target);
+    input.value = '';
+  }
+
+  // UC-S06 — mở phiên làm việc mới cho một dự án, ngay từ điện thoại.
+  $('sessNew').addEventListener('click', (e) => {
+    const project = $('sessNewProject').value;
+    const account = $('sessNewAccount').value;
+    const task = $('sessNewTask').value.trim();
+    const note = $('sessNewNote');
+    if (!project || !task) {
+      note.classList.remove('hidden');
+      note.textContent = 'Chọn dự án và nói việc cần làm.';
+      return;
+    }
+    note.classList.remove('hidden');
+    note.textContent = 'Đang mở phiên nền trên máy…';
+    // huba trả lời trong phòng chat. Không nhận nó về đây thì lời báo hỏng nằm
+    // ở TAB KHÁC với cái nút vừa bấm, và màn này đứng im như đang chạy tốt.
+    waitingFor = 'new';
+    // Tài khoản đi kèm LUÔN, kể cả tài khoản mặc định: Hà chọn acc2 mà lệnh vẫn
+    // chạy `claude` là lỗi đã gặp thật (2026-08-10), và một tên viết ra rõ ràng
+    // thì huba từ chối được khi sai, còn tên bỏ trống thì lặng lẽ rơi về mặc định.
+    const at = account ? `@${account} ` : '';
+    sendCommand(`/new ${project} ${at}${task}`, e.target);
+    $('sessNewTask').value = '';
+  });
+
+  $('sessStop').addEventListener('click', (e) => {
+    if (!wantSession) return;
+    $('sessTellBox').classList.remove('hidden');
+    $('sessTellBox').textContent = $('sessStop').textContent.includes('Tắt hẳn')
+      ? 'Đang thoát CLI rồi đóng cửa sổ…'
+      : 'Đang dừng phiên…';
+    waitingFor = 'tell';
+    sendCommand(`/stop ${wantSession}`, e.target);
+  });
+
+  /// `/type` — gõ thẳng vào cửa sổ terminal của phiên.
+  function typeIntoSession(e) {
+    if (!wantSession) return;
+    const input = $('sessSayInput');
+    const text = input.value.trim();
+    if (!text) { input.focus(); return; }
+    $('sessTellBox').classList.remove('hidden');
+    $('sessTellBox').textContent = 'Đang gõ vào cửa sổ phiên…';
+    waitingFor = 'tell';
+    // Cùng lý do với hàng phím: khẳng định lại phiên trước khi gõ.
+    sendCommand(`/type ${wantSession} ${text}`, e && e.target);
+    input.value = '';
+  }
+
+  // Phím điều khiển: một cú bấm = một phím, không có ô nhập nào ở giữa.
+  // UC-S05b. TWO paths, and the difference is the one thing a person holding a
+  // phone cannot see for themselves: a session with a terminal window is asked
+  // straight (`/btw`, level 1) and gains a turn; one without is forked (level 2)
+  // and gains nothing. So the screen states which one happened, every time.
+  function askAside(e) {
+    if (!wantSession) return;
+    const input = $('sessSayInput');
+    const q = input.value.trim();
+    if (!q) { input.focus(); return; }
+    $('sessAskBox').classList.remove('hidden');
+    $('sessAskBox').textContent = sessCanType
+      ? 'Đang hỏi bên lề — huba gõ /btw thẳng vào cửa sổ phiên và chờ nó trả lời trong bảng bên…'
+      : 'Đang hỏi bên lề — huba mở một bản sao của phiên, mất khoảng nửa phút. Phiên gốc vẫn chạy bình thường…';
+    waitingFor = 'ask';
+    // Remember which answer was already on screen. Snapshots keep arriving
+    // while huba is still thinking, and each one carries the PREVIOUS answer —
+    // repainting it over "đang hỏi…" would show a stale reply as if it were the
+    // new one. Ask the same question twice and the screen would answer
+    // instantly with yesterday's text.
+    askedAfterTs = lastAsideTs;
+    sendCommand(`/ask ${wantSession} ${q}`, e && e.target);
+    input.value = '';
+  }
+
+  // Which session button is waiting for huba: 'ask' | 'handover' | null.
+  let waitingFor = null;
+  // `ts` of the answer currently on screen, and the one a pending question must
+  // beat before its result may be painted.
+  let lastAsideTs = '';
+  let askedAfterTs = '';
+
+  /// huba answers in the ROOM, and a refusal ("hết ngân sách", "chưa mở phiên
+  /// nào") never becomes a snapshot row — so a box that only listens to
+  /// snapshots spins forever on exactly the cases a person most needs to read.
+  /// That spinner was already paid for once on 2026-08-07; this is the same
+  /// bug, so it gets the same fix rather than a second discovery.
+  ///
+  /// On success the room's line is a real answer too — show it now, and let the
+  /// snapshot replace it a moment later with the richer version (question,
+  /// fork id, cost).
+  /// Lý lịch phiên, hiện ngay khi mở (Hà 2026-08-09: *"khi mở 1 phiên nên hiện
+  /// thêm các thông tin chi tiết của phiên đó lên để tiện theo dõi"*).
+  ///
+  /// Trước đó màn chi tiết chỉ có tên + luồng sự kiện: muốn biết phiên chạy tài
+  /// khoản nào, ngữ cảnh đầy chưa, có subagent không thì phải quay ra danh sách
+  /// đọc thẻ. Toàn bộ số liệu này đã đi kèm ảnh chụp rồi — chỉ là chưa ai bày ra.
+  /// Dải trạng thái sống của phiên đang mở — thứ đầu tiên phải đọc được.
+  ///
+  /// Ba câu, và chúng trả lời đúng một câu hỏi: CÓ CẦN MÌNH LÀM GÌ KHÔNG.
+  ///  · đang chạy   → động từ + đồng hồ, chấm thở, chữ xanh (nhìn là biết sống)
+  ///  · dừng lại hỏi → cảnh báo, vì đây là lúc phiên CẦN người
+  ///  · đứng chờ    → xám, tĩnh, không giả vờ có gì đang diễn ra
+  function renderSessLive(s) {
+    const box = $('sessLive');
+    if (!box) return;
+    box.textContent = '';
+    const asking = (lastFocus && (lastFocus.choices || []).length) || 0;
+    // Ưu tiên "đang hỏi": một phiên dừng lại chờ người thì cái đáng nói không
+    // phải là nó đang chạy hay không, mà là NÓ ĐANG CHỜ BẠN.
+    if (asking) {
+      box.className = 'live';
+      box.style.borderColor = '#b35c00';
+      box.style.background = '#fff4e5';
+      box.style.color = '#8a4b00';
+      box.textContent = `⚠ Phiên dừng lại HỎI — ${asking} lựa chọn, bấm số ở hàng phím bên dưới`;
+      return;
+    }
+    box.style.borderColor = '';
+    box.style.background = '';
+    box.style.color = '';
+    if (s.activity) {
+      box.className = 'live';
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      box.append(dot, document.createTextNode(`Đang chạy — ${s.activity}`));
+      if (s.pending_subagents) {
+        box.append(document.createTextNode(` · ${s.pending_subagents} subagent`));
+      }
+      return;
+    }
+    box.className = 'idle';
+    box.textContent = s.working
+      ? '⏳ Đang chạy — chưa đọc được nó đang làm gì trên màn'
+      : '⏸ Đang đứng ở dấu nhắc, chờ bạn';
+  }
+
+  function renderSessInfo(s) {
+    renderSessLive(s);
+    const box = $('sessInfo');
+    if (!box) return;
+    box.textContent = '';
+    const WIN = { haiku: 200000 };
+    const win = Object.entries(WIN).find(([k]) => (s.model || '').includes(k))?.[1] || 1000000;
+    const pct = s.context_tokens ? Math.round((s.context_tokens / win) * 100) : 0;
+    const WHERE = {
+      terminal: 'cửa sổ terminal', editor: 'trong editor',
+      background: 'chạy nền', detached: 'không gắn cửa sổ', dead: 'đã dừng',
+    };
+    const rows = [
+      ['tài khoản', s.account],
+      ['nơi chạy', (WHERE[s.host] || s.host) + (s.tty && s.tty !== '??' ? ` · ${s.tty}` : '')],
+      ['mở bởi', s.started_by_hub ? 'huba (từ điện thoại)' : (s.parent_name ? `phiên «${s.parent_name}»` : 'bạn')],
+      ['model', s.model || '(chưa rõ)'],
+      // Ngữ cảnh là con số quyết định "khi nào nên đóng sổ", nên nó đứng đây
+      // chứ không chỉ nằm trên thẻ ở danh sách.
+      ['ngữ cảnh', pct ? `${pct}% · ${s.context_tokens.toLocaleString('vi-VN')} token` : '(chưa đọc được)'],
+      ['chế độ quyền', { auto: 'tự duyệt', dontAsk: 'không hỏi', default: 'hỏi trước' }[s.permission_mode] || s.permission_mode || '(chưa rõ)'],
+      // "Dự án" và "thư mục" là HAI câu trả lời khác nhau, nên đứng hai dòng:
+      // thư mục là nơi phiên được MỞ RA (giống nhau ở mọi phiên trên máy này),
+      // còn dự án là nơi nó đang LÀM VIỆC — đếm từ đường dẫn tệp nó đụng vào.
+      ['dự án', s.folder || '(chưa đủ bằng chứng)'],
+      ['thư mục', s.cwd || '—'],
+    ];
+    if (s.pending_subagents) rows.splice(4, 0, ['subagent', `${s.pending_subagents} đang chạy`]);
+    if (s.activity) rows.splice(2, 0, ['đang làm', s.activity]);
+    rows.forEach(([k, v]) => {
+      if (!v) return;
+      const r = document.createElement('div');
+      r.className = 'rt-row';
+      const kk = document.createElement('span');
+      kk.className = 'rt-k';
+      kk.textContent = k;
+      const vv = document.createElement('span');
+      vv.className = 'rt-v';
+      vv.textContent = v;
+      if (k === 'ngữ cảnh' && pct >= 60) vv.classList.add('warn');
+      r.append(kk, vv);
+      box.append(r);
+    });
+  }
+
+  function noteSessionReply(f) {
+    if (!waitingFor || f.from === me) return;
+    const text = String(f.text || '');
+    // Trả lời phải KHỚP LỆNH đã hỏi, không phải "bất kỳ trả lời nào của huba".
+    //
+    // Bản trước nhận mọi câu bắt đầu bằng một trong sáu dấu rồi đổ vào ô đang
+    // chờ — nên bấm "Đóng sổ" mà màn hiện *"🚀 Đã mở phiên nền cho
+    // huba-act-demo…"*, tức lời đáp của một lệnh KHÁC (Hà gặp 2026-08-09).
+    // Mỗi loại chờ nay chỉ nhận dấu của chính nó; `⚠` thì ai cũng nhận, vì một
+    // lời từ chối là câu trả lời cho đúng cái vừa hỏi.
+    //
+    // Lệnh đi qua chốt Telegram (`/stop`, `/handover`) trả lời làm HAI nhịp
+    // (`pipeline.rs:1219` gửi trước rồi mới đứng chờ tới 90 giây):
+    //   1. `🔒 Đã gửi yêu cầu xác nhận…` — tin GIỮA CHỪNG, chưa phải kết cục;
+    //   2. `✋ đã huỷ` · `⌛ hết hạn` · `⏹ đã dừng` — kết cục thật.
+    // Thiếu cả hai nhóm này thì màn đứng nguyên ở "Đang dừng phiên…" **vĩnh
+    // viễn** khi không ai bấm Telegram — đo thật 2026-08-10: huba đã nói `⌛ Hết
+    // hạn chờ xác nhận — không dừng phiên nào` vào phòng lúc 07:54:00 mà màn
+    // phiên vẫn khai đang dừng. Một màn nói "đang làm" cho việc CHẮC CHẮN không
+    // xảy ra còn tệ hơn không nói gì: nó dạy người ta đừng bấm lại.
+    // Và nhận `🔒` mà cũng đóng luôn cửa sổ chờ thì lại nuốt mất kết cục ở nhịp
+    // 2 — nên tin giữa chừng chỉ ĐƯỢC HIỆN, không được kết thúc lượt chờ.
+    // `✋`/`⌛` CHỈ gắn vào hai lượt chờ có thật đi qua chốt: `/stop` (ô `tell`)
+    // và `/handover`. `/ask` và `/new` không gọi `ask_owner` (`pipeline.rs`)
+    // nên với chúng hai dấu ấy không bao giờ là câu trả lời — mà `waitingFor`
+    // là MỘT biến dùng chung, nút lại mở khoá sau 6 giây trong khi chốt chờ tới
+    // 90 giây, nên rắc rộng ra là mời đúng con bug "trả lời của lệnh khác đổ
+    // vào ô đang chờ" quay lại bằng cửa sau.
+    const INTERIM = /^🔒/;
+    const DONE = '✋|⌛';
+    const MARKS = {
+      ask: /^(💬|⚠)/,
+      tell: new RegExp(`^(➡️|⏹|⌨|📷|⚠|${DONE})`),
+      new: /^(🚀|⚠)/,
+      handover: new RegExp(`^(📋|⚠|${DONE})`),
+    };
+    const want = MARKS[waitingFor] || MARKS.handover;
+    const interim = INTERIM.test(text);
+    if (!interim && !want.test(text)) return;
+    const box = $({ ask: 'sessAskBox', tell: 'sessTellBox', new: 'sessNewNote' }[waitingFor] || 'sessHandoverBox');
+    if (!interim) waitingFor = null;
+    box.classList.remove('hidden');
+    box.textContent = '';
+    const p = document.createElement('pre');
+    p.className = 'ev-body';
+    p.style.whiteSpace = 'pre-wrap';
+    p.textContent = text;
+    box.append(p);
+  }
+
+  /// Bàn phím đi THẲNG vào phiên: phím điều hướng gửi ngay, chữ gửi khi Enter.
+  ///
+  /// Đây là chỗ "giống remote desktop" nằm ở: không nút trung gian, không bảng
+  /// điều khiển. Mũi tên và Esc phải gửi NGAY lúc bấm — chúng là điều hướng,
+  /// giữ lại tới lúc Enter thì vô nghĩa. Chữ thì gom cả dòng rồi mới gửi, vì
+  /// mỗi lệnh là một tin trong phòng chat: gửi từng ký tự là hàng trăm tin cho
+  /// một câu, và phòng chat không phải đường truyền phím.
+  const NAV = {
+    ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+    Escape: 'esc', Tab: 'tab',
+  };
+  $('sessSayInput').addEventListener('keydown', (ev) => {
+    if (sayMode !== 'type' || !wantSession) return;
+    const nav = NAV[ev.key];
+    if (nav) {
+      ev.preventDefault();
+      sendCommand(`/key ${wantSession} ${nav}`, null);
+      return;
+    }
+    // Enter trên ô TRỐNG = phím Enter (chọn mục đang sáng), không phải gửi một
+    // dòng rỗng đi đâu cả.
+    if (ev.key === 'Enter' && !ev.target.value.trim()) {
+      ev.preventDefault();
+      sendCommand(`/key ${wantSession} enter`, null);
+      return;
+    }
+    // Enter khi ĐÃ có chữ = gửi. Đường này cũng đứt trong cùng lần cắt ấy.
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      sendSay(ev);
+    }
+  });
+
+  /// A side question and its answer — labelled, never mixed into the stream.
+  function renderAside(a) {
+    const box = $('sessAskBox');
+    if (!a || a.source_id !== wantSession) return;
+    // A question is in flight and this is still the OLD answer: leave the
+    // "đang hỏi…" line alone. Showing the previous reply here is not a cosmetic
+    // flicker — it is the screen asserting something untrue, and asking the
+    // same question twice would "answer" instantly with the earlier text.
+    //
+    // Keyed on the timestamp rather than on `waitingFor`, because the room's
+    // reply clears the wait a beat before the snapshot catches up — and a late
+    // snapshot carrying the old answer must not win that race either.
+    if (askedAfterTs && !(a.ts > askedAfterTs)) return;
+    askedAfterTs = '';
+    waitingFor = null;
+    lastAsideTs = a.ts || '';
+    box.classList.remove('hidden');
+    box.textContent = '';
+
+    const q = document.createElement('p');
+    q.className = 'muted boardnote';
+    q.textContent = `Bạn hỏi: ${a.question}`;
+
+    const ans = document.createElement('pre');
+    ans.className = 'ev-body';
+    ans.style.whiteSpace = 'pre-wrap';
+    ans.textContent = a.answer;
+
+    // The claim that matters, stated every time — and it is not the same claim
+    // on both paths. `new_session_id === source_id` means huba typed `/btw` into
+    // the live window: the answer came from the session itself and that session
+    // now carries one more turn. Saying "trên bản sao … không thêm lượt nào"
+    // there is the page asserting something untrue about the owner's own
+    // transcript, which is worse than saying nothing.
+    const sameSession = String(a.new_session_id) === String(a.source_id);
+    const foot = document.createElement('p');
+    foot.className = 'muted boardnote';
+    foot.textContent = sameSession
+      ? 'Hỏi thẳng bằng /btw vào chính phiên này — nhật ký không dài thêm; câu hỏi ăn vào ngữ cảnh đang chạy.'
+      : `Trả lời trên bản sao ${String(a.new_session_id).slice(0, 8)} — phiên gốc không thêm lượt nào.`;
+
+    box.append(q, ans, foot);
+  }
+
+  /// The closing note and the id that carries the work on.
+  function renderHandover(h) {
+    const box = $('sessHandoverBox');
+    if (!h || h.source_id !== wantSession) return;
+    box.classList.remove('hidden');
+    box.textContent = '';
+
+    const head = document.createElement('p');
+    head.className = 'muted boardnote';
+    head.textContent = `Đã đóng sổ. Phiên mới ${h.new_session_id.slice(0, 8)} giữ nguyên ngữ cảnh; phiên này không bị sửa gì.`;
+    const cmd = document.createElement('pre');
+    cmd.className = 'ev-body';
+    cmd.textContent = h.resume_command;
+    const note = document.createElement('pre');
+    note.className = 'ev-body';
+    note.style.whiteSpace = 'pre-wrap';
+    note.textContent = h.checkpoint;
+    box.append(head, cmd, note);
+  }
+
+  /// One session rendered as a terminal would: say · tool · result · think.
+  /// Chữ đang hiện trên cửa sổ phiên, và các lựa chọn nếu nó đang hỏi.
+  ///
+  /// Không có nút "xem": huba đọc màn mỗi lần đẩy ảnh chụp, và vòng bám đẩy ngay
+  /// khi chữ trên màn đổi — kể cả khi nhật ký đứng yên, vốn đúng là lúc phiên
+  /// dừng lại hỏi. Bắt người ta bấm để biết có gì mới là hỏng cả ý sản phẩm.
+  function renderScreen(focus) {
+    const box = $('sessScreenBox');
+    const pre = $('sessScreen');
+    const ch = $('sessChoices');
+    const text = focus && focus.screen;
+    box.classList.toggle('hidden', !text);
+    if (!text) { pre.textContent = ''; ch.textContent = ''; return; }
+    if (pre.textContent !== text) pre.textContent = text;
+    const list = (focus.choices || []);
+    ch.classList.toggle('hidden', list.length === 0);
+    // Vẽ lại chỉ khi ĐỔI: gán lại mỗi 2 giây làm mất vệt chọn của người đọc.
+    const want = list.map((c) => `${c.n}. ${c.label}`).join('\n');
+    if (ch.dataset.want !== want) {
+      ch.dataset.want = want;
+      ch.textContent = '';
+      if (list.length) {
+        const head = document.createElement('div');
+        head.textContent = '⌨ Phiên đang hỏi — bấm số ở hàng phím:';
+        ch.append(head);
+        list.forEach((c) => {
+          const d = document.createElement('div');
+          d.textContent = `${c.n}. ${c.label}`;
+          ch.append(d);
+        });
+      }
+    }
+  }
+
+  /// Một lệnh, viết như người gõ nó.
+  ///
+  /// UC-S02 đặt vạch đích là "thấy đúng thứ terminal đang hiện". Hàng lệnh
+  /// trước đây in nguyên tham số JSON — nửa màn hình để nói một việc là "chạy
+  /// một lệnh". Nên: lấy đúng THAM SỐ CÓ NGHĨA của từng công cụ, cắt đường dẫn
+  /// về phần người ta nhận ra. Bản đầy đủ vẫn ở `title`.
+  function toolLine(e) {
+    const raw = (e.text || '').trim();
+    if (!raw.startsWith('{')) return raw;
+    const KEYS = ['command', 'file_path', 'path', 'notebook_path',
+                  'pattern', 'url', 'query', 'prompt'];
+    let arg = null;
+    try {
+      const o = JSON.parse(raw);
+      for (const k of KEYS) if (o[k] != null) { arg = String(o[k]); break; }
+      if (arg == null) {
+        // Công cụ lạ: nêu tên tham số, đừng đổ cả JSON ra màn.
+        const ks = Object.keys(o);
+        return ks.length ? ks.join(', ') : raw;
+      }
+    } catch (_) {
+      // Tham số dài BỊ CẮT CỤT ở tầng dưới (sessions.rs cắt theo `cap`) nên
+      // JSON không còn đóng ngoặc — `JSON.parse` ném, và bản cũ rơi về in
+      // nguyên văn: đúng lúc chuỗi dài nhất thì màn xấu nhất. Đọc thẳng chuỗi
+      // để vẫn moi được phần đầu của tham số chính.
+      for (const k of KEYS) {
+        const m = raw.match(new RegExp('"' + k + '"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)'));
+        if (m) { arg = m[1].replace(/\\[nrt]/g, ' ').replace(/\\(.)/g, '$1'); break; }
+      }
+      if (arg == null) return raw.length > 200 ? raw.slice(0, 199) + '…' : raw;
+    }
+    arg = arg.replace(/\s+/g, ' ').trim()
+      .replace(/\/Users\/[^/\s]+\/Documents\/projects\//g, '');
+    return arg.length > 200 ? arg.slice(0, 199) + '…' : arg;
+  }
+
+  function renderStream(focus) {
+    // Giữ lại lượt focus mới nhất: dải trạng thái sống cần biết phiên có đang
+    // dừng lại hỏi không, mà thông tin ấy chỉ đi kèm `focus`, không nằm trong
+    // hàng của phiên trên danh sách.
+    lastFocus = focus || null;
+    // Màn hình sống vẽ trước luồng: nó là HIỆN TẠI, luồng là quá khứ.
+    renderScreen(focus);
+    const box = $('sessStream');
+    box.classList.toggle('term', $('termMode').checked);
+    const status = $('sessStatus');
+    if (!focus || focus.session_id !== wantSession) {
+      status.textContent = 'Đang mở phiên — huba đọc nhật ký và đẩy về…';
+      return;
+    }
+    if (focus.note) {
+      status.textContent = `⚠ ${focus.note}`;
+    }
+    const events = focus.events || [];
+    if (!events.length) {
+      if (!focus.note) status.textContent = 'Phiên này chưa có lượt nào đọc được.';
+      return;
+    }
+    status.textContent = focus.older_hidden
+      ? `${events.length} sự kiện gần nhất · ${focus.older_hidden} sự kiện cũ hơn không tải`
+      : `${events.length} sự kiện`;
+
+    // Làm mới vài giây một lần KHÔNG được giật người đang đọc dở: chỉ bám đuôi
+    // khi họ vốn đã ở đuôi, như một terminal.
+    // CHỈ đụng vào vị trí cuộn khi màn chi tiết ĐANG MỞ. `renderStream` chạy
+    // theo mọi ảnh chụp, kể cả lúc người ta đang ở tab Trao đổi hay Sức khoẻ —
+    // và `scrollerFor` lúc ấy trả về khung cuộn CHUNG của trang, nên "đang ở
+    // đáy" thành đúng ở mọi tab và trang tự nhảy xuống cuối. Hà thấy ngay:
+    // *"trang nào nó cũng tự nhảy xuống cuối"*, *"cứ cuộn lên nó lại nhảy
+    // xuống"*. Bản vá bám-đáy trước đó đúng ý nhưng thiếu đúng cái cổng này.
+    const detailOpen = !!wantSession && !$('sessDetail').classList.contains('hidden');
+    const atTail = detailOpen && atBottomOf(box);
+
+    // NEO theo dòng đang nhìn, không theo con số scrollTop.
+    //
+    // Cửa sổ luồng trượt: huba đọc 256KB cuối nhật ký, nên phiên càng chạy thì
+    // các sự kiện CŨ càng rụng khỏi ĐẦU danh sách — đo được 2026-08-09: một
+    // nhịp làm mới bỏ 4 dòng, trang ngắn đi 667px. Khôi phục bằng `scrollTop`
+    // cũ là giữ đúng CON SỐ và mất đúng CHỖ ĐANG ĐỌC. Nên nhớ một dòng cụ thể
+    // và khoảng cách của nó tới mép trên khung nhìn, rồi trả lại đúng khoảng
+    // cách ấy.
+    let anchor = null;
+    let anchorTop = 0;
+    if (detailOpen && !atTail) {
+      for (const n of box.children) {
+        const r = n.getBoundingClientRect();
+        if (r.bottom > 0) { anchor = n; anchorTop = r.top; break; }
+      }
+    }
+
+    // DỰNG THEO KHOÁ, KHÔNG XOÁ SẠCH RỒI VẼ LẠI.
+    //
+    // Hà 2026-08-09: *"vào một phiên… view bị nhảy khi đã cuộn xuống dưới cùng,
+    // có vẻ đang tải lại và render toàn bộ danh sách"*. Đúng: cứ 4 giây là
+    // `box.textContent = ''` rồi dựng lại cả 120 sự kiện. Hồi khung tự cuộn thì
+    // còn giấu được bằng cách đặt lại `scrollTop`; từ khi TRANG cuộn (v80),
+    // chiều cao trang tụt về 0 rồi mọc lại giữa hai khung hình — mắt thấy đúng
+    // một cú nhảy.
+    //
+    // Sự kiện là nhật ký: đã ghi thì không đổi, chỉ thêm vào đuôi và rụng ở
+    // đầu khi cửa sổ 120 trượt. Nên giữ nguyên node cũ, chỉ dựng node MỚI.
+    // Khoá phải ổn định giữa hai lần đẩy: mốc thời gian + loại + tên công cụ +
+    // độ dài + 32 ký tự đầu. Trùng khoá thì cùng lắm là vẽ lại một dòng, không
+    // bao giờ là vẽ lại cả màn.
+    const keyOf = (e) =>
+      `${e.ts}|${e.kind}|${e.name || ''}|${(e.text || '').length}|${(e.text || '').slice(0, 32)}`;
+    const have = new Map();
+    for (const n of box.children) have.set(n.dataset.k, n);
+    const wantKeys = new Set(events.map(keyOf));
+    for (const n of [...box.children]) if (!wantKeys.has(n.dataset.k)) n.remove();
+
+    let prev = null;
+    events.forEach((e) => {
+      const k = keyOf(e);
+      const kept = have.get(k);
+      if (kept) {
+        // Đúng chỗ rồi thì ĐỪNG đụng vào: mỗi lần chèn lại là một lần trình
+        // duyệt tính lại bố cục, và với ảnh/khối cao thì lại nhảy.
+        const shouldBeAfter = prev ? prev.nextSibling : box.firstChild;
+        if (kept !== shouldBeAfter) box.insertBefore(kept, shouldBeAfter);
+        prev = kept;
+        return;
+      }
+      const row = document.createElement('div');
+      row.dataset.k = k;
+      row.className = `ev ev-${e.kind}${e.withheld ? ' ev-hidden' : ''}`;
+
+      const head = document.createElement('div');
+      head.className = 'ev-head';
+      head.textContent = {
+        say: e.role === 'user' ? 'bạn' : 'claude',
+        tool: `▸ ${e.name}`,
+        result: 'kết quả',
+        think: 'suy nghĩ',
+      }[e.kind] || e.kind;
+      row.append(head);
+
+      const body = document.createElement('pre');
+      body.className = 'ev-body';
+      body.textContent = e.kind === 'tool' ? toolLine(e) : e.text;
+      if (e.kind === 'tool' && body.textContent !== e.text) body.title = e.text;
+      row.append(body);
+      box.insertBefore(row, prev ? prev.nextSibling : box.firstChild);
+      prev = row;
+      // Đo SAU khi đã gắn vào cây — trước đó `scrollHeight` chưa có nghĩa.
+      // Ngưỡng phải khớp ĐÚNG trần của `.clamp` (12em), nếu không sẽ có một dải
+      // chiều cao không ai kẹp mà cũng không ai cho cuộn.
+      const capPx = 12 * parseFloat(getComputedStyle(body).fontSize);
+      if (body.scrollHeight > capPx + 4) {
+        body.classList.add('clamp');
+        const more = document.createElement('button');
+        more.type = 'button';
+        more.className = 'ev-more';
+        more.textContent = '▾ xem đầy đủ';
+        more.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const open = body.classList.toggle('clamp');
+          more.textContent = open ? '▾ xem đầy đủ' : '▴ thu gọn';
+        });
+        row.append(more);
+      }
+    });
+    if (!detailOpen) {
+      // Không mở màn chi tiết thì KHÔNG chạm vào vị trí cuộn của người ta.
+    } else if (atTail) {
+      stickToBottom(box);
+    } else if (anchor && anchor.isConnected) {
+      const sc = scrollerFor(box);
+      sc.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
+    }
+    // Neo mất (chính dòng ấy vừa rụng) thì KHÔNG đụng vào vị trí cuộn: để
+    // nguyên còn hơn nhảy tới một chỗ đoán.
+  }
+
+  /** "3p" / "5g" / "2ng" — same scale the CLI prints, so both agree. */
+  function agoOf(iso) {
+    if (!iso) return '—';
+    const t = Date.parse(iso);
+    if (Number.isNaN(t)) return '—';
+    const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
+    if (mins < 60) return `${mins}p trước`;
+    if (mins < 60 * 48) return `${Math.floor(mins / 60)}g trước`;
+    return `${Math.floor(mins / 1440)}ng trước`;
+  }
+
+  /// A small label+value badge. It lived next to the inbox counters and went
+  /// with them for a few minutes on 2026-08-08 — but the health panel draws its
+  /// channel badges with it too, and deleting it turned every screen into
+  /// "uncaught: chip is not defined". Caught by `fe-sessions-uc` on the first
+  /// run after the deploy, which is what those scripts are for.
+  function chip(label, value, cls) {
+    const el = document.createElement('span');
+    el.className = 'chip' + (cls ? ` ${cls}` : '');
+    el.innerHTML = `${escapeHtml(label)} <b>${escapeHtml(String(value))}</b>`;
+    return el;
+  }
+
+  function renderHealth(health) {
+    const box = $('healthProbe');
+    box.textContent = '';
+    const probe = health.probe || {};
+    const head = document.createElement('p');
+    head.className = 'muted boardnote';
+    head.textContent = probe.checked_at
+      ? `Đo lúc ${fmtStamp(new Date(probe.checked_at).toISOString())} (làm mới tối đa 10 phút/lần).`
+      : 'Chưa có kết quả đo kênh.';
+    box.append(head);
+
+    const chips = document.createElement('div');
+    chips.className = 'chips';
+    if (probe.claude) {
+      chips.append(chip('claude', probe.claude.ok ? (probe.claude.detail || 'ok') : 'HỎNG', probe.claude.ok ? '' : 'bad'));
+    }
+    Object.entries(probe.channels || {}).forEach(([name, c]) => {
+      if (!c.enabled) return chips.append(chip(name, 'tắt'));
+      chips.append(chip(name, c.ok ? 'ok' : (c.detail || 'hỏng'), c.ok ? '' : 'bad'));
+    });
+    box.append(chips);
+
+    // Giờ trên màn phải là giờ NGƯỜI ĐANG CẦM MÁY đọc được. `started_at` là
+    // UTC (`2026-08-09T01:16:43.143Z`); bản trước cắt thẳng `slice(11,19)` nên
+    // in ra 01:16 trong khi dòng "Ảnh chụp lúc" ngay phía trên ghi 08:16 —
+    // cùng một khoảnh khắc, hai con số, lệch đúng 7 tiếng.
+    const runClock = (iso) => {
+      const d = new Date(iso || '');
+      if (isNaN(d)) return String(iso || '').slice(11, 19) || '—';
+      return d.toLocaleTimeString('vi-VN', { hour12: false });
+    };
+
+    // Bảng "lần poll gần đây" từng liệt kê 12 dòng `ok · 0` chiếm hai phần ba
+    // màn để nói đúng một điều: vẫn chạy bình thường (rà 2026-08-09). Nay một
+    // dòng tóm tắt, và CHỈ dòng hỏng mới được kê tên — cái đáng đọc là cái
+    // khác thường.
+    const allRuns = health.runs || [];
+    const badRuns = allRuns.filter(
+      (r) => r.ok === 0 || r.ok === false || (r.err && String(r.err).length)
+    );
+    const sum = $('runsSummary');
+    if (sum) {
+      sum.textContent = allRuns.length
+        ? (badRuns.length
+            ? `${allRuns.length} lượt gần nhất · ${badRuns.length} hỏng`
+            : `${allRuns.length} lượt gần nhất · tất cả ok`)
+        : 'chưa có lượt nào';
+      sum.classList.toggle('bad', badRuns.length > 0);
+    }
+    const runsWrap = $('runsTable');
+    if (runsWrap) runsWrap.classList.toggle('hidden', badRuns.length === 0);
+
+    const body = $('runsRows');
+    body.textContent = '';
+    badRuns.forEach((r) => {
+      const tr = document.createElement('tr');
+      // `ok` về từ sqlite là số 0/1, nên `=== false` không bao giờ đúng: một
+      // lượt hỏng mà không kèm `err` sẽ được tô là "ok".
+      const bad = r.ok === 0 || r.ok === false || !!r.err;
+      [
+        [runClock(r.started_at || r.ts), 'mono'],
+        [bad ? 'lỗi' : 'ok', bad ? 'mono bad' : 'mono'],
+        [String(r.n_new ?? '—'), 'mono nowrap'],
+      ].forEach(([text, cls]) => {
+        const td = document.createElement('td');
+        if (cls) td.className = cls;
+        td.textContent = text;
+        tr.append(td);
+      });
+      body.append(tr);
+      // Lỗi được một dòng riêng, đủ rộng để đọc hết — nhét vào ô hẹp thì nó bị
+      // cắt đúng chỗ đang nói vì sao hỏng.
+      if (r.err) {
+        const errRow = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 3;
+        td.className = 'runerr';
+        td.textContent = r.err;
+        errRow.append(td);
+        body.append(errRow);
+      }
+    });
+  }
+
+  // ---- config form --------------------------------------------------------
+  //
+  // Same groups as the console. Each control remembers the value it was drawn
+  // with; "Lưu" sends one `/set <key> <value>` per field that actually
+  // changed, so the room shows exactly what was altered and huba validates
+  // each one through `Config` before writing the file.
+  const CFG_FIELDS = {
+    // github · devlog · email · telegram đã bị gỡ khỏi huba ngày 2026-08-08.
+    // Giữ tên chúng ở đây không phải là "an toàn": mỗi dòng chỉ vẽ ra một câu
+    // "(không có trong cấu hình)" trên màn điện thoại — bảy dòng rác cho một
+    // sản phẩm không còn tồn tại.
+    cfgChannels: [
+      ['adapters.tfl5.enabled', 'Chat tfl5', 'bool'],
+    ],
+    cfgChannelFields: [
+      ['adapters.tfl5.user_env', 'Env var chứa tài khoản tfl5', 'text'],
+      ['adapters.tfl5.password_env', 'Env var chứa mật khẩu tfl5', 'text'],
+    ],
+    cfgLoop: [
+      ['poll_interval_sec', 'Chu kỳ đọc phòng (giây)', 'number'],
+      ['call.timeout_sec', 'Một lần gọi tối đa (giây)', 'number'],
+    ],
+    cfgTrust: [
+      ['trust.tfl5_user_tids', 'tfl5 user tid tin cậy (ra lệnh được)', 'list'],
+      ['trust.trusted_sources', 'Nguồn tin cậy', 'list'],
+    ],
+  };
+
+  const dig = (obj, dotted) => dotted.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
+  const asText = (v) => (Array.isArray(v) ? v.join(', ') : v == null ? '' : String(v));
+
+  function renderConfig(config) {
+    $('configFile').textContent = config.file || '—';
+    const value = config.value;
+    $('configBody').textContent = value
+      ? JSON.stringify(value, null, 2)
+      : 'Không có cấu hình trong ảnh chụp.';
+    if (!value) return;
+
+    Object.entries(CFG_FIELDS).forEach(([boxId, fields]) => {
+      const box = $(boxId);
+      box.textContent = '';
+      fields.forEach(([key, label, kind, options]) => {
+        const current = dig(value, key);
+        // A field the running config does not have is a field this page must
+        // not invent — skip it loudly rather than writing a new key.
+        if (current === undefined) {
+          const miss = document.createElement('div');
+          miss.className = 'muted';
+          miss.textContent = `${label}: (không có trong cấu hình)`;
+          box.append(miss);
+          return;
+        }
+        // `<label>` chứ không `<div>`: bấm vào CHỮ cũng đổi trạng thái. Bản
+        // trước là `div` + một `<label>` không có `for`, nên nhãn chỉ để nhìn —
+        // và vùng chạm thật chỉ là cái hộp 18px.
+        const wrap = document.createElement(kind === 'bool' ? 'label' : 'div');
+        if (kind === 'bool') {
+          wrap.className = 'switch';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.checked = !!current;
+          cb.dataset.cfgKey = key;
+          cb.dataset.cfgWas = String(!!current);
+          const l = document.createElement('label');
+          l.style.margin = '0';
+          l.textContent = label;
+          wrap.append(cb, l);
+        } else {
+          const l = document.createElement('label');
+          l.textContent = label;
+          let input;
+          if (kind === 'select') {
+            input = document.createElement('select');
+            options.forEach((o) => {
+              const opt = document.createElement('option');
+              opt.value = o;
+              opt.textContent = o;
+              input.append(opt);
+            });
+            input.value = String(current);
+          } else {
+            input = document.createElement('input');
+            if (kind === 'number') input.type = 'number';
+            input.value = asText(current);
+          }
+          input.dataset.cfgKey = key;
+          input.dataset.cfgWas = asText(current);
+          wrap.append(l, input);
+        }
+        box.append(wrap);
+      });
+    });
+  }
+
+  $('cfgSave').addEventListener('click', () => {
+    const changed = [...document.querySelectorAll('[data-cfg-key]')]
+      .map((el) => {
+        const now = el.type === 'checkbox' ? String(el.checked) : el.value.trim();
+        return { key: el.dataset.cfgKey, was: el.dataset.cfgWas, now };
+      })
+      .filter((f) => f.now !== f.was);
+
+    if (!changed.length) {
+      $('cfgMsg').textContent = 'Không có gì thay đổi.';
+      return;
+    }
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      $('cfgMsg').textContent = 'Chưa kết nối tới phòng chat — không gửi được.';
+      return;
+    }
+    changed.forEach((f) => ws.send(JSON.stringify({ type: 'msg', text: `/set ${f.key} ${f.now}` })));
+    $('cfgMsg').textContent =
+      `Đã gửi ${changed.length} thay đổi (${changed.map((c) => c.key).join(', ')}) — xem huba xác nhận trong phòng chat.`;
+    setTimeout(loadBoard, 8000);
+  });
+
+  /// Bong bóng cuộn nhanh: hiện khi trang ĐỦ DÀI để cần, ẩn từng nút khi đã ở
+  /// sẵn đầu/cuối. Bám `main` — khung cuộn duy nhất của trang.
+  (() => {
+    const dock = $('scrollDock');
+    const up = $('dockTop');
+    const down = $('dockEnd');
+    const scroller = () => document.querySelector('main');
+    function refresh() {
+      const m = scroller();
+      if (!m) return;
+      const canScroll = m.scrollHeight > m.clientHeight + 40;
+      const onBoard = !$('board').classList.contains('hidden');
+      dock.classList.toggle('hidden', !(canScroll && onBoard));
+      const max = m.scrollHeight - m.clientHeight;
+      const frac = max > 0 ? Math.min(1, Math.max(0, m.scrollTop / max)) : 0;
+      // Cùng một con số cho cả hai vòng: nó nói "đang ở đoạn nào", không phải
+      // "còn bao xa tới đích".
+      // Hai vòng NGƯỢC nhau, không chung một con số (Hà 2026-08-09: *"lẽ ra
+      // nó phải ngược nhau chứ, viền càng ngắn tức là sắp bị ẩn"*). Mỗi vòng
+      // đo QUÃNG ĐƯỜNG NÚT ẤY SẼ ĐI: nút lên đo phần đã cuộn qua, nút xuống đo
+      // phần còn lại. Cùng một con số thì hai nút nói cùng một điều, và điều
+      // ấy sai với một trong hai.
+      up.parentElement.style.setProperty('--p', frac.toFixed(3));
+      down.parentElement.style.setProperty('--p', (1 - frac).toFixed(3));
+      up.parentElement.classList.toggle('hidden', m.scrollTop <= 24);
+      down.parentElement.classList.toggle('hidden', max - m.scrollTop <= 24);
+    }
+    up.addEventListener('click', () => scroller().scrollTo({ top: 0, behavior: 'smooth' }));
+    down.addEventListener('click', () =>
+      scroller().scrollTo({ top: scroller().scrollHeight, behavior: 'smooth' }));
+    document.addEventListener('scroll', refresh, true);
+    setInterval(refresh, 1000);   // nội dung tự dài ra khi luồng về thêm
+    refresh();
+  })();
+
+  /// "Cỗ máy đang theo dõi có sống không" — câu hỏi phải trả lời được từ điện
+  /// thoại, không phải bằng cách mở terminal ra xem.
+  ///
+  /// Mọi số liệu ở đây do `runtime.rs` thu mỗi vòng và đi kèm ảnh chụp, nên
+  /// nó tươi đúng bằng ảnh chụp — không có đường gọi riêng nào từ trang.
+  function renderRuntime(rt) {
+    const box = $('runtimeBox');
+    box.textContent = '';
+    if (!rt) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'rt';
+
+    const row = (k, v, cls, fix) => {
+      const r = document.createElement('div');
+      r.className = 'rt-row';
+      const kk = document.createElement('span');
+      kk.className = 'rt-k';
+      kk.textContent = k;
+      const vv = document.createElement('span');
+      vv.className = 'rt-v' + (cls ? ' ' + cls : '');
+      vv.textContent = v;
+      if (fix) {
+        const f = document.createElement('code');
+        f.className = 'rt-fix';
+        f.textContent = fix;
+        vv.append(f);
+      }
+      r.append(kk, vv);
+      wrap.append(r);
+    };
+
+    const d = rt.daemon || {};
+    // `uptime_sec` rỗng nghĩa là ảnh chụp này do CLI dựng, không phải daemon —
+    // nói đúng như vậy thay vì in "0 phút", thứ đọc ra như vừa sập xong.
+    const up = d.uptime_sec == null
+      ? 'không rõ (ảnh chụp dựng từ CLI, không phải daemon)'
+      : `${Math.floor(d.uptime_sec / 60)} phút · pid ${d.pid}`;
+    row('hubad đang chạy', up, d.uptime_sec == null ? 'warn' : 'ok');
+
+    const auto = (rt.slow || {}).autostart || {};
+    if (auto.loaded === true) {
+      row('tự chạy khi bật máy', 'có — launchd đã nạp', 'ok');
+    } else if (auto.loaded === false) {
+      row(
+        'tự chạy khi bật máy',
+        auto.plist_installed ? 'CHƯA — đã cài plist nhưng launchd chưa nạp' : 'CHƯA cài',
+        'bad',
+        auto.how_to_install
+      );
+    } else {
+      // Dò hỏng KHÁC với "không bật": đừng báo đỏ cho thứ mình không hỏi được.
+      row('tự chạy khi bật máy', 'chưa hỏi được launchd', 'warn');
+    }
+
+    // Hai cách huba chết lặng mà mọi màn khác vẫn xanh (đo 2026-08-10):
+    // chữ ký rơi về ad-hoc ⇒ lần bật máy sau macOS không nhận ra chương trình;
+    // bản cài cũ hơn bản build ⇒ daemon đang chạy mã của hôm qua.
+    if (auto.signature === 'adhoc') {
+      row(
+        'chữ ký bản cài',
+        'ad-hoc — bật máy lại là mất quyền',
+        'bad',
+        'deploy/install.sh'
+      );
+    } else if (auto.signature === 'cert') {
+      row('chữ ký bản cài', 'cố định (chứng chỉ riêng)', 'ok');
+    }
+    if (auto.stale === true) {
+      row(
+        'bản đang chạy',
+        'CŨ hơn bản vừa build',
+        'bad',
+        'deploy/install.sh'
+      );
+    }
+
+    // Hà 2026-08-10: *"danh sách acc đang thiếu nhiều thông tin"*. Đúng — hàng
+    // cũ chỉ có "2/2 phiên đang sống", ba cái tên acc1/acc2/acc3 không nói được
+    // acc nào là hòm thư nào, mà đó chính là lý do có ba tài khoản.
+    //
+    // KHÔNG có "hạn mức còn lại": `claude` CLI không trả nó ngoài phiên tương
+    // tác (`/usage`), và bịa một con số ra màn còn tệ hơn để trống.
+    const authAll = (rt.slow || {}).auth || {};
+    const usageAll = ((rt.usage || {}).accounts) || {};
+    (rt.accounts || []).forEach((a) => {
+      const auth = authAll[a.name] || {};
+      const u = usageAll[a.name] || {};
+      // HẠN MỨC ĐỨNG TRƯỚC. Đây là con số quyết định "mở phiên bằng acc nào";
+      // số phiên đang sống thì chỉ để tham khảo. Đo 2026-08-10 ngay lần chạy
+      // đầu: acc2 phiên 100% (hết), acc3 tuần 98% — không nhìn thấy thì cứ mở
+      // đại rồi đâm vào tường.
+      const bits = [];
+      if (u.session_pct != null) bits.push(`phiên ${u.session_pct}%`);
+      if (u.week_pct != null) bits.push(`tuần ${u.week_pct}%`);
+      if (u.week_model_pct != null && u.week_model_name) {
+        bits.push(`${u.week_model_name} ${u.week_model_pct}%`);
+      }
+      if (u.raw) bits.push(u.raw);
+      if (u.err) bits.push('chưa đo được hạn mức');
+      bits.push(`${a.alive}/${a.sessions} phiên`);
+      if (auth.email) bits.push(auth.email);
+      if (auth.subscription) bits.push(`gói ${auth.subscription}`);
+      if (auth.logged_in === false) bits.push('CHƯA đăng nhập');
+      if (auth.err) bits.push('chưa hỏi được trạng thái đăng nhập');
+      if (!a.ok) bits.push(a.note || 'không trả lời');
+
+      const worst = Math.max(u.session_pct ?? 0, u.week_pct ?? 0);
+      let cls = '';
+      if (!a.ok || auth.logged_in === false || worst >= 95) cls = 'bad';
+      else if (worst >= 80) cls = 'warn';
+
+      // Mốc hồi hạn mức nằm ở dòng phụ: nó là thứ đọc MỘT LẦN khi đã thấy con
+      // số đỏ, không phải thứ phải đọc mỗi lần liếc màn.
+      const when = [];
+      if (u.session_resets) when.push(`phiên hồi ${u.session_resets}`);
+      if (u.week_resets) when.push(`tuần hồi ${u.week_resets}`);
+      if (a.config_dir_exists === false) when.push(`THIẾU thư mục ${a.config_dir}`);
+      else if (a.config_dir) when.push(a.config_dir);
+
+      row(`tài khoản ${a.name}`, bits.join(' · '), cls, when.join(' · '));
+    });
+
+    const errs = rt.errors || [];
+    row(
+      'lỗi gần đây',
+      errs.length ? `${errs.length} lượt hỏng` : 'không có',
+      errs.length ? 'bad' : 'ok',
+      errs.length ? errs.map((e) => `${String(e.at).slice(11, 19)} ${e.adapter}: ${e.err || 'không rõ'}`).join('\n') : ''
+    );
+
+    box.append(wrap);
+  }
+
+  let cmdNoteTimer = null;
+  function cmdNote(text, bad) {
+    const el = $('cmdStatus');
+    if (!el) {
+      // Đây CHÍNH LÀ lỗi vừa sửa: chỗ báo bị xoá, hàm này im lặng `return`, và
+      // hai ngày liền mọi nút gửi lệnh bấm vào hư không. Nếu nó mất lần nữa thì
+      // console phải kêu, đừng để lặp lại một lỗi câm.
+      console.warn('cmdNote: không tìm thấy #cmdStatus — lệnh đã gửi nhưng màn không báo được');
+      return;
+    }
+    el.textContent = text;
+    el.classList.toggle('bad', !!bad);
+    el.classList.remove('hidden');
+    clearTimeout(cmdNoteTimer);
+    // Báo lỗi thì Ở LẠI cho tới khi có tin khác; báo thành công thì tự dọn, vì
+    // một dòng "đã gửi…" nằm mãi trên đầu màn 390px là rác.
+    if (!bad) cmdNoteTimer = setTimeout(() => el.classList.add('hidden'), 12000);
+  }
+
+  /// Commands ride the chat socket. If it is not open the command would be
+  /// lost, so say so instead of pretending it went through.
+  function sendCommand(text, btn) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      cmdNote('Chưa kết nối tới phòng chat — mở lại tab Trò chuyện rồi thử lại.', true);
+      return;
+    }
+    // `btn` được phép RỖNG: có lệnh gửi kèm mà không nút nào đứng sau nó (ví
+    // dụ `/session` khẳng định lại trước khi bấm phím). Không chịu được `null`
+    // thì chính cái lệnh phụ ấy ném lỗi và giết luôn lệnh chính.
+    if (btn) btn.disabled = true;
+    ws.send(JSON.stringify({ type: 'msg', text }));
+    cmdNote(`Đã gửi "${text}" — chờ huba trả lời trong phòng chat…`);
+    // huba trả lời trong phòng, còn TRẠNG THÁI thì về theo ảnh chụp kế tiếp —
+    // và ảnh ấy đến muộn hơn câu trả lời. Một cú làm mới sau 6 giây là canh
+    // đúng vào lúc huba CHƯA xong: `/new` mất tới ~14 giây. Hỏi lại vài nhịp,
+    // có hạn, thay vì đặt cược vào một mốc thời gian.
+    setTimeout(() => { if (btn) btn.disabled = false; }, 6000);
+    let tries = 0;
+    const after = setInterval(() => {
+      tries += 1;
+      loadBoard();
+      if (tries >= 8) clearInterval(after);   // 8 × 5s = 40 giây
+    }, 5000);
+  }
+
+  /// Switch panels the same way a click on the tab would.
+  function goPanel(name) {
+    const btn = $('panelTabs').querySelector(`[data-panel="${name}"]`);
+    if (btn) btn.click();
+  }
+
+  // Đã gỡ trong cùng ngày 2026-08-08, không để lại mã chết: tab "Chi phí" +
+  // hai biểu đồ ECharts, tab "Hộp việc" (danh sách · chi tiết · Duyệt/Bỏ/Đóng/
+  // Trả lời · ô "Hỏi huba"), ô chờ "đang xử lý", và mọi con số tiền. Tất cả là
+  // đồ của nhánh hộp thư — trang này giờ chỉ để xem và điều khiển các phiên
+  // Claude đang chạy trên máy.
+
+  // ---- composer ----------------------------------------------------------
+  const textEl = $('text');
+  textEl.addEventListener('input', () => {
+    textEl.style.height = 'auto';
+    textEl.style.height = Math.min(textEl.scrollHeight, 144) + 'px';
+  });
+  textEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      $('composer').requestSubmit();
+    }
+  });
+
+  $('composer').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const text = textEl.value.trim();
+    if (!text) return;
+    if (stopped) return; // the composer is hidden in this state anyway
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      note('Chưa kết nối được — thử lại sau vài giây.', true);
+      return;
+    }
+    ws.send(JSON.stringify({ type: 'msg', text }));
+    textEl.value = '';
+    textEl.style.height = 'auto';
+    // No spinner: huba answers an ORDER in the room within a cycle, and an
+    // ordinary line is not answered at all. The old watcher followed a message
+    // into a queue to report "still being sorted / waiting for you to approve"
+    // — states that no longer exist.
+  });
+
+  // ---- what happened to the question I just asked ------------------------
+  //
+  // The spinner used to sit there forever, because at tier L0 huba writes a
+  // DRAFT and waits for the owner — no reply ever arrives on its own. "Đang
+  // xử lý" was true for about a minute and a lie after that.
+  //
+  // So follow the message into huba's own snapshot and say what is actually
+  // true: still being triaged, folded into an earlier question, or finished
+  // and waiting for YOU to approve — with the approve button right here.
+  let pendingWatch = null;
+
+  restore();
+})();
+</script>
+</body>
+</html>

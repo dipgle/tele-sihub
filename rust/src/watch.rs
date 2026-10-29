@@ -1,0 +1,1482 @@
+//! Bắt lúc một phiên **vừa xong việc** hoặc **vừa tắt hẳn**, và nói ra ĐÚNG MỘT LẦN.
+//!
+//! # Vì sao có tệp này
+//!
+//! Hà 2026-08-10: *"có bắt được trường hợp đang chạy và dừng lại hoàn toàn
+//! không? nếu có thì thể hiện được trên ui và gửi vào tele"*.
+//!
+//! Đây là thứ ảnh chụp KHÔNG trả lời được, dù nó mang đủ dữ liệu: ảnh chụp nói
+//! *"lúc này phiên đang rảnh"*, còn cái người ta cần biết là *"nó VỪA chuyển từ
+//! chạy sang rảnh"* — một sự kiện, không phải một trạng thái. Sự kiện chỉ hiện
+//! ra khi có hai lượt đo đặt cạnh nhau, nên phải có sổ ghi lượt trước.
+//!
+//! # Ba luật của cái loa này
+//!
+//! 1. **Nói một lần.** Vòng chạy lặp mỗi ~10 giây; báo theo trạng thái thay vì
+//!    theo chuyển-trạng-thái là một cái điện thoại rung mãi không thôi, và một
+//!    cái loa như thế thì người ta tắt — mất luôn cả những lần đáng nghe.
+//! 2. **Lượt đầu im.** Khi huba vừa khởi động lại, sổ trống nên MỌI phiên đều
+//!    "mới thấy lần đầu". Báo hết là một tràng tin cho những việc xảy ra lúc
+//!    huba còn chưa chạy. Lượt đầu chỉ ghi sổ, không nói gì.
+//! 3. **Biến mất cũng là kết thúc.** `claude agents` bỏ một phiên đã dừng khỏi
+//!    danh sách sau vài giây (đã ghi ở `pipeline::STOPPED_KEY`), nên phần lớn
+//!    lần "tắt hẳn" KHÔNG đi qua trạng thái `dead` — nó chỉ đơn giản là không
+//!    còn trong danh sách nữa. Chỉ rình `host == "dead"` là bỏ lọt gần hết.
+
+use std::collections::BTreeMap;
+
+use serde_json::json;
+
+use crate::logging;
+use crate::sessions::LiveSession;
+// 🔴 CÙNG một bộ ký hiệu với danh sách phiên — Hà 2026-08-16: *"mọi thứ nhìn
+// thấy ở tele phải đồng nhất"*. Trước 19/08 hai màn tự gõ emoji của mình, nên
+// cùng một trạng thái đọc ra hai hình khác nhau tuỳ nó ra bằng cửa nào.
+use crate::sessions::{ST_ASK, ST_DEAD, ST_ERR, ST_WAIT};
+
+/// Trạng thái của một phiên, rút gọn còn đúng thứ cần để so hai lượt.
+pub const WORKING: &str = "working";
+pub const IDLE: &str = "idle";
+pub const DEAD: &str = "dead";
+/// Đang đứng chờ MỘT CÂU của chủ máy — trạng thái đáng gọi người ta nhất.
+///
+/// Tách khỏi `IDLE` vì hai chuyện khác hẳn nhau: "rảnh" là xong việc, còn đây
+/// là **việc đang dở và không tự đi tiếp được**. Trước 2026-08-12 huba chỉ nhận
+/// ra nó bằng cách đọc màn đúng lúc phiên vừa im; nay nó là một trạng thái đọc
+/// từ nhật ký, nên phiên bắt đầu hỏi lúc nào cũng bắt được.
+pub const ASKING: &str = "asking";
+/// Đang đứng vì một LỖI — không phải "xong", cũng không phải "đang hỏi".
+///
+/// 🔴 Hà 2026-08-13: *"vì lỗi chưa thấy cảnh báo gì"*. Trước đó lỗi chỉ được
+/// nhận ra nếu huba tình cờ ĐỌC MÀN đúng lúc phiên vừa im (`Idle::Failed`); lỡ
+/// nhịp thì phiên nằm im và nhìn y hệt một phiên đã xong việc. Nay nó là một
+/// TRẠNG THÁI đọc từ nhật ký, nên vào đúng cỗ máy "so hai lượt, nói một lần".
+pub const ERRORED: &str = "errored";
+/// Bị CHẶN vì hết hạn mức — phiên sẽ không tự chạy lại, dù chờ bao lâu.
+///
+/// 🔴 Trạng thái riêng, không gộp vào `errored`: lỗi thì thử lại được, hết hạn
+/// mức thì chỉ có hai đường — chờ đồng hồ, hoặc chuyển tài khoản. Hai câu ấy
+/// dẫn tới hai việc khác nhau ở phía chủ máy (Hà 2026-08-28).
+pub const LIMITED: &str = "limited";
+
+/// Chạy ngắn hơn chừng này thì XONG không phải là tin.
+///
+/// Đo thật ngay lượt đầu bật loa (2026-08-10): `huba-bd` bắn "vừa chạy xong" hai
+/// lần cách nhau 75 giây, và cả hai đều ĐÚNG — nó chạy hai lượt ngắn thật. Đúng
+/// mà vẫn sai chỗ: một phiên đang có người ngồi gõ sẽ kêu một tiếng mỗi lượt,
+/// mà người ấy đang nhìn thẳng vào nó. Cái loa này có giá trị ở phiên KHÔNG ai
+/// nhìn — nơi một lượt chạy dài rồi dừng là thứ đáng gọi người ta quay lại.
+///
+/// 120 giây: dài hơn một lượt hỏi-đáp thường, ngắn hơn một việc đáng chờ.
+pub const MIN_RUN_SEC: i64 = 120;
+
+/// Sống ngắn hơn chừng này thì TẮT cũng không phải là tin.
+///
+/// 🔴 Đo 2026-08-12 từ chính log của huba: **20 tin "đã tắt hẳn" trong 4 tiếng,
+/// mỗi tin một id khác nhau**, đều đặn 7–12 phút một lần. Không phải một phiên
+/// báo lặp — là một dòng phiên sinh ra rồi chết, và thủ phạm là **phép dò hạn
+/// mức của chính huba**: `claude -p "/usage"` mỗi 5 phút đẻ ra một phiên thật,
+/// hiện vài giây trong `claude agents` rồi biến mất. Cái loa làm đúng luật đã
+/// viết; luật thiếu vế "sống bao lâu".
+///
+/// Dùng chung con số với `MIN_RUN_SEC` là có chủ ý: cùng một câu hỏi ("việc này
+/// có đủ dài để đáng gọi người ta không"), nên đừng để hai con số trôi khác nhau.
+pub const MIN_LIFE_SEC: i64 = MIN_RUN_SEC;
+
+/// Ghi trong sổ: `working@<epoch giây>` để biết nó chạy được bao lâu rồi.
+fn working_since(mark: &str) -> Option<i64> {
+    mark.strip_prefix("working@")?.parse().ok()
+}
+
+/// Những gì sổ phải nhớ về một phiên để nói ĐÚNG lúc nó biến mất.
+///
+/// Hà 2026-08-10: *"tắt hẳn là sao? ý chung chung thế… tắt hẳn là phải thoát
+/// khỏi cli mới đúng, tắt hẳn terminal"*. Đúng — và cùng một lỗi với câu "đang
+/// đứng ở dấu nhắc" đã vá trước đó: nói một điều huba không biết.
+///
+/// "Biến khỏi danh sách `claude agents`" xảy ra vì ít nhất ba lý do khác hẳn
+/// nhau: phiên NỀN bị dừng (chẳng liên quan terminal), `claude` thoát mà cửa sổ
+/// vẫn mở, hoặc cửa sổ terminal đóng luôn. Phân biệt được cả ba — nhưng phải
+/// giữ `tty` và `kind` TỪ TRƯỚC, vì lúc phiên biến mất thì hàng của nó cũng đi
+/// theo và không còn gì để hỏi.
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub struct Mark {
+    /// `working@<epoch>` · `idle`
+    pub s: String,
+    /// tty lúc còn thấy nó — rỗng nếu phiên không gắn cửa sổ nào.
+    #[serde(default)]
+    pub y: String,
+    /// `interactive` · `background`…
+    #[serde(default)]
+    pub k: String,
+    /// Phiên CHA, nếu phiên này do một phiên khác đẻ ra (rỗng = phiên gốc).
+    ///
+    /// Hà 2026-08-11: *"phiên con được gọi từ phiên cha mà tắt cũng đang gửi
+    /// qua tele, có cần không?"* — không. Phiên con kết thúc bình thường là
+    /// một CHI TIẾT trong lượt làm việc của phiên cha, và phiên cha sẽ tự báo
+    /// khi nó xong; hai tin cho một việc thì tin nào cũng mất giá.
+    /// Cùng lý do phải nhớ `tty`: lúc phiên biến mất thì hàng của nó đi theo,
+    /// nên quan hệ cha-con phải nằm trong sổ TỪ TRƯỚC.
+    #[serde(default)]
+    pub p: String,
+    /// Lần ĐẦU huba thấy phiên này (epoch giây). 0 = sổ cũ, chưa có trường này.
+    ///
+    /// 🔴 Hà 2026-08-12: *"tại sao cứ báo phiên đã tắt liên tục"*. Đo log: 20
+    /// tin trong 4 tiếng, **mỗi tin một id khác nhau**, đều đặn 7–12 phút một
+    /// lần — tức không phải một phiên báo lặp, mà là một dòng phiên sinh ra rồi
+    /// chết. Đó chính là **phép dò hạn mức của huba**: `claude -p "/usage"` chạy
+    /// mỗi 5 phút, và mỗi lượt đẻ ra một phiên thật, mang một id thật, hiện ra
+    /// trong `claude agents` vài giây rồi biến mất. Cái loa làm đúng luật đã
+    /// viết ("rời khỏi danh sách = đã kết thúc") — luật ấy thiếu một vế.
+    ///
+    /// Vế thiếu: **một phiên sống vài giây thì cái chết của nó không phải tin**,
+    /// cùng lý do `MIN_RUN_SEC` tồn tại cho "vừa chạy xong".
+    #[serde(default)]
+    pub f: i64,
+    /// Phiên do CHÍNH huba mở (`/new`).
+    ///
+    /// Ngoại lệ của cửa thời lượng trên: phiên chủ máy vừa mở từ điện thoại mà
+    /// chết trong 30 giây là **đúng thứ phải báo** — nó chết chứ không phải nó
+    /// xong, và người mở đang chờ nó chạy.
+    #[serde(default)]
+    pub h: bool,
+    /// Tên phiên, và dự án nó đang làm — nhớ TỪ TRƯỚC vì lúc báo thì đã muộn.
+    ///
+    /// 🔴 Hà 2026-08-12: *"không biết nó là phiên nào rất mơ hồ"*. Tin cũ đọc là
+    /// `⏹ phiên 8db91183 đã tắt hẳn` — một id ngắn, thứ không nói được gì cho
+    /// người đang cầm điện thoại. Lý do nó chỉ có id: khi phiên **rời khỏi danh
+    /// sách** thì hàng của nó đi theo, không còn chỗ nào hỏi tên nữa. Cùng lý do
+    /// sổ phải nhớ `tty` và `p` — nhớ luôn tên và dự án.
+    #[serde(default)]
+    pub n: String,
+    #[serde(default)]
+    pub d: String,
+    /// Nhãn ĐÃ TÍNH của phiên (`sessions::label_sessions`) — nhớ TỪ TRƯỚC,
+    /// cùng lý do với `n` và `d`, và thêm một lý do riêng: nhãn duy nhất là
+    /// tính chất của CẢ ảnh chụp, nên lúc phiên đã rời danh sách thì không còn
+    /// tính lại được nữa. Sổ cũ (rỗng) rơi về `display_name`.
+    #[serde(default)]
+    pub l: String,
+    /// Tài khoản `claude` phiên này thuộc về — nhớ TỪ TRƯỚC, vì nó là thứ quyết
+    /// định lượt sau có được QUYỀN kết luận "phiên đã tắt" hay không.
+    ///
+    /// 🔴 Đo 2026-08-12 14:44:07: `claude agents` hỏng cho **cả ba** tài khoản
+    /// (`spawn claude failed: No such file or directory` — `npm` đang ghi đè
+    /// binary `claude` ngay lúc đó). Danh sách về RỖNG, và luật "rời khỏi danh
+    /// sách = đã kết thúc" đọc cái rỗng ấy thành ba cái chết: ba tin `⏹ đã tắt`
+    /// trong 8 giây, trong khi cả ba phiên vẫn sống (16:08 lệnh `/sessions` còn
+    /// liệt kê `projects-d8 · đang chạy`, và nó còn làm việc tới 16:41).
+    ///
+    /// Cùng một họ với `Look::Blind` bên `keys.rs`: **không nhìn được ≠ không có
+    /// gì**. Sổ phải nhớ tài khoản vì lúc phiên biến mất thì hàng của nó đi
+    /// theo — không còn chỗ nào hỏi "phiên này thuộc tài khoản nào" nữa.
+    #[serde(default)]
+    pub a: String,
+    /// Thư mục làm việc — nhớ TỪ TRƯỚC vì hỏi bên lề một phiên ĐÃ TẮT vẫn cần
+    /// nó: `--resume` tìm nhật ký theo `cwd` + id (`sessions::transcript_path`).
+    ///
+    /// Hà 2026-08-12 gõ `/ask` lúc 16:37 và nhận `⚠ không thấy phiên … đang
+    /// chạy nữa` — con trỏ đang trỏ vào một phiên vừa tắt. Ngồi trước máy thì
+    /// câu ấy vẫn hỏi được (`claude --resume <id>`), nên theo đúng phép thử
+    /// CẦU NỐI, phía điện thoại không làm được là một KHOẢNG TRỐNG. Muốn vá thì
+    /// lúc phiên biến mất phải còn giữ đủ dữ kiện để gọi lại nó.
+    #[serde(default)]
+    pub c: String,
+    /// pid của tiến trình `claude` — thứ biến một `tty` nhớ sẵn thành một cái
+    /// handle DÙNG ĐƯỢC.
+    ///
+    /// tty là con số được DÙNG LẠI, nên "sổ nói phiên X ở ttys002" không đủ để
+    /// gõ vào ttys002 — cửa sổ ấy có thể đang là của phiên khác (đã trả giá cho
+    /// đúng luật này hôm nay). Nhưng `tty` + `pid` thì đủ: hỏi `ps` xem pid ấy
+    /// còn sống VÀ còn ngồi đúng tty ấy không — một lượt `ps`, vài mili giây,
+    /// KHÔNG spawn `claude`. Chết rồi thì `ps` im, và huba từ chối.
+    ///
+    /// 🔴 Vì sao cần (đo 2026-08-12): mọi lệnh gõ/nhìn đều dựng lại ảnh chụp,
+    /// mà một lượt dựng trên máy đang swap mất 15–92 giây — `/type` **134
+    /// giây**, `/shot` **117 giây**, rồi trả về *"không thấy phiên"* cho một
+    /// phiên đang sống. (Cái giá ấy đã đi 2026-08-15 — ảnh chụp nay đọc tệp sổ
+    /// của CLI chứ không spawn nó — nhưng `tty`+`pid` vẫn là đường ngắn nhất và
+    /// là đường duy nhất không phụ thuộc ảnh chụp.)
+    #[serde(default)]
+    pub i: i64,
+    /// `terminal` · `editor` · `background` — nhớ để câu TỪ CHỐI nói đúng lý do
+    /// khi huba không gõ vào được ("host: editor"), kể cả lúc đang trả lời bằng
+    /// sổ chứ không bằng ảnh chụp.
+    #[serde(default)]
+    pub o: String,
+    /// Epoch giây lần ĐẦU TIÊN không thấy phiên NỀN này trong `claude agents`
+    /// — của riêng debounce dưới đây. 0 = đang thấy bình thường.
+    ///
+    /// 🔴 Đo 2026-09-04 (`167252e2`, dự án `fbot`): `session_busy_by_shell`
+    /// xác nhận tiến trình gốc (`pid 68743`) còn sống, đang bận — CÙNG GIÂY
+    /// với một dòng "đã tắt hẳn". `claude agents` thỉnh thoảng không liệt kê
+    /// ĐÚNG một phiên nền, dù nó còn sống, trong khi các phiên khác CÙNG tài
+    /// khoản vẫn liệt kê bình thường — nên cửa `blind` (cả tài khoản mù) ở
+    /// trên không bắt được ca này. Xảy ra ít nhất 4 đợt trong một ngày
+    /// (11:01 · 14:02 · 15:00 · 17:20), luôn đúng phiên này.
+    ///
+    /// Chỉ phiên NỀN mới cần: phiên có cửa sổ đã có phép thử độc lập
+    /// (`keys::window_of`, nhánh phía trên) để phân biệt "rời danh sách" với
+    /// "cửa sổ còn, chỉ CLI thoát" — phiên nền không có cửa sổ nào để hỏi lại.
+    #[serde(default)]
+    pub g: i64,
+    /// Đã báo phiên này MỒ CÔI chưa — nói MỘT lần, không tụng lại mỗi vòng.
+    ///
+    /// 🔴 Hà 2026-09-06: *"Màn mồ côi để làm gì, có thao tác được đâu"* · *"Đã
+    /// bảo ko chạy gì thì bỏ rồi"*. Mồ côi = không cửa sổ nào trên màn + cha
+    /// sinh ra nó đã thoát (`sessions::is_orphan`); đo hôm ấy hai cái giữ
+    /// **1203 MB** và không ghi thêm một byte nhật ký nào trong 4,5 tiếng.
+    ///
+    /// Vì sao phải là một CỜ TRONG SỔ chứ không phải một dòng in lại mỗi lượt:
+    /// luật 11 của dự án nói huba chỉ mở miệng khi CÓ THAY ĐỔI. Mồ côi *xuất
+    /// hiện* là một thay đổi; mồ côi *tồn tại* thì không, và một cái loa kêu
+    /// mỗi 20 giây là cái loa bị tắt tiếng, kéo theo mọi tin đáng đọc.
+    #[serde(default)]
+    pub m: bool,
+}
+
+/// Phải vắng mặt LIÊN TỤC chừng này giây trong `claude agents` thì cái chết
+/// của một phiên NỀN mới được tin — xem `Mark::g`. Gấp đôi nhịp quét thường
+/// thấy trong log (20–30 giây một vòng), để một lượt trượt đơn lẻ không đủ
+/// sức kết luận. Thà lỡ một tin còn hơn một tin sai — cùng lý do `MIN_LIFE_SEC`
+/// đã có.
+pub const BG_MISS_DEBOUNCE_SEC: i64 = 60;
+
+/// Một chuyện vừa xảy ra, đáng để làm phiền chủ máy.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Change {
+    /// Đang chạy → đứng lại ở dấu nhắc. Lượt việc đã xong.
+    Finished {
+        id: String,
+        name: String,
+        ran_sec: i64,
+    },
+    /// Rời khỏi danh sách hoặc mất tiến trình. **Không tự nhận là "tắt hẳn"** —
+    /// chỗ gọi còn phải dò cửa sổ terminal mới biết nói câu nào (xem `Mark`).
+    /// Phiên vừa DỪNG LẠI HỎI — câu hỏi và các lựa chọn lấy từ nhật ký.
+    Asking {
+        id: String,
+        name: String,
+        header: String,
+        question: String,
+        options: Vec<String>,
+        /// Chọn NHIỀU: bấm một số là bật/tắt, chưa gửi — xem `sessions::Asking`.
+        multi: bool,
+        /// Các câu còn lại của cùng bảng — xem `sessions::Asking::rest`.
+        rest: Vec<crate::sessions::Question>,
+    },
+    /// Phiên bị CHẶN vì tài khoản hết hạn mức — xem `LIMITED`.
+    Limited {
+        id: String,
+        name: String,
+        /// Tài khoản đang bị chặn.
+        acc: String,
+        /// Nguyên văn giờ mở lại, đọc từ màn.
+        when: String,
+        /// Tài khoản nên chuyển sang — xem [`suggest_account`].
+        ///
+        /// `None` ở chỗ DỰNG (`changes` không biết máy có mấy tài khoản), điền
+        /// ở chỗ NÓI (`pipeline::announce_changes`, nơi có `Config`). Để `None`
+        /// tới lúc phát ngôn cũng là một câu đúng — "không có ai để gợi ý" —
+        /// nên nó không phải một ô chờ được điền, nó là một trong hai kết cục.
+        goi_y: Option<String>,
+    },
+    /// Phiên đứng lại vì một LỖI — xem `ERRORED`.
+    Failed {
+        id: String,
+        name: String,
+        line: String,
+    },
+    Ended {
+        id: String,
+        name: String,
+        was_working: bool,
+        tty: String,
+        kind: String,
+        /// Phiên cha, nếu có — xem `Mark::p`.
+        parent: String,
+    },
+    /// Phiên thành MỒ CÔI: không cửa sổ nào trên màn, và cha sinh ra nó đã thoát.
+    ///
+    /// Nói MỘT lần (xem `Mark::m`). Nó không phải một cái chết — tiến trình vẫn
+    /// sống, vẫn giữ RAM — nên `Ended` không tả đúng; và nó cũng không tự khỏi,
+    /// nên im luôn thì cái máy cứ thế đầy dần những thứ không ai còn dùng.
+    Orphaned {
+        id: String,
+        name: String,
+        /// pid của cha đã thoát — thứ biến "mồ côi" từ một nhãn thành một dữ kiện.
+        spawner: i64,
+    },
+}
+
+/// Phiên đang thật sự ở trạng thái nào lúc nó im — NHÌN, không đoán.
+///
+/// Hà 2026-08-10, đọc tin trên Telegram: *"rõ ràng là lỗi mà sao tele tôi nhận
+/// được lại là phiên đang đứng ở dấu nhắc, chờ lượt sau"* — và *"toàn thông báo
+/// giống nhau"*. Cả hai đều đúng, và vế đầu nặng hơn: câu ấy là một KHẲNG ĐỊNH
+/// huba không hề biết. Thứ huba biết là "nhật ký thôi lớn lên"; mà nhật ký cũng
+/// thôi lớn lên khi phiên kẹt ở hộp thoại, khi lỗi, khi hết hạn mức.
+///
+/// Nên lúc CHUYỂN trạng thái — chuyện hiếm, vài lần một giờ — huba bỏ ra đúng
+/// một lần đọc màn cho riêng phiên ấy. Đọc màn cho MỌI phiên MỖI vòng mới là
+/// thứ từng kéo một vòng lên 90 giây; một lần cho một phiên lúc nó vừa im thì
+/// gần như không tốn gì, và nó đổi một câu đoán thành một câu nhìn thấy.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Idle {
+    /// Màn đang có hộp chọn: phiên KHÔNG rảnh, nó đang chờ người trả lời.
+    ///
+    /// `options` mang NGUYÊN VĂN từng lựa chọn khi đọc được màn; rỗng khi màn bị
+    /// giữ lại vì có dấu hiệu bí mật (`keys::Look::Withheld`) — lúc ấy chỉ còn
+    /// con số, và câu nói phải khai luôn là vì sao.
+    ///
+    /// Hà 2026-08-11: *"cần thêm thông tin mô tả liên quan tới lựa chọn đó mới
+    /// hợp lý"*. Đúng: `keys::parse_choices` đã bóc được chữ của từng lựa chọn
+    /// từ 2026-08-10, mà tin báo lại chỉ mang con số — một cái chuông nói "có 3
+    /// lựa chọn" thì vẫn bắt người ta mở máy ra mới biết chọn gì, tức nó chưa
+    /// tiết kiệm cho ai một bước nào.
+    Asking {
+        n: usize,
+        options: Vec<String>,
+        multi: bool,
+    },
+    /// Màn đang mang một LỖI API — phiên không chờ bạn, nó **hỏng**.
+    ///
+    /// 🔴 Hà 2026-08-12: *"vừa rồi báo lỗi api mà chưa thấy bắt được"*. Trước
+    /// đó một phiên gặp lỗi API rơi vào đúng nhánh `Prompt`, và cái chuông nói
+    /// *"⏸ dừng, đang chờ bạn"* — một câu ĐÚNG về hình dạng (nó có dừng, nó có
+    /// chờ) mà SAI về việc phải làm: chờ ở đây không phải chờ một câu trả lời,
+    /// mà là chờ ai đó biết rằng nó đã hỏng.
+    Failed { line: String },
+    /// Đứng ở dấu nhắc thật.
+    Prompt,
+    /// Không đọc được màn — nói đúng chừng ấy, đừng đoán hộ.
+    Unknown,
+}
+
+impl Change {
+    /// Tên phiên, dùng cho nhãn nút "vào phiên" — mỗi biến thể đều mang sẵn.
+    pub fn name(&self) -> &str {
+        match self {
+            Change::Orphaned { name, .. } => name,
+            Change::Limited { name, .. } | Change::Failed { name, .. } => name,
+            Change::Finished { name, .. }
+            | Change::Asking { name, .. }
+            | Change::Ended { name, .. } => name,
+        }
+    }
+
+    /// Câu nói cho phòng chat và cho Telegram — cùng một câu, vì hai nơi ấy
+    /// phải kể cùng một chuyện. Khác câu là sau này không ai đối chiếu được.
+    ///
+    /// `idle` là thứ NHÌN THẤY trên màn lúc phiên im; `tail` là câu cuối phiên
+    /// nói ra. Không có `tail` thì mọi tin giống hệt nhau và người ta thôi đọc
+    /// — đó là lời phàn nàn thứ hai của Hà, và nó đúng.
+    pub fn say(&self, idle: &Idle, tail: Option<&str>) -> String {
+        match self {
+            // Lỗi: nói THẲNG ra dòng lỗi. Người đọc không cần biết nó im bao
+            // lâu — họ cần biết nó hỏng vì cái gì.
+            // Hết hạn mức: nói ra ĐƯỜNG ĐI, không chỉ nói ra sự thật. Một tin
+            // báo "nó chặn rồi" mà không kèm cách đi tiếp thì chủ máy vẫn phải
+            // tự nhớ cú pháp — đúng lúc anh đang ở xa và đang bực.
+            Change::Limited {
+                id,
+                name,
+                acc,
+                when,
+                goi_y,
+            } => {
+                let ngan: String = id.chars().take(8).collect();
+                match goi_y {
+                    Some(m) => format!(
+                        "🚫 {name} bị chặn — tài khoản {acc} hết hạn mức ({when}).\n\
+                         Nó sẽ KHÔNG tự chạy lại. Chuyển sang tài khoản khác, giữ nguyên việc:\n\
+                         /handover -a {m} {ngan}"
+                    ),
+                    // Không có ai để gợi ý thì NÓI ĐÚNG CHỪNG ẤY, và vẫn đưa
+                    // hình dạng câu lệnh: chủ máy có thể biết một tài khoản mà
+                    // huba chưa nhìn thấy, nhưng nếu cú pháp cũng mất luôn thì
+                    // anh phải đi tra — đúng lúc đang ở xa.
+                    None => format!(
+                        "🚫 {name} bị chặn — tài khoản {acc} hết hạn mức ({when}).\n\
+                         Nó sẽ KHÔNG tự chạy lại, và huba KHÔNG thấy tài khoản nào đang rảnh \
+                         để gợi ý — chờ đồng hồ, hoặc tự chọn:\n\
+                         /handover -a <tài khoản> {ngan}"
+                    ),
+                }
+            }
+            Change::Failed { name, line, .. } => {
+                let head = format!(
+                    "{ST_ERR} {name} đang dừng vì LỖI:\n{}",
+                    crate::exec::truncate(line, 200)
+                );
+                match tail {
+                    Some(t) if !t.trim().is_empty() => format!("{head}\n\n«{}»", t.trim()),
+                    _ => head,
+                }
+            }
+            Change::Finished { name, ran_sec, .. } => {
+                // Một câu phải trả lời được: CÓ CẦN MÌNH LÀM GÌ KHÔNG.
+                let what = match idle {
+                    // Đọc được chữ ⟹ ĐƯA CHỮ RA. Nó đã qua cổng quét rò rỉ ở
+                    // `keys::look` (màn có dấu hiệu bí mật thì rơi sang nhánh
+                    // dưới), nên đây không phải chỗ để cẩn thận thêm lần nữa —
+                    // chỉ cắt cho vừa một cái chuông: 5 dòng, mỗi dòng 80 ký tự.
+                    Idle::Asking { n, options, multi } if !options.is_empty() => {
+                        let lines: Vec<String> = options
+                            .iter()
+                            .take(5)
+                            .enumerate()
+                            .map(|(i, o)| format!("{}. {}", i + 1, crate::exec::truncate(o, 80)))
+                            .collect();
+                        let more = if *n > lines.len() {
+                            format!("\n… và {} lựa chọn nữa", n - lines.len())
+                        } else {
+                            String::new()
+                        };
+                        // Chọn NHIỀU thì phải nói ra, không thì người đọc bấm
+                        // một cái rồi ngồi chờ một việc sẽ không xảy ra: phiên
+                        // vẫn đang đợi dấu Enter. (Hà 2026-08-13, ảnh chụp hộp
+                        // hỏi của [codetrail]: *"option này chọn nhiều chứ
+                        // không phải chọn 1"*.)
+                        let how = if *multi {
+                            "cần bạn chọn (CHỌN NHIỀU — bấm từng cái rồi bấm ✅ Gửi)"
+                        } else {
+                            "cần bạn chọn"
+                        };
+                        format!("{ST_ASK} {name} dừng lại HỎI — {how}:\n{}{more}", lines.join("\n"))
+                    }
+                    // Không đọc được chữ thì nói RÕ vì sao chỉ có con số, đừng
+                    // để người ta tưởng huba keo kiệt thông tin.
+                    //
+                    // 🔴 Câu cũ đổ cho "màn có dấu hiệu bí mật" — nhánh ấy CHẾT
+                    // từ 2026-08-16 khi `keys::Look::Withheld` bị gỡ, nên từ đó
+                    // nó là một lời giải thích SAI cho một sự thật khác: huba
+                    // đếm được số lựa chọn mà không đọc nổi chữ (cửa sổ đã đóng,
+                    // osascript ngã). Một câu nói sai lý do còn tệ hơn không nói
+                    // gì: nó gửi người đọc đi tìm nhầm chỗ.
+                    Idle::Asking { n, .. } => format!(
+                        "{ST_ASK} {name} dừng lại HỎI ({n} lựa chọn) — huba đếm được số lựa chọn nhưng \
+                         không đọc được chữ trên màn. /shot để thử đọc lại"
+                    ),
+                    Idle::Failed { line } => format!(
+                        "{ST_ERR} {name} gặp LỖI API sau {} phút chạy:\n{}",
+                        ran_sec / 60,
+                        crate::exec::truncate(line, 160)
+                    ),
+                    Idle::Prompt => format!(
+                        "{ST_WAIT} {name} dừng, đang chờ bạn — sau {} phút chạy",
+                        ran_sec / 60
+                    ),
+                    Idle::Unknown => format!(
+                        "{ST_WAIT} {name} dừng sau {} phút — không đọc được màn nên chưa rõ nó chờ gì",
+                        ran_sec / 60
+                    ),
+                };
+                match tail {
+                    Some(t) if !t.trim().is_empty() => format!("{what}\n\n«{}»", t.trim()),
+                    _ => what,
+                }
+            }
+            // `Ended` KHÔNG dựng câu ở đây: câu đúng phụ thuộc vào việc cửa
+            // sổ terminal còn hay mất, mà đó là một phép dò (I/O). Xem
+            // `pipeline::announce_changes`.
+            // Câu hỏi ĐI KÈM tin: người đọc phải quyết được ngay trên điện
+            // thoại, không phải mở máy ra mới biết nó hỏi gì. Nhãn ngắn
+            // (`header`) đứng trước vì nó đọc được trong một liếc.
+            Change::Asking {
+                name,
+                header,
+                question,
+                options,
+                rest,
+                ..
+            } => {
+                // Bảng mấy câu thì nói ngay ở dòng đầu. Con số này quyết định
+                // việc người đọc sắp làm: một câu thì bấm xong là xong, nhiều
+                // câu thì bấm xong VẪN CHƯA GỬI — và đó đúng là chỗ huba từng để
+                // Hà bấm rồi ngồi nhìn một cái hộp không nhúc nhích.
+                let of = if rest.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (câu 1/{})", rest.len() + 1)
+                };
+                let head = if header.is_empty() {
+                    format!("{ST_ASK} {name} dừng lại HỎI{of}")
+                } else {
+                    format!("{ST_ASK} {name} dừng lại HỎI — {header}{of}")
+                };
+                let list: Vec<String> = options
+                    .iter()
+                    .take(9)
+                    .enumerate()
+                    .map(|(i, o)| format!("{}. {}", i + 1, crate::exec::truncate(o, 80)))
+                    .collect();
+                let mut out = head;
+                if !question.is_empty() {
+                    out.push_str(&format!("\n{}", crate::exec::truncate(question, 400)));
+                }
+                if !list.is_empty() {
+                    out.push_str(&format!("\n\n{}", list.join("\n")));
+                }
+                // Các câu sau: đưa ra ĐỦ để quyết được, và nói thẳng cái ràng
+                // buộc — bảng chỉ đi khi không còn ô trống. Nhãn ngắn đứng
+                // trước, các lựa chọn nối bằng `·` cho vừa một cái chuông.
+                if !rest.is_empty() {
+                    out.push_str(&format!(
+                        "\n\n📋 Bảng {} câu — trả lời HẾT rồi mới gửi được:",
+                        rest.len() + 1
+                    ));
+                    for (i, q) in rest.iter().enumerate() {
+                        let label = if q.header.is_empty() {
+                            &q.question
+                        } else {
+                            &q.header
+                        };
+                        let opts = q
+                            .options
+                            .iter()
+                            .map(|o| crate::exec::truncate(o, 40))
+                            .collect::<Vec<_>>()
+                            .join(" · ");
+                        out.push_str(&format!(
+                            "\n{}. {}{}",
+                            i + 2,
+                            crate::exec::truncate(label, 60),
+                            if opts.is_empty() {
+                                String::new()
+                            } else {
+                                format!(": {opts}")
+                            }
+                        ));
+                    }
+                }
+                // Thông tin chốt phiên vừa nói ra TRƯỚC khi hỏi: nhiều câu hỏi
+                // chỉ quyết được khi biết nó vừa tìm ra gì. Đứng sau các lựa
+                // chọn vì thứ tự đọc là "hỏi gì · chọn gì · vì sao".
+                match tail {
+                    Some(t) if !t.trim().is_empty() => {
+                        out.push_str(&format!("\n\n«{}»", t.trim()));
+                    }
+                    _ => {}
+                }
+                out
+            }
+            Change::Ended { name, .. } => format!("{ST_DEAD} {name} — kết cục chưa xác định"),
+            // Nói ra CẢ ba thứ: nó là gì, vì sao thành ra thế, và làm gì với nó.
+            // Một tin báo không kèm đường đi thì chủ máy vẫn phải tự nhớ cú
+            // pháp, đúng lúc anh đang ở xa — cùng bài đã học ở `Change::Limited`.
+            Change::Orphaned { id, name, spawner } => format!(
+                "🌙 {name} thành MỒ CÔI — không còn cửa sổ nào trên màn, và phiên đẻ ra nó (pid {spawner}) đã thoát.\n\
+                 Nó không tự dừng, vẫn giữ RAM, và gõ vào thì không có chỗ nào để gõ.\n\
+                 Dọn: /stop {}",
+                crate::sessions::short_id(id)
+            ),
+        }
+    }
+}
+
+/// Rút **thông tin chốt** ra khỏi câu cuối phiên vừa nói.
+///
+/// Hà 2026-08-12: *"khi phiên dừng chờ thì cần hiện các thông tin chốt quan
+/// trọng để đọc trên tele"*. Trước đó tin mang 240 ký tự đầu của lượt cuối — mà
+/// 240 ký tự đầu của một báo cáo thường là câu dẫn nhập, tức đúng phần KHÔNG
+/// quyết định được gì. Người đọc vẫn phải mở máy ra, và cái chuông lại chỉ báo
+/// rằng có chuyện, không nói được chuyện gì.
+///
+/// Không gọi model để tóm tắt: huba **không tự tiêu hạn mức** (điều 8), và một
+/// bản tóm tắt sinh ra sau lưng thì không đối chiếu được với thứ phiên thật sự
+/// nói. Thay vào đó lọc theo **hình dạng** — thứ chính người viết đã dùng để
+/// đánh dấu điều quan trọng:
+///
+/// * dòng ĐẦU (câu chốt thường nằm ngay đó),
+/// * dòng mở đầu bằng dấu kết luận (`✅ ⚠ 🔴 ⛔ 📌 🎯 ⟹ →`),
+/// * dòng **in đậm** — người ta bôi đậm đúng chỗ muốn người khác đọc,
+/// * gạch đầu dòng, mục đánh số, tiêu đề `#`,
+/// * dòng có `⟹` ở giữa, và dòng kết thúc bằng dấu hỏi.
+///
+/// 🔴 **Hai luật dưới đây là thứ đọc bản thật mới thấy** (đo trên 3 báo cáo có
+/// thật của phiên `dwork`/`huba`/`projects` ngày 2026-08-12, bản đầu của hàm này
+/// trượt cả ba):
+///
+/// 1. **Cắt từng dòng cho ngắn.** Một đoạn văn 480 ký tự lọt lưới (nó có chữ in
+///    đậm) ăn sạch trần 700 ký tự, và thứ bị đẩy ra ngoài là *"Hai đường đi
+///    tiếp, anh chọn: 1… 2…"* — đúng phần duy nhất đòi người đọc quyết. Nay mỗi
+///    dòng tối đa `LINE_MAX`.
+/// 2. **Giữ chỗ cho phần CUỐI.** Báo cáo viết theo lối: mở bằng kết luận, đóng
+///    bằng câu hỏi. Lấy tuần tự từ trên xuống thì phần đóng luôn là phần rơi —
+///    tức là bản rút gọn bỏ đi đúng cái nó sinh ra để mang đi. Nay `TAIL_KEEP`
+///    dòng cuối được đặt chỗ trước, phần đầu điền vào chỗ còn lại.
+///
+/// Cắt thì NÓI RA còn bao nhiêu dòng: một bản rút gọn im lặng đọc như một bản
+/// đầy đủ, và người đọc sẽ quyết định trên thứ họ tưởng là toàn bộ.
+pub fn key_points(text: &str, max_chars: usize) -> String {
+    /// Số dòng cuối luôn có chỗ — xem luật 2 ở trên.
+    const TAIL_KEEP: usize = 3;
+    /// Trần số dòng, để một bản rút gọn vẫn liếc được trên điện thoại.
+    const MAX_LINES: usize = 9;
+
+    let (loud, total) = loud_lines(text);
+    if loud.is_empty() {
+        return String::new();
+    }
+
+    // Vừa cả hai trần thì in trọn — không có gì bị giấu, nên cũng không có câu
+    // "còn N dòng" (nói dối theo chiều ngược lại: dọa người đọc là còn thứ chưa
+    // xem trong khi đã xem hết).
+    let whole: usize = loud.iter().map(|l| l.chars().count() + 1).sum();
+    if loud.len() <= MAX_LINES && whole <= max_chars {
+        let out = loud.join("\n");
+        return with_hidden_note(out, total, loud.len());
+    }
+
+    // Đặt chỗ cho phần cuối TRƯỚC, rồi mới điền phần đầu.
+    let tail_from = loud.len().saturating_sub(TAIL_KEEP);
+    let tail: Vec<&String> = loud[tail_from..].iter().collect();
+    let tail_chars: usize = tail.iter().map(|l| l.chars().count() + 1).sum();
+
+    let mut head: Vec<&String> = Vec::new();
+    let mut used = tail_chars;
+    for line in loud.iter().take(tail_from) {
+        let need = line.chars().count() + 1;
+        if head.len() + tail.len() >= MAX_LINES || used + need > max_chars {
+            break;
+        }
+        used += need;
+        head.push(line);
+    }
+
+    let head_len = head.len();
+    let shown = head_len + tail.len();
+    let mut out = String::new();
+    for line in head {
+        out.push_str(line);
+        out.push('\n');
+    }
+    // Dấu ĐỨT ở đúng chỗ đứt: nếu không có nó, phần đầu và phần cuối dán liền
+    // nhau và đọc như hai câu nối tiếp — một thứ bản gốc không hề nói. Con số
+    // thì để ở câu cuối, một chỗ thôi.
+    if tail_from > head_len {
+        out.push_str("⋯\n");
+    }
+    for (i, line) in tail.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(line);
+    }
+    with_hidden_note(out, total, shown)
+}
+
+/// Nói ra phần KHÔNG hiện — số dòng của bản gốc không lọt vào bản rút gọn.
+fn with_hidden_note(out: String, total: usize, shown: usize) -> String {
+    let hidden = total.saturating_sub(shown);
+    if hidden == 0 || out.is_empty() {
+        return out;
+    }
+    format!("{out}\n… (còn {hidden} dòng)")
+}
+
+/// Những dòng "nói to" của một bản báo cáo, đã dọn sạch cho mắt điện thoại.
+///
+/// Trả kèm TỔNG số dòng có chữ của bản gốc, vì câu "còn N dòng" phải đếm từ bản
+/// gốc chứ không phải từ những dòng đã lọt lưới.
+fn loud_lines(text: &str) -> (Vec<String>, usize) {
+    // `📎` (06/10): dấu tệp DUY NHẤT mà phiên dùng để mời tải — rơi khỏi bản rút
+    // gọn là liên kết trong chữ không còn chỗ đứng (`tests/stop_hook_keeps_the_report.rs`).
+    const MARKERS: [&str; 11] = ["✅", "⚠", "🔴", "⛔", "📌", "🎯", "⟹", "→", "✔", "❌", "📎"];
+    /// Trần cho MỘT dòng — xem luật 1 trong `key_points`.
+    const LINE_MAX: usize = 180;
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let total = lines.len();
+    let mut out: Vec<String> = Vec::new();
+    let mut in_code = false;
+    for (i, t) in lines.iter().copied().enumerate() {
+        // Rào mã: bên trong là lệnh và số liệu thô, đọc trên điện thoại không ra
+        // quyết định nào. Vẫn được ĐẾM, nên "còn N dòng" không giấu chúng.
+        if t.starts_with("```") {
+            in_code = !in_code;
+            continue;
+        }
+        if in_code || t.chars().all(|c| "|-: ".contains(c)) {
+            continue;
+        }
+        let table = t.starts_with('|');
+        let bold = t.contains("**");
+        let bullet = t.starts_with("- ")
+            || t.starts_with("* ")
+            || t.starts_with("• ")
+            || t.starts_with('#')
+            || numbered(t);
+        let marked = MARKERS.iter().any(|m| t.starts_with(m)) || t.contains('⟹');
+        // Dòng ĐẦU và dòng CUỐI luôn vào, dù chúng không mang dấu nhấn nào.
+        //
+        // Vế "dòng cuối" là thứ đọc bản thật mới thấy thiếu: cả ba báo cáo thật
+        // đều đóng bằng một câu văn trơn — *"Nói 'dọn đi' là mình chạy phần an
+        // toàn… mình để bạn quyết"* · *"Hà mở lại phiên là tôi chạy nốt"* — tức
+        // đúng câu nói cho người đọc biết phải làm gì tiếp. Không có luật này
+        // thì `TAIL_KEEP` chỉ giữ chỗ cho ba dòng CUỐI-CÙNG-CÓ-DẤU-NHẤN, và
+        // câu chốt thật vẫn rơi.
+        let edge = i == 0 || i + 1 == total;
+        // Hàng bảng chỉ vào khi chính nó được nhấn: một bảng trần thường là
+        // phần liệt kê, còn hàng có chữ đậm/dấu là hàng người viết muốn đọc.
+        let loud = if table {
+            bold || marked || edge
+        } else {
+            edge || bold || bullet || marked || t.ends_with('?')
+        };
+        if !loud {
+            continue;
+        }
+        let line = tidy(t);
+        if !line.is_empty() {
+            out.push(crate::exec::truncate(&line, LINE_MAX));
+        }
+    }
+    (out, total)
+}
+
+/// `1. …` / `2) …` — mục đánh số của một danh sách việc phải làm.
+///
+/// Đòi dấu cách sau số: `10.7 GB swap` mở đầu một câu văn cũng khớp "số rồi
+/// chấm", và nhận nhầm nó thành mục đánh số thì bản rút gọn đầy những mảnh câu.
+fn numbered(t: &str) -> bool {
+    let Some((head, rest)) = t.split_once(['.', ')']) else {
+        return false;
+    };
+    rest.starts_with(' ') && !head.is_empty() && head.parse::<u8>().is_ok()
+}
+
+/// Một dòng markdown → một dòng chữ đọc được trên điện thoại.
+fn tidy(t: &str) -> String {
+    // Bảng: mỗi ô là một mẩu tin. Giữ nguyên dấu `|` thì trên điện thoại nó là
+    // một hàng rào không có bảng để dựa vào.
+    if t.starts_with('|') {
+        let cells: Vec<&str> = t
+            .trim_matches('|')
+            .split('|')
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .collect();
+        return plain(&cells.join(" · "));
+    }
+    let head = t.trim_start_matches('#').trim();
+    let bullet = head.starts_with("- ") || head.starts_with("* ") || head.starts_with("• ");
+    let body = plain(head.trim_start_matches(['-', '*', '•']).trim());
+    if bullet && !body.is_empty() {
+        format!("• {body}")
+    } else {
+        body
+    }
+}
+
+/// Bỏ dấu nhấn markdown, gộp khoảng trắng.
+fn plain(s: &str) -> String {
+    s.replace("**", "")
+        .replace('`', "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Số phận của Terminal.app giữa HAI vòng — ba trạng thái, không phải hai.
+///
+/// 🔴 `ChuaDoDuoc` là một trạng thái RIÊNG, không được gộp vào `Same`. Gộp nó
+/// vào "y nguyên" nghĩa là mỗi lần `pgrep` hết giờ, huba lại im lặng khẳng định
+/// Terminal vẫn thế — đúng hình dạng "tín hiệu không bao giờ ở trạng thái ngược
+/// lại" mà luật 13 gọi là không phải phép đo. Ở đây fail-closed nghiêng về phía
+/// IM: không đo được thì đừng gán cớ, vì một cái cớ sai còn tệ hơn không có cớ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalFate {
+    /// Hai vòng, hai pid khác nhau ⟹ Terminal.app đã chết (hoặc bị thoát) và
+    /// mở lại. Mọi cửa sổ của vòng trước đã đi theo nó.
+    KhoiDongLai { truoc: u32, sau: u32 },
+    /// Cùng một tiến trình ⟹ phiên nào tắt là tự nó tắt.
+    NguyenVen,
+    /// Một trong hai vòng không đo được pid — không kết luận gì.
+    ChuaDoDuoc,
+}
+
+/// So pid Terminal của vòng trước với vòng này.
+///
+/// Hàm thuần, và đó là chủ ý: đây là chỗ DUY NHẤT được rút ra kết luận từ hai
+/// con số ấy, nên nó phải cấy lỗi được mà không cần Terminal thật.
+///
+/// Chiều ngược lại cũng phải đúng và có bài kiểm riêng: pid ĐỔI mà không phiên
+/// nào tắt thì không có tin nào được bắn (chủ máy thoát Terminal lúc không có
+/// phiên nào chạy là chuyện thường) — cửa ấy nằm ở `pipeline::announce_changes`,
+/// không nằm ở đây.
+pub fn terminal_fate(truoc: Option<u32>, sau: Option<u32>) -> TerminalFate {
+    match (truoc, sau) {
+        (Some(a), Some(b)) if a != b => TerminalFate::KhoiDongLai { truoc: a, sau: b },
+        (Some(_), Some(_)) => TerminalFate::NguyenVen,
+        _ => TerminalFate::ChuaDoDuoc,
+    }
+}
+
+/// MỘT tin cho cả đợt, thay vì N tin báo tử không có cớ.
+///
+/// 🔴 Đây là câu Hà đã phải tự đi hỏi. 10/09 lúc 10:06, huba gửi **13 tin**
+/// `⚫ … đã tắt (thoát CLI, cửa sổ terminal còn mở)` liền nhau; không tin nào
+/// nói rằng Terminal.app vừa bị kernel giết lúc 10:03:57 và mang cả 13 phiên
+/// đi cùng. Câu hỏi nhận lại: *"Máy vừa bị sao mà thoát hết cli"*. Mười ba tin
+/// đúng từng cái một mà vẫn để người đọc không biết chuyện gì xảy ra — vì cái
+/// người ta cần là **một nguyên nhân**, không phải mười ba triệu chứng.
+///
+/// Hai nhóm tên, cố ý tách: phiên đang CHẠY DỞ là phần đòi người ta làm gì
+/// (cùng luật với `was_working` ở tin lẻ), phần còn lại chỉ để biết. Gộp chung
+/// thì việc cần xem lại chìm trong danh sách.
+pub fn terminal_restart_text(
+    truoc: u32,
+    sau: u32,
+    dang_cham: &[String],
+    con_lai: &[String],
+) -> String {
+    let tong = dang_cham.len() + con_lai.len();
+    let mut s = format!(
+        "🔴 Terminal.app khởi động lại (pid {truoc} → {sau}) — {tong} phiên tắt theo nó, \
+         KHÔNG phải {tong} sự cố riêng."
+    );
+    if !dang_cham.is_empty() {
+        s.push_str(&format!(
+            "\n⚠ Đang chạy dở, nên xem lại: {}",
+            dang_cham.join(" · ")
+        ));
+    }
+    if !con_lai.is_empty() {
+        s.push_str(&format!("\n⚫ Còn lại: {}", con_lai.join(" · ")));
+    }
+    // Chỗ đọc nguyên nhân THẬT, không phải suy đoán của huba: nếu là một cú
+    // sập thì macOS để lại báo cáo, nếu chủ máy tự thoát thì không có tệp nào.
+    // Hai ca ấy huba không phân biệt được, nên nó chỉ ra chỗ phân biệt được.
+    s.push_str("\n📄 Sập hay tự thoát: ls -t ~/Library/Logs/DiagnosticReports/Terminal-*.ips");
+    s
+}
+
+/// Sổ cũ hơn chừng này thì không kể tên ai "chết theo máy": huba đã vắng mặt quá
+/// lâu trước lần khởi động, phiên trong sổ có thể đã tắt êm từ trước đó.
+pub const CHET_THEO_MAY_TOI_DA_SEC: i64 = 86_400;
+
+/// Máy vừa khởi động lại SAU lượt ghi sổ cuối ⟹ những phiên nào trong sổ đã tắt
+/// THEO MÁY. Rỗng khi máy không khởi động lại kể từ lượt ghi ấy.
+///
+/// 🔴 Hà 03/10, sau lần máy hết pin tối 02/10: *"mở lại phiên đã có nạp lại được
+/// lịch sử đang làm giở không"*. Được — đo 6/6 nhật ký nguyên vẹn, bản ghi cuối
+/// cách lúc tắt 1 giây — nhưng từ điện thoại thì KHÔNG: lượt đầu sau khởi động
+/// thấy sổ "cũ" (`watch_book_stale_muted`, 604 s), im theo luật 11, rồi ghi đè
+/// sổ bằng danh sách mới ⟹ huba quên sạch 7 phiên, `/new <id>` không còn biết
+/// tài khoản để `--resume`. Còn 2 phiên đang làm dở nằm đó, không ai mở lại.
+///
+/// Đây KHÔNG phá luật 11. Luật ấy im vì *"sổ cũ = huba đã không nhìn"*, tức
+/// không biết phiên tắt LÚC NÀO. Máy khởi động lại thì biết chắc: không tiến
+/// trình nào sống qua nó, nên mọi phiên huba thấy sống ở lượt cuối đều đã chết
+/// trong khoảng [lượt cuối, lúc khởi động]. Câu báo nói đúng khoảng ấy, không
+/// nói "vừa".
+///
+/// Bỏ: phiên CON (chết theo phiên cha, phiên cha đã có tên trong danh sách) và
+/// phiên sống chưa đủ [`MIN_LIFE_SEC`] tính tới lượt cuối — đó là lượt dò hạn
+/// mức của chính huba, trừ khi huba mở nó cho chủ máy (`h`).
+pub fn chet_theo_may(
+    prev: &BTreeMap<String, Mark>,
+    so_luc: i64,
+    khoi_dong_luc: i64,
+    now: i64,
+) -> Vec<(String, Mark)> {
+    if khoi_dong_luc <= so_luc || now - so_luc > CHET_THEO_MAY_TOI_DA_SEC {
+        return Vec::new();
+    }
+    let mut v: Vec<(String, Mark)> = prev
+        .iter()
+        .filter(|(_, m)| m.p.is_empty())
+        .filter(|(_, m)| m.h || m.f == 0 || so_luc - m.f >= MIN_LIFE_SEC)
+        .map(|(id, m)| (id.clone(), m.clone()))
+        .collect();
+    v.sort_by_key(|(id, m)| ten_phien_chet(id, m));
+    v
+}
+
+/// Tên đọc được của một phiên đã chết, cho tin "chết theo máy" và nút ▶ của nó.
+///
+/// Nhãn ĐÃ TÍNH (`Mark::l`, vd `[dwork/dci]`) trước — `d` chỉ là thư mục
+/// (`dwork`), nên ba phiên dwork khác làn sẽ đọc ra ba dòng y hệt nhau và ba nút
+/// không phân biệt được. Sổ cũ chưa có `l` thì rơi về [`name_from_mark`].
+pub fn ten_phien_chet(id: &str, m: &Mark) -> String {
+    if m.l.trim().is_empty() {
+        return name_from_mark(id, m);
+    }
+    format!("{} ({})", m.l.trim(), &id[..id.len().min(8)])
+}
+
+/// Câu báo "phiên chết theo máy". `dang_do` = nhật ký lúc chết còn lượt MỞ
+/// (`sessions::turn_open_at_death`): `Some(true)` đang làm dở · `Some(false)` đã
+/// xong lượt · `None` không đọc được nhật ký.
+///
+/// Phiên đang làm dở đứng TRƯỚC: đó là phần đòi chủ máy làm gì (cùng luật với
+/// [`terminal_restart_text`]).
+pub fn chet_theo_may_text(
+    ds: &[(String, Mark, Option<bool>)],
+    so_luc: i64,
+    khoi_dong_luc: i64,
+) -> String {
+    let gio = |t: i64| {
+        chrono::DateTime::from_timestamp(t, 0)
+            .map(|d| {
+                d.with_timezone(&chrono::Local)
+                    .format("%H:%M %d/%m")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "?".into())
+    };
+    let mut s = format!(
+        "⚡ Máy khởi động lại lúc {} — {} phiên huba thấy còn sống lần cuối lúc {} đã tắt THEO MÁY.\n\
+         Lịch sử hội thoại vẫn trên đĩa: bấm ▶ để mở lại đúng phiên (claude --resume, đúng tài khoản, cửa sổ mới). \
+         Lệnh đang chạy lúc tắt KHÔNG tự chạy lại — mở rồi bảo nó làm tiếp.",
+        gio(khoi_dong_luc),
+        ds.len(),
+        gio(so_luc)
+    );
+    let mut thu_tu: Vec<&(String, Mark, Option<bool>)> = ds.iter().collect();
+    thu_tu.sort_by_key(|(_, _, d)| match d {
+        Some(true) => 0,
+        None => 1,
+        Some(false) => 2,
+    });
+    for (id, m, d) in thu_tu {
+        let tt = match d {
+            Some(true) => "⚠ ĐANG LÀM DỞ",
+            Some(false) => "đã xong lượt",
+            None => "chưa rõ (không đọc được nhật ký)",
+        };
+        let acc = if m.a.is_empty() {
+            String::new()
+        } else {
+            format!(" · {}", m.a)
+        };
+        s.push_str(&format!("\n• {}{acc} — {tt}", ten_phien_chet(id, m)));
+    }
+    s
+}
+
+/// Gọi tên một phiên ĐÃ BIẾN MẤT, bằng những gì sổ còn giữ.
+///
+/// Ba dữ kiện xếp theo thứ người ta nhận ra: **tên** phiên · **dự án** nó đang
+/// làm · id ngắn để gõ tiếp lệnh. Thiếu tên (sổ ghi từ bản cũ) thì nói thẳng
+/// "phiên <id>" — một id không có nhãn còn đỡ hơn một cái tên bịa.
+pub fn name_from_mark(id: &str, mark: &Mark) -> String {
+    let short = &id[..id.len().min(8)];
+    // Nhãn DỰ ÁN, không phải tên `claude` tự đặt — Hà 2026-08-13, hai lần:
+    // *"cần gì đoạn text project-xx làm gì"* rồi *"vẫn còn project-.."* khi tin
+    // báo vẫn hiện `⏸ projects-06`. Lượt trước tôi mới đổi ở danh sách và ở câu
+    // ack, quên hẳn đường của CÁI LOA — mà đó lại là đường Hà đọc nhiều nhất.
+    match (mark.n.trim(), mark.d.trim()) {
+        ("", _) => format!("phiên {short}"),
+        (name, "") => format!("{name} ({short})"),
+        (_, folder) => format!("[{folder}] ({short})"),
+    }
+}
+
+/// Trạng thái rút gọn của một phiên trong ảnh chụp lúc này.
+fn state_of(s: &LiveSession) -> &'static str {
+    if s.host == "dead" {
+        DEAD
+    } else if s.limited.is_some() {
+        // TRƯỚC mọi thứ trừ `dead`: một phiên vừa bị chặn vẫn có thể còn cờ
+        // `working` từ lượt dở, và lúc ấy huba sẽ im (đang chạy thì không phải
+        // tin) — im đúng lúc đáng nói nhất.
+        LIMITED
+    } else if s.error.is_some() && !s.working {
+        // Lỗi đứng TRƯỚC `idle`: cùng một phiên im lìm, nhưng "im vì xong" và
+        // "im vì hỏng" đòi hai việc khác hẳn nhau của người đọc.
+        ERRORED
+    } else if s.asking.is_some() {
+        // ĐỨNG TRƯỚC `working` có chủ ý: một phiên vừa hỏi vừa còn subagent chạy
+        // dở vẫn là phiên **đang chờ người**, và đó mới là điều cần nói ra.
+        ASKING
+    } else if s.working {
+        WORKING
+    } else {
+        IDLE
+    }
+}
+
+/// So sổ cũ với ảnh chụp mới → những chuyện đáng nói + sổ mới.
+///
+/// Thuần: không đọc đĩa, không gọi mạng, nên kiểm được đủ mọi ca mà không cần
+/// một cái máy đang chạy `claude`.
+///
+/// `first_run` (sổ cũ rỗng) trả về **không sự kiện nào** — xem luật 2 ở đầu tệp.
+/// `blind`: những tài khoản KHÔNG liệt kê được phiên ở lượt này — xem `Mark::a`.
+/// Phiên của một tài khoản mù không được coi là đã tắt, và **sổ của nó phải
+/// được giữ nguyên**: xoá khỏi sổ là lượt sau nó quay lại thành "phiên mới",
+/// rồi lúc tắt thật lại báo thêm một lần nữa (đo được: `37e59209` báo 14:44 +
+/// 16:08, `69a38c64` báo 14:44 + 16:42 — không phải loa lặp, mà là sổ bị xoá).
+/// Tài khoản nên chuyển sang khi một phiên bị chặn — KHÔNG BAO GIỜ là cái vừa chết.
+///
+/// 🔴 Hà 2026-08-30, ngay sau khi hỏi *"phiên gần hết token muốn chủ động chuyển
+/// ngữ cảnh sang phiên mới với acc khác thì dùng lệnh nào"*: câu gợi ý trong tin
+/// báo tự động gõ cứng `acc1` từ lúc dựng (28/08, `Change::Limited`). Nó đúng
+/// suốt ba ngày vì acc1 chưa lần nào là cái bị chặn — một hằng số đúng nhờ hoàn
+/// cảnh chứ không nhờ lý lẽ. Ngày acc1 hết hạn mức thì huba bảo chủ máy chuyển
+/// sang **đúng tài khoản vừa chết**, và câu ấy đọc lên vẫn trơn tru như mọi câu
+/// khác — không có gì đỏ lên, chỉ có một cú chạm vô ích ở đầu kia cây cầu.
+///
+/// Ba cửa, theo thứ tự:
+/// 1. bỏ chính tài khoản đang bị chặn;
+/// 2. bỏ mọi tài khoản mà huba ĐANG NHÌN THẤY một phiên bị chặn **và mốc mở lại
+///    còn ở phía trước** — đo được sáng 30/08: acc3 đứng `weekly limit · resets
+///    Sep 1` trên BỐN phiên cùng lúc, nên gợi ý sang đó là gợi ý một cú chạm vô
+///    ích thứ hai. Mốc đã qua thì dòng banner chỉ là một cái VẾT, xem thân hàm;
+/// 3. trong số còn lại, lấy cái CÒN NHIỀU CHỖ NHẤT ([`crate::quota::Rank`]).
+///
+/// 🔴 Cửa 3 là chỗ vá ngày 2026-08-30, và nó vá đúng câu Hà hỏi: *"mở phiên mới ở
+/// acc khác chưa kiểm soát được acc đó có đang còn nhiều tokens nhất không"*.
+///
+/// Luật cũ dừng ở cửa 2 rồi lấy **tên đầu tiên trong cấu hình**, với lời tự bào
+/// chữa ghi ngay tại đây: *"huba không có phép đo nào tốt hơn để xếp lại
+/// (`/usage` treo)"*. Câu ấy đúng về phép dò và SAI về sự thật — số hạn mức nằm
+/// sẵn trong `<config_dir>/.claude.json` do chính CLI ghi, không cần dò gì cả.
+/// Đo cùng lúc anh hỏi: **acc1 92% · acc2 22% · acc3 100%**, và luật cũ trả
+/// `acc1`. Xem [`crate::quota`].
+///
+/// Cửa 2 vẫn giữ dù cửa 3 mạnh hơn, vì hai cửa đo hai thứ khác nhau và cái nào
+/// cũng có lúc là cái duy nhất còn thấy: cửa 2 đọc MÀN (biết ngay lúc này, kể cả
+/// khi tệp chưa kịp cập nhật), cửa 3 đọc TỆP (biết cả tài khoản không có phiên
+/// nào — đúng chỗ cửa 2 mù hoàn toàn).
+///
+/// `None` = không còn tài khoản nào để gợi ý, và đó là một câu trả lời chứ không
+/// phải một chỗ trống. Bịa ra một cái tên thì tốn của chủ máy đúng cái thứ đang
+/// thiếu: một lượt gọi `claude`.
+///
+/// Hoà thì lấy cái đứng trước trong cấu hình — thứ tự chủ máy tự xếp, và
+/// `min_by_key` của Rust giữ phần tử ĐẦU khi bằng nhau.
+pub fn suggest_account(
+    limited: &str,
+    accounts: &[crate::quota::Ranked],
+    now: &[LiveSession],
+    now_min: u64,
+) -> Option<String> {
+    // Hai cửa đọc từ MÀN, gộp làm một danh sách "đừng gợi ý":
+    // · `limited` — hết hạn mức, chờ đồng hồ thì tự mở;
+    // · `account_dead` — TỔ CHỨC KHOÁ, chờ bao lâu cũng vô ích (Hà 2026-08-31:
+    //   `/new` mở một cửa sổ acc1 rồi nó chết ngay dòng đầu).
+    //
+    // Cái thứ hai KHÔNG có trong sổ `.claude.json` — đo được cùng lúc: acc1 ở đó
+    // vẫn ghi `92%` với `fetchedAtMs` già ba ngày, nên `quota` xếp nó `Unknown`
+    // chứ không phải "đã chết". Màn là nguồn duy nhất.
+    //
+    // 🔴 Cửa `limited` hỏi **MỐC**, không hỏi sự có mặt — 2026-09-10, và đây là
+    // tầng mà bản vá 09/09 (`80598be`) cố ý chừa lại với lời biện hộ *"ở những
+    // chỗ ấy một cái vết cũ chỉ làm huba dè dặt lâu hơn vài phút"*. Câu ấy đo
+    // được là SAI, ngay tại đây:
+    //
+    // Lúc 19:11 ngày 10/09, hai phiên acc2 còn mang banner `resets 3pm` — mốc ĐÃ
+    // QUA 4 tiếng, dòng chữ nằm lại vì phiên bị chặn thì không in thêm gì. Sổ
+    // hạn mức cùng lượt đọc acc2 = **week 37% · 5h 32%**, tức còn chỗ. Nhưng
+    // `is_some()` đọc cái vết ấy thành "acc2 đang bị chặn" ⟹ acc2 bị loại ⟹
+    // `suggest_account` trả `None` cho **cả 8 phiên acc1** đang kịch trần (acc1
+    // 100% tới 13/09, acc3 100% tới 15/09) ⟹ `auto_limit_held … why:"NoAccount"`
+    // lặp mỗi vòng, và **không phiên nào được chuyển đi đâu cả**.
+    //
+    // Không phải "dè dặt lâu hơn vài phút": cái vết chỉ biến mất khi phiên in
+    // thêm chữ, mà phiên bị chặn thì không in — nên nó khoá VĨNH VIỄN đúng cái
+    // tài khoản duy nhất còn sống. `account_dead` giữ nguyên `is_some()`: khoá
+    // tổ chức không có đồng hồ nào để hỏi.
+    let dang_chan: Vec<&str> = now
+        .iter()
+        .filter(|s| {
+            crate::pipeline::limit_still_biting(
+                s.limited.as_deref(),
+                s.limit_window,
+                s.limit_left_min,
+                now_min,
+            ) || s.account_dead.is_some()
+        })
+        .map(|s| s.account.as_str())
+        .collect();
+    accounts
+        .iter()
+        .filter(|a| a.name != limited && !dang_chan.contains(&a.name.as_str()))
+        // Đã đo được là KỊCH TRẦN thì không phải một gợi ý, nó là cú chạm vô ích
+        // thứ ba. Thà trả `None` và nói thẳng là không biết chuyển đi đâu.
+        //
+        // `Dead` đứng cùng cửa này chứ không cùng cửa `dang_chan` bên trên, và
+        // đó là cả bản vá 02/09: `dang_chan` đọc MÀN, nên nó chỉ biết chừng nào
+        // còn một cửa sổ mở. Hạng `Dead` tới từ SỔ (`quota::apply_dead_book`),
+        // nên nó còn đúng cả khi không phiên nào của tài khoản ấy còn sống.
+        // `NotReady` vào cùng cửa này ngày 12/09, và nó là cái cửa đã thiếu:
+        // acc4 khai vào config lúc chưa đăng nhập ⟹ hạng `Unknown` ⟹ đứng
+        // TRƯỚC `Full` ⟹ được chọn đúng lúc acc2 kịch trần ⟹ cửa sổ `ttys007`
+        // mở ra rồi đứng ở hộp chọn giao diện lần đầu, còn phiên cũ thì đã bị
+        // bỏ lại. Xem `quota::account_not_ready`.
+        // `Locked` (Hà 29/09) — chủ máy khoá thì huba không đưa vào sử dụng.
+        .filter(|a| {
+            !matches!(
+                a.rank,
+                crate::quota::Rank::Full
+                    | crate::quota::Rank::ApiKey
+                    | crate::quota::Rank::NotReady
+                    | crate::quota::Rank::Dead
+                    | crate::quota::Rank::Locked
+            )
+        })
+        .min_by_key(|a| a.rank)
+        .map(|a| a.name.clone())
+}
+
+/// Đối chiếu MÀN với SỔ tài khoản chết: ghi cái vừa thấy, gỡ cái đã sống lại.
+///
+/// 🔴 Hai chiều, vì một cuốn sổ chỉ ghi thêm là một cuốn sổ không bao giờ sai
+/// được — tức không phải phép đo (§13①). Chiều gỡ mới là chiều khó, và nó KHÔNG
+/// đi bằng đồng hồ: khoá tổ chức không tự mở theo giờ, nên một hạn dùng kiểu
+/// *"quên sau 24 tiếng"* sẽ âm thầm hồi sinh một tài khoản vẫn đang chết và trả
+/// nguyên con bug về vào ngày thứ hai. Thứ chứng minh được tài khoản sống lại
+/// chỉ có một: **một phiên của nó ĐANG CHẠY**.
+///
+/// Ba trạng thái, và cửa giữa là cửa phải có:
+/// * phiên mang dấu khoá ⟹ GHI;
+/// * phiên đang CHẠY và không mang dấu ⟹ GỠ;
+/// * phiên im lặng (`working == false`, không dấu) ⟹ **không kết luận gì**. Một
+///   cửa sổ vừa mở chưa kịp in chữ nào trông y hệt một cửa sổ vừa chết — đọc nó
+///   thành "sống" là gỡ sổ đúng lúc không được gỡ.
+pub fn reconcile_dead_book(db: &crate::db::Db, now: &[LiveSession]) {
+    for s in now {
+        if s.account.is_empty() {
+            continue;
+        }
+        if let Some(why) = s.account_dead.as_deref() {
+            // Ghi lại mỗi vòng thì `updated_at` luôn tươi, nhưng chỉ NÓI lần
+            // đầu: một dòng log mỗi vòng về cùng một cái chết là tiếng ồn.
+            let da_biet = db.dead_accounts().contains_key(&s.account);
+            if let Err(e) = db.mark_account_dead(&s.account, why) {
+                crate::logging::error(
+                    "dead_book_write_failed",
+                    serde_json::json!({ "account": s.account, "err": e.to_string() }),
+                );
+            } else if !da_biet {
+                crate::logging::warn(
+                    "account_marked_dead",
+                    serde_json::json!({ "account": s.account, "why": why }),
+                );
+            }
+        } else if s.working {
+            match db.clear_account_dead(&s.account) {
+                // Chỉ nói khi THẬT SỰ vừa gỡ một dòng ra — xem `Db::del_cursor`.
+                Ok(true) => crate::logging::warn(
+                    "account_alive_again",
+                    serde_json::json!({ "account": s.account, "bang_chung": s.session_id }),
+                ),
+                Ok(false) => {}
+                Err(e) => crate::logging::error(
+                    "dead_book_clear_failed",
+                    serde_json::json!({ "account": s.account, "err": e.to_string() }),
+                ),
+            }
+        }
+    }
+}
+
+pub fn changes(
+    prev: &BTreeMap<String, Mark>,
+    now: &[LiveSession],
+    epoch_sec: i64,
+    blind: &[String],
+) -> (Vec<Change>, BTreeMap<String, Mark>) {
+    let mut next: BTreeMap<String, Mark> = BTreeMap::new();
+    let mut out: Vec<Change> = Vec::new();
+    let first_run = prev.is_empty();
+
+    // 🔴 Phép dò hạn mức của CHÍNH huba không được lên chuông (Hà 2026-08-12,
+    // đọc `⏹ huba-67 … đã tắt`: *"quá vô lý"*). Cửa TUỔI THỌ bên dưới bắt được
+    // phần lớn — `claude -p "/usage"` thường sống dưới 120 giây — nhưng nó bắt
+    // sai chỗ: thứ khiến cái chết này không phải tin **không phải là nó ngắn**,
+    // mà là **nó của huba**. Đo đúng ca lọt lưới: `huba-67` nằm trong danh sách
+    // 11 phút (lượt dò treo tới trần 60s rồi `usage_probe_unparsed`), qua cửa
+    // 120 giây, và bắn một tin về một phiên chủ máy không mở, không thấy, không
+    // làm gì được.
+    //
+    // Dấu nhận biết là `cwd`: hubad chạy với thư mục làm việc riêng của nó
+    // (plist `WorkingDirectory`), và tiến trình con thừa hưởng — không phiên
+    // nào của người lại nằm ở đấy. Chỉ IM cái chuông; danh sách phiên vẫn liệt
+    // kê đủ, vì giấu khỏi màn là một quyết định khác, chưa ai yêu cầu.
+    //
+    // 📌 Cửa đặt ở chỗ PHÁT NGÔN, không ở đầu vào. Lọc ngay từ `now` thì gọn
+    // hơn, nhưng nó làm huba im lặng bỏ qua cả một lớp phiên — không sổ, không
+    // log, không cách nào kiểm là luật có đang chạy hay không; đúng hình dạng
+    // mà tệp này gọi tên ở khắp nơi. Vào sổ như mọi phiên khác, và mỗi lần bỏ
+    // qua một cái chết thì NÓI RA (`session_end_muted`).
+    for s in now {
+        // Cửa sổ RẢNH không phải một phiên trợ lý, nên nó không có "vừa xong"
+        // và cái chết của nó không phải tin: đóng một cửa sổ trống là chuyện
+        // thường ngày, báo lên điện thoại là cái loa kêu vào mặt người đang
+        // ngồi ngay đó. Không vào sổ, không nói gì (xem `add_shell_windows`).
+        if s.host == "shell" {
+            continue;
+        }
+        let hub_own = crate::sessions::is_hub_own_probe(s);
+        let state = state_of(s);
+        let before = prev.get(&s.session_id);
+        let was_working = before.is_some_and(|b| b.s.starts_with(WORKING));
+        // Mốc bắt đầu chạy: giữ nguyên nếu đang chạy tiếp, đặt mới nếu vừa bắt
+        // đầu. Không có mốc thì lấy lúc này — thiếu chính xác một lượt, và lượt
+        // ấy sẽ bị coi là ngắn, tức im. Thà lỡ một tin còn hơn một tin sai.
+        // CLI có khai mốc bắt đầu lượt (`statusUpdatedAt` của `busy`) thì dùng
+        // mốc ấy: "lúc vòng đầu tiên nhìn thấy" trễ tới một vòng (120 giây), đủ
+        // để một lượt 3 phút đo ra dưới `MIN_RUN_SEC` rồi bị im.
+        let cli_start = crate::sessions::cli_turn_started(s, epoch_sec);
+        let since = if was_working {
+            let book = before
+                .and_then(|b| working_since(&b.s))
+                .unwrap_or(epoch_sec);
+            cli_start.map_or(book, |c| c.min(book))
+        } else {
+            cli_start.unwrap_or(epoch_sec)
+        };
+        // MỒ CÔI — nói MỘT lần, xem `Mark::m`.
+        //
+        // `is_orphan` đòi CẢ hai vế đo được: không cửa sổ nào trên màn, VÀ
+        // `spawner_alive == Some(false)`. Vế sau là `Some(false)` chứ không phải
+        // `!= Some(true)` — "chưa đọc được cha" (`None`) là trạng thái riêng, và
+        // dán nhãn mồ côi cho nó là bịa ra một cái chết chưa hề đo.
+        //
+        // Ba cửa nữa, mỗi cửa là một bài đã trả giá trong tệp này:
+        // · `before.is_some()` — phải thấy nó ít nhất một vòng TRƯỚC. Sổ rỗng
+        //   nghĩa là huba vừa dậy, không phải mọi thứ vừa đổi (luật 11);
+        // · `!hub_own` — phép dò của chính huba không bao giờ được rung chuông
+        //   (xem `is_hub_own_probe`);
+        // · cờ `m` trong sổ — mồ côi *xuất hiện* là thay đổi, mồ côi *tồn tại*
+        //   thì không.
+        let orphan_now = crate::sessions::is_orphan(s);
+        if orphan_now && before.is_some_and(|b| !b.m) && !hub_own {
+            out.push(Change::Orphaned {
+                id: s.session_id.clone(),
+                name: crate::sessions::shown(s),
+                spawner: s.spawned_by_pid.unwrap_or_default(),
+            });
+        }
+        // Phiên đã chết vẫn nằm trong danh sách vài giây; đừng ghi nó vào sổ
+        // mới, nếu không lần sau nó lại "biến mất" và báo tắt lần thứ hai.
+        match state {
+            WORKING | IDLE | ASKING => {
+                next.insert(
+                    s.session_id.clone(),
+                    Mark {
+                        s: match state {
+                            WORKING => format!("{WORKING}@{since}"),
+                            ASKING => ASKING.to_string(),
+                            _ => IDLE.to_string(),
+                        },
+                        y: s.tty.clone(),
+                        k: s.kind.clone(),
+                        p: s.parent_session_id.clone().unwrap_or_default(),
+                        // Giữ nguyên mốc lần đầu; sổ cũ (f = 0) coi như thấy từ
+                        // bây giờ, tức lượt sau nó mới đủ tuổi để báo — thà lỡ
+                        // một tin còn hơn một tin sai.
+                        f: before.map(|b| b.f).filter(|f| *f > 0).unwrap_or(epoch_sec),
+                        h: s.started_by_hub,
+                        n: s.name.clone(),
+                        d: s.folder.clone(),
+                        l: crate::sessions::shown(s),
+                        a: s.account.clone(),
+                        c: s.cwd.clone(),
+                        i: s.pid,
+                        o: s.host.clone(),
+                        // Thấy phiên còn sống ⟹ hết mọi nghi ngờ, kể cả nghi
+                        // ngờ đã tích luỹ từ những vòng trước.
+                        g: 0,
+                        // Thôi mồ côi (cha sống lại được thì hiếm, nhưng phiên
+                        // MỞ CỬA SỔ trở lại thì không hiếm) ⟹ cờ về `false`, để
+                        // lần sau nó thành mồ côi lại thì vẫn được báo. Cờ này
+                        // gác việc LẶP, không phải gác việc nói.
+                        m: orphan_now,
+                    },
+                );
+            }
+            _ => {}
+        }
+        if first_run {
+            continue;
+        }
+        // Máy móc của chính huba: vào sổ như mọi phiên, nhưng không nói gì cả —
+        // không "vừa xong", không "đang hỏi", không "đã tắt".
+        if hub_own {
+            continue;
+        }
+        // BẮT ĐẦU HỎI — nói một lần, ngay lúc câu hỏi xuất hiện.
+        //
+        // Không đi qua nhánh `Finished` bên dưới: một phiên dừng lại hỏi thì
+        // "vừa chạy xong" là câu sai (việc còn dở), và nó cũng không được im
+        // theo luật "đừng kêu vào mặt người đang nhìn" — kẹt thì dù đang ngồi
+        // trước máy cũng đáng được gọi, vì có thể người ta đang nhìn cửa sổ khác.
+        // LỖI — nói một lần, ngay lúc dòng lỗi xuất hiện trong nhật ký.
+        if state == LIMITED && before.is_some_and(|b| b.s != LIMITED) {
+            out.push(Change::Limited {
+                id: s.session_id.clone(),
+                name: crate::sessions::shown(s),
+                acc: s.account.clone(),
+                when: s.limited.clone().unwrap_or_default(),
+                // Chỗ này không biết máy có mấy tài khoản (`changes` cố ý chỉ
+                // nhận cái nó so được). Người điền là `announce_changes`.
+                goi_y: None,
+            });
+        } else if state == ERRORED && before.is_some_and(|b| b.s != ERRORED) {
+            out.push(Change::Failed {
+                id: s.session_id.clone(),
+                name: crate::sessions::shown(s),
+                line: s.error.clone().unwrap_or_default(),
+            });
+        } else if state == ASKING && before.is_some_and(|b| b.s != ASKING) {
+            let a = s.asking.clone().unwrap_or_default();
+            out.push(Change::Asking {
+                id: s.session_id.clone(),
+                name: crate::sessions::shown(s),
+                header: a.header,
+                question: a.question,
+                options: a.options,
+                multi: a.multi,
+                rest: a.rest,
+            });
+        } else if was_working && state == IDLE {
+            // Cửa thời lượng: chạy chớp nhoáng thì không phải tin.
+            if epoch_sec - since >= MIN_RUN_SEC {
+                out.push(Change::Finished {
+                    id: s.session_id.clone(),
+                    name: crate::sessions::shown(s),
+                    ran_sec: epoch_sec - since,
+                });
+            }
+        } else if before.is_some() && state == DEAD {
+            out.push(Change::Ended {
+                id: s.session_id.clone(),
+                name: crate::sessions::shown(s),
+                was_working,
+                tty: s.tty.clone(),
+                kind: s.kind.clone(),
+                parent: s.parent_session_id.clone().unwrap_or_default(),
+            });
+        }
+    }
+
+    // Rời khỏi danh sách = đã kết thúc. Đây mới là đường CHÍNH, không phải `dead`.
+    if !first_run {
+        let seen: Vec<&String> = now.iter().map(|s| &s.session_id).collect();
+        for (id, mark) in prev {
+            if seen.contains(&id) {
+                continue;
+            }
+            // Phép dò của chính huba: im, và BỎ khỏi sổ. Không có cửa này thì
+            // đúng lượt nâng cấp đầu tiên, mọi phiên dò đang nằm trong sổ cũ sẽ
+            // "biến khỏi danh sách" (vì lượt lọc bên trên vừa gạt chúng ra) và
+            // được báo tử hàng loạt — một luật mới sinh ra để bớt tin lại đẻ ra
+            // một tràng tin.
+            if crate::sessions::is_hub_runtime_cwd(&mark.c) {
+                logging::info(
+                    "session_end_muted",
+                    json!({ "session": id, "lived_sec": epoch_sec - mark.f,
+                            "why": "phép dò hạn mức của chính huba — cái chết của nó không phải tin" }),
+                );
+                continue;
+            }
+            // Cửa EDITOR — cùng một cái bẫy, lần thứ hai, và lần này đã biết
+            // trước nên phải dựng cửa TRƯỚC khi nâng cấp chứ không phải sau.
+            //
+            // 2026-08-13 huba thôi liệt kê phiên VS Code (Hà: *"nếu đã không
+            // thao tác được vào vs code thì bỏ đi"*). Lượt chạy ĐẦU TIÊN sau
+            // bản này, sổ cũ còn nguyên **8 hàng editor** đang sống — chúng
+            // "biến khỏi danh sách" vì lượt lọc mới vừa gạt chúng ra, và luật
+            // *"rời khỏi danh sách = đã kết thúc"* sẽ đọc thành 8 cái chết: một
+            // tràng `⏹ đã tắt` cho 8 phiên vẫn đang chạy ngon lành, y hệt vụ ba
+            // tin sai trong 8 giây ngày 08-12 (luật 11b).
+            //
+            // BỎ hẳn khỏi sổ, không giữ lại như cửa MÙ: ở cửa mù, giữ hàng là
+            // đúng vì phiên sẽ quay lại danh sách khi tài khoản hết mù. Ở đây
+            // nó sẽ KHÔNG bao giờ quay lại — huba không nhìn phiên editor nữa —
+            // nên giữ hàng chỉ là để sổ phình ra mãi.
+            if mark.o == "editor" {
+                logging::info(
+                    "session_end_muted",
+                    json!({ "session": id, "host": mark.o,
+                            "why": "phiên VS Code — huba thôi liệt kê chúng, vắng mặt là do LUẬT MỚI chứ không phải nó tắt" }),
+                );
+                continue;
+            }
+            // Cửa MÙ — xem `Mark::a`. Tài khoản không liệt kê được phiên thì
+            // "không có trong danh sách" chỉ có nghĩa là **huba không nhìn
+            // thấy**, không có nghĩa là phiên đã tắt.
+            //
+            // Sổ cũ chưa có tên tài khoản (`a` rỗng) cũng đi lối này khi có bất
+            // kỳ tài khoản nào mù: thà lỡ một tin còn hơn một tin sai. Trường
+            // `a` được ghi lại ở mọi lượt nhìn thấy phiên, nên ca ấy tự hết sau
+            // đúng một vòng lành lặn.
+            if !blind.is_empty() && (mark.a.is_empty() || blind.contains(&mark.a)) {
+                // GIỮ sổ y nguyên: xoá đi là lượt sau phiên quay lại thành
+                // "phiên mới", và cái chết thật của nó sẽ được báo LẦN NỮA.
+                next.insert(id.clone(), mark.clone());
+                logging::info(
+                    "session_end_unknown",
+                    json!({ "session": id, "account": mark.a, "blind": blind,
+                            "why": "tài khoản không liệt kê được phiên — vắng mặt KHÔNG phải là đã tắt" }),
+                );
+                continue;
+            }
+            // Cửa CHỚP TẮT của phiên NỀN — xem `Mark::g` và `BG_MISS_DEBOUNCE_SEC`.
+            // Khác cửa `blind` ở trên: đây là MỘT phiên vắng mặt trong khi cả
+            // tài khoản vẫn liệt kê bình thường, nên `blind` không bắt được.
+            //
+            // 🔴 LỖI ĐÃ TRẢ GIÁ CÙNG NGÀY: bản đầu viết `mark.o == "background"`
+            // — SAI, vì sổ thật ghi `"detached"` cho đúng phiên đã đo
+            // (`167252e2`, xác nhận bằng cách đọc thẳng cursor `watch:sessions`
+            // trong sqlite). Hai giá trị này KHÔNG đồng nghĩa nhưng CÙNG nghĩa
+            // "không cửa sổ" — `sessions.rs:3904`/`:3915` đã dùng đúng cặp
+            // `matches!(host, "background" | "detached")`, chỗ này copy lại
+            // đúng cặp ấy thay vì tự bịa một chuỗi chưa kiểm.
+            if matches!(mark.o.as_str(), "background" | "detached") {
+                let first_miss = if mark.g > 0 { mark.g } else { epoch_sec };
+                if epoch_sec - first_miss < BG_MISS_DEBOUNCE_SEC {
+                    let mut cho_no_song_lai = mark.clone();
+                    cho_no_song_lai.g = first_miss;
+                    next.insert(id.clone(), cho_no_song_lai);
+                    logging::info(
+                        "session_end_unknown",
+                        json!({ "session": id, "missing_sec": epoch_sec - first_miss,
+                                "why": "phiên nền vắng khỏi claude agents — chưa đủ lâu để kết luận đã tắt" }),
+                    );
+                    continue;
+                }
+            }
+            // Cửa TUỔI THỌ — xem `Mark::f`. Phiên sống chớp nhoáng (phép dò hạn
+            // mức của chính huba, một `claude -p` bất kỳ) chết đi không phải tin;
+            // phiên do huba mở thì luôn báo, vì ở đó chết ≠ xong.
+            let lived = epoch_sec - mark.f;
+            if mark.f > 0 && lived < MIN_LIFE_SEC && !mark.h {
+                logging::info(
+                    "session_end_muted",
+                    json!({ "session": id, "lived_sec": lived,
+                            "why": "phiên sống chớp nhoáng — cái chết của nó không phải tin" }),
+                );
+                continue;
+            }
+            out.push(Change::Ended {
+                id: id.clone(),
+                // Tên lấy TỪ SỔ (xem `Mark::n`): hàng của phiên đã đi mất cùng
+                // danh sách. Sổ cũ chưa có tên thì đành id ngắn — nhưng nói rõ
+                // đó là id, đừng để người đọc tưởng đấy là tên.
+                name: if mark.l.is_empty() {
+                    name_from_mark(id, mark)
+                } else {
+                    mark.l.clone()
+                },
+                was_working: mark.s.starts_with(WORKING),
+                // ĐÂY là lý do sổ phải nhớ `tty`: hàng của phiên đã biến mất,
+                // nên không còn chỗ nào hỏi nó chạy ở cửa sổ nào.
+                tty: mark.y.clone(),
+                kind: mark.k.clone(),
+                parent: mark.p.clone(),
+            });
+        }
+    }
+
+    (out, next)
+}

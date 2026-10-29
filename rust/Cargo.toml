@@ -1,0 +1,53 @@
+[package]
+name = "huba"
+version = "0.1.0"
+edition = "2021"
+description = "huba — quản lý các phiên Claude CLI trên máy này, điều khiển từ Telegram"
+
+# The huba is synchronous: it spends its life waiting on `claude` and a Telegram
+# long-poll, so an async runtime would add moving parts without removing a wait.
+#
+# 🔴 Ba thư viện gỡ ngày 2026-08-14, cùng lượt gỡ tfl5 — cả ba đều KHÔNG còn một
+# dòng `use` nào trong `src/`, và cargo không hề kêu một tiếng về chuyện đó:
+#
+# * `tungstenite` — WebSocket `/ws/chat`, đường DUY NHẤT đăng được tin lên phòng
+#   chat tfl5. Sống trong `live.rs`, và `live.rs` đã ra khỏi `lib.rs`.
+# * `axum` + `tokio` — dựng cho bảng điều khiển web chạy tại máy (`huba web`).
+#   Bảng ấy bị xoá từ 2026-08-08 (luật #12: *"trang điện thoại là UI duy nhất"*),
+#   nhưng hai thư viện thì ở lại thêm sáu ngày, kéo theo cả một runtime bất đồng
+#   bộ vào một tiến trình cố ý đồng bộ. Trang cấu hình `huba setup` KHÔNG dùng
+#   chúng — nó là `TcpListener` của thư viện chuẩn (`setup.rs`).
+[dependencies]
+anyhow = "1"
+# `keys.rs` chụp màn cửa sổ terminal rồi gửi ảnh đi dưới dạng base64.
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4", features = ["derive"] }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "multipart"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "huba"
+path = "src/main.rs"
+
+[[bin]]
+name = "hubad"
+path = "src/bin/hubad.rs"
+
+[[bin]]
+name = "browser-mcp"
+path = "src/bin/browser_mcp.rs"
+
+[profile.release]
+strip = true
+
+# Chỉ gắn trên Windows (mọi triple: gnu/msvc/aarch64) — macOS/Linux không kéo
+# theo binding Win32 nào. Xem `src/keys_win.rs` cho cách dùng.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_Storage_FileSystem", "Win32_Security", "Wdk_System_Threading"] }

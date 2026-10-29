@@ -1,0 +1,208 @@
+//! Sổ gim phải đọc được CẢ DẠNG CŨ — nếu không, tính năng chết câm trên đúng
+//! cái máy nó sinh ra để phục vụ.
+//!
+//! 🔴 Vì sao có tệp này. Cursor `pin:following` ra đời 2026-08-25 giữ mỗi
+//! `message_id`. Hôm sau nó đổi sang JSON (`{"m":…,"t":…}`) để nhớ luôn CHỮ đang
+//! gim, và bản đọc đầu tiên chỉ hiểu JSON. Đo trên máy Hà lúc 16:21 ngày 26/08,
+//! trước khi kịp cài bản mới:
+//!
+//! ```text
+//! sqlite3 data/huba.sqlite 'select * from cursors'
+//! pin:following|12071|2026-08-26T09:23:45.582Z
+//! ```
+//!
+//! Một con số trần. Với bản đọc chỉ-JSON thì `serde_json` phân tích ra một
+//! `Number`, `.get("m")` trả `None`, và cả hàm trả `None` — nghĩa là **"chưa gim
+//! gì"**, một trạng thái hợp lệ, nên không một dòng log nào được ghi. Hậu quả,
+//! cả hai đều câm:
+//!
+//! * `refresh_pin` về sớm ở mọi vòng ⟹ icon trạng thái trên tin gim đứng yên
+//!   mãi mãi — đúng thứ `CLAUDE.md` gọi là phép đo mù: nhìn thì có tin, mà tin
+//!   ấy không đổi được theo sự thật;
+//! * `pin_following` thôi gỡ tin cũ ⟹ mỗi lần đổi phiên buồng chat mọc thêm một
+//!   cái gim.
+//!
+//! Đây là **đối chứng ngược** của cửa ấy (điều 13① của workspace): trả `pin:
+//! following` về dạng chỉ-JSON là hai bài kiểm dưới đây phải ĐỎ.
+
+use huba::db::Db;
+use huba::pipeline::{pinned_message, PIN_FOLLOWING_KEY};
+
+fn db() -> (tempfile::TempDir, Db) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = Db::open(&dir.path().join("t.sqlite")).expect("open db");
+    (dir, db)
+}
+
+#[test]
+fn a_bare_number_in_the_pin_book_is_still_a_pinned_message() {
+    let (_dir, db) = db();
+    // Đúng giá trị đọc được từ máy Hà, không phải một con số bịa ra.
+    db.set_cursor(PIN_FOLLOWING_KEY, "12071").expect("set");
+
+    let (mid, chu) = pinned_message(&db)
+        .expect("sổ dạng CŨ (số trần) vẫn phải đọc ra một tin gim — nếu None thì cả tính năng câm");
+    assert_eq!(mid, 12071, "phải lấy đúng message_id trong sổ cũ");
+    assert_eq!(
+        chu, "",
+        "sổ cũ không giữ chữ ⟹ phải trả RỖNG, để lượt quét sau thấy 'có gì mới' \
+         và sửa tin gim về đúng dạng — tự chuyển hệ, không cần bước di trú riêng"
+    );
+}
+
+#[test]
+fn the_json_shape_carries_both_the_id_and_the_pinned_text() {
+    let (_dir, db) = db();
+    db.set_cursor(PIN_FOLLOWING_KEY, r#"{"m":42,"t":"⚡ [social] (acc1)"}"#)
+        .expect("set");
+
+    let (mid, chu) = pinned_message(&db).expect("dạng JSON phải đọc được");
+    assert_eq!(mid, 42);
+    assert_eq!(chu, "⚡ [social] (acc1)");
+}
+
+/// Sổ hỏng thì phải là "chưa gim gì", không phải một `message_id` bịa ra.
+#[test]
+fn a_book_that_is_neither_shape_reads_as_no_pin() {
+    let (_dir, db) = db();
+    for rac in ["", "   ", "khong-phai-so", r#"{"t":"thiếu m"}"#] {
+        db.set_cursor(PIN_FOLLOWING_KEY, rac).expect("set");
+        assert_eq!(
+            pinned_message(&db),
+            None,
+            "sổ {rac:?} không đọc ra được thì phải là None — gim theo một id đoán \
+             bừa là gim nhầm tin của người khác"
+        );
+    }
+}
+
+/// Đối chứng cho chỗ `refresh_pin` dựa vào: chữ của sổ cũ (`""`) phải KHÁC mọi
+/// dòng gim thật, nếu không thì lượt quét đầu tiên tưởng "không có gì mới" và
+/// tin gim đứng nguyên ở dạng cũ mãi.
+#[test]
+fn the_empty_legacy_text_never_equals_a_real_pin_line() {
+    let s = huba::sessions::LiveSession {
+        session_id: "b1e46802".into(),
+        account: "acc1".into(),
+        ..Default::default()
+    };
+    assert_ne!(
+        huba::pipeline::pin_line(&s),
+        "",
+        "pin_line luôn mở đầu bằng một icon trạng thái, nên nó không bao giờ rỗng"
+    );
+}
+
+/// Dòng của ĐƯỜNG NHANH (chạm vào phiên) và dòng của `refresh_pin` chỉ được khác
+/// nhau ĐÚNG ở icon trạng thái.
+///
+/// 🔴 Vì sao đây là một cái cổng, không phải một chi tiết thẩm mỹ: `refresh_pin`
+/// so CHUỖI để biết "lần này có gì mới". Lệch thêm bất cứ chỗ nào — một cặp `()`
+/// rỗng, một khoảng trắng — là tin gim bị `editMessageText` ở MỌI vòng quét, mười
+/// giây một lần, mãi mãi, và không có gì kêu lên cả.
+#[test]
+fn the_fast_path_line_and_the_refresh_line_differ_only_in_the_status_icon() {
+    let s = huba::sessions::LiveSession {
+        session_id: "b1e46802".into(),
+        label: "[social]".into(),
+        account: "acc1".into(),
+        ..Default::default()
+    };
+    assert_eq!(s.monitors, 0, "phiên mẫu này cố ý KHÔNG có monitor");
+    let (icon, _) = huba::sessions::state_of(&s);
+    let nhanh =
+        huba::pipeline::pin_line_from(None, false, None, &huba::sessions::shown(&s), &s.account);
+    let nen = huba::pipeline::pin_line(&s);
+    assert_eq!(
+        Some(nhanh.as_str()),
+        nen.strip_prefix(&format!("{icon} ")),
+        "bóc icon trạng thái ra thì hai dòng phải giống hệt nhau — nếu không, \
+         refresh_pin sửa tin gim ở mọi vòng quét"
+    );
+}
+
+/// Không biết tài khoản thì đừng mở ngoặc — một cặp `()` rỗng nói rằng huba biết
+/// một điều gì đó rồi bỏ trống.
+#[test]
+fn an_unknown_account_leaves_no_empty_parens() {
+    for tk in ["", "   "] {
+        assert_eq!(
+            huba::pipeline::pin_line_from(Some("\u{26a1}"), false, None, "[social]", tk),
+            "\u{26a1} [social]",
+            "tài khoản {tk:?} không được đẻ ra ngoặc rỗng"
+        );
+    }
+    assert_eq!(
+        huba::pipeline::pin_line_from(Some("\u{26a1}"), false, None, "[social]", "acc1"),
+        "\u{26a1} [social] (acc1)"
+    );
+}
+
+/// 🔴 `👁` CHỈ hiện khi phiên CÒN MONITOR chạy nền — Hà 2026-08-27: *"Một phiên
+/// đang có monitor thì luôn chèn thêm icon eye vào để dễ nhận dạng"*.
+///
+/// Kèm ĐỐI CHỨNG NGƯỢC ở ngay đây, vì thiếu nó thì một hàm gắn mắt VÔ ĐIỀU KIỆN
+/// cũng "đạt" — và đó chính là bản tôi đã ship một lượt trước, khi còn đọc
+/// "monitor" thành "phiên đang được theo".
+#[test]
+fn the_eye_marks_a_running_monitor_and_nothing_else() {
+    assert_eq!(
+        huba::pipeline::pin_line_from(Some("\u{26a1}"), true, None, "[dwork]", "acc3"),
+        "\u{26a1} \u{1f441} [dwork] (acc3)",
+        "còn monitor ⟹ phải có mắt"
+    );
+    assert_eq!(
+        huba::pipeline::pin_line_from(Some("\u{26a1}"), false, None, "[dwork]", "acc3"),
+        "\u{26a1} [dwork] (acc3)",
+        "hết monitor ⟹ phải HẾT mắt; một cái mắt luôn sáng thì không nhận dạng được gì"
+    );
+}
+
+/// ĐỐI CHỨNG: mắt KHÔNG được nuốt mất icon trạng thái.
+#[test]
+fn the_eye_does_not_swallow_the_status_icon() {
+    for icon in ["\u{26a1}", "\u{1f4a4}", "\u{2753}"] {
+        let dong = huba::pipeline::pin_line_from(Some(icon), true, None, "[x]", "");
+        assert!(dong.starts_with(icon), "dòng {dong:?} mất icon trạng thái");
+        assert!(dong.contains("\u{1f441}"), "và mắt vẫn phải có");
+    }
+}
+
+/// 🪦 `📷` cuối dòng gim — Hà 2026-08-27: *"Bỏ icon máy ảnh ở pin msg đi nó chả
+/// có tác dụng gì"*. Cả dòng vốn đã là một `text_link` nên Telegram tự tô nó;
+/// cái icon chỉ lặp lại một điều màu chữ đã nói. Khoá lại để lượt sau đừng chèn
+/// lại "cho dễ thấy".
+#[test]
+fn the_pin_line_carries_no_camera_icon() {
+    let s = huba::sessions::LiveSession {
+        session_id: "871f7b31".into(),
+        label: "[onghut]".into(),
+        account: "acc1".into(),
+        monitors: 2,
+        ..Default::default()
+    };
+    for dong in [
+        huba::pipeline::pin_line(&s),
+        huba::pipeline::pin_line_from(None, false, None, "[onghut]", "acc1"),
+        huba::pipeline::pin_line_from(Some("\u{26a1}"), true, None, "[onghut]", ""),
+    ] {
+        assert!(
+            !dong.contains("\u{1f4f7}"),
+            "dòng gim {dong:?} còn 📷 — Hà đã bảo bỏ"
+        );
+    }
+}
+
+/// ĐỐI CHỨNG NGƯỢC, đo được ngay tại đây: bản đọc CŨ (chỉ hiểu JSON) mù đúng với
+/// giá trị đang nằm trong sổ trên máy thật.
+#[test]
+fn the_json_only_reader_goes_blind_on_the_real_book_value() {
+    let so_that = "12071";
+    let j: serde_json::Value = serde_json::from_str(so_that)
+        .expect("một con số vẫn là JSON hợp lệ — nên `.ok()?` KHÔNG cứu");
+    assert!(
+        j.get("m").is_none(),
+        "đây là chỗ bản cũ chết câm: JSON phân tích XONG (một Number), nhưng \
+         `.get(\"m\")` không có gì, và `?` biến nó thành 'chưa gim gì'"
+    );
+}

@@ -1,0 +1,2050 @@
+//! The read-only view of the Claude CLI sessions running on this machine.
+//! Every case here came from real output on 2026-08-08, not from imagination.
+
+use huba::sessions::{
+    parse_stream, parse_tail, pending_for_display, preview_risk, transcript_path, transcript_slug,
+};
+use std::collections::HashSet;
+use std::path::Path;
+
+/// Phiên chưa từng tung subagent chạy nền — trạng thái của phần lớn phiên.
+fn no_background() -> HashSet<String> {
+    HashSet::new()
+}
+
+#[test]
+fn cwd_maps_to_the_folder_the_cli_writes_transcripts_into() {
+    // Gốc workspace đổi sang `~/projects` ngày 2026-08-12 ⟹ KHOÁ nhật ký đổi
+    // theo (`~/.claude/projects/-Users-username-projects`). Thư mục khoá mới là
+    // symlink trỏ về khoá cũ, nên hai đường cùng ra một kho — nhưng thứ huba tính
+    // ra từ `cwd` phải là khoá MỚI, vì đó là cwd thật của mọi phiên từ hôm ấy.
+    assert_eq!(
+        transcript_slug("/Users/username/projects"),
+        "-Users-username-projects"
+    );
+    // A trailing slash must not produce a different folder for the same cwd.
+    assert_eq!(
+        transcript_slug("/Users/username/projects/"),
+        "-Users-username-projects"
+    );
+    assert_eq!(
+        transcript_slug("/Users/username/projects/AI/huba"),
+        "-Users-username-projects-AI-huba"
+    );
+    assert_eq!(transcript_slug("/"), "-");
+
+    assert_eq!(
+        transcript_path(Path::new("/home/x/.claude"), "/a/b", "sess-1"),
+        Path::new("/home/x/.claude/projects/-a-b/sess-1.jsonl")
+    );
+}
+
+/// Luật THẬT của CLI: mọi ký tự ngoài `[A-Za-z0-9]` → `-`. Ba ca đầu là tên thư
+/// mục CÓ THẬT trên máy này (đo 01/10, đối chiếu `cwd` trong nhật ký); bản cũ chỉ
+/// thay `/` nên ra sai cả ba.
+#[test]
+fn slug_doi_moi_ky_tu_khong_phai_chu_so() {
+    assert_eq!(
+        transcript_slug("/Users/username/projects/fbot/.tmp/worker-cwd-8122"),
+        "-Users-username-projects-fbot--tmp-worker-cwd-8122"
+    );
+    assert_eq!(
+        transcript_slug("/Users/username/Library/Application Support/hub"),
+        "-Users-username-Library-Application-Support-hub"
+    );
+    assert_eq!(
+        transcript_slug("/private/var/folders/9q/x/T/tmp.FDnM6sD4E3"),
+        "-private-var-folders-9q-x-T-tmp-FDnM6sD4E3"
+    );
+    // Windows: `:` và `\` cũng là ký tự ngoài chữ/số; gạch chéo ngược cuối bị cắt.
+    assert_eq!(
+        transcript_slug(r"C:\Users\ha\projects"),
+        "C--Users-ha-projects"
+    );
+    assert_eq!(
+        transcript_slug(r"C:\Users\ha\projects\"),
+        "C--Users-ha-projects"
+    );
+    // CLI đếm theo UTF-16: chữ Việt (một đơn vị) ⟹ một `-`; ký tự ngoài BMP ⟹ hai.
+    assert_eq!(transcript_slug("/a/dự-án"), "-a-d---n");
+    assert_eq!(transcript_slug("/a/x😀"), "-a-x--");
+}
+
+/// Đường dẫn Windows phải ra một thư mục CON của `projects`, không thay cả gốc —
+/// `PathBuf::join` với `C:\…` tuyệt đối sẽ bỏ gốc nếu slug còn giữ `:`/`\`.
+#[test]
+fn duong_dan_windows_nam_duoi_projects() {
+    let p = transcript_path(Path::new("/home/x/.claude"), r"C:\Users\ha\projects", "s1");
+    assert_eq!(
+        p,
+        Path::new("/home/x/.claude/projects/C--Users-ha-projects/s1.jsonl")
+    );
+}
+
+#[test]
+fn the_last_record_is_usually_not_the_last_turn() {
+    // Real transcripts end on bookkeeping as often as on conversation: of 14
+    // live sessions, 5 ended on pr-link / attachment / system / last-prompt.
+    // Reading the final line and calling it the state is wrong for those.
+    let tail = r#"
+{"type":"user","message":{"role":"user","content":"chạy test đi"},"timestamp":"2026-08-08T01:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Đã chạy, 162 test xanh."}]},"timestamp":"2026-08-08T01:02:00Z"}
+{"type":"pr-link","url":"https://github.com/x/y/pull/1"}
+{"type":"file-history-snapshot","files":3}
+"#;
+    let t = parse_tail(tail, &no_background());
+    assert_eq!(t.last_role.as_deref(), Some("assistant"));
+    assert_eq!(t.last_text.as_deref(), Some("Đã chạy, 162 test xanh."));
+    assert_eq!(t.last_ts.as_deref(), Some("2026-08-08T01:02:00Z"));
+}
+
+#[test]
+fn a_turn_that_is_only_tool_calls_still_says_what_it_was_doing() {
+    // Two of the live sessions were mid-tool-call, which has no text at all.
+    // An empty row would read as "idle" when the session is actually working.
+    let tail = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{}}]},"timestamp":"2026-08-08T02:00:00Z"}"#;
+    assert_eq!(
+        parse_tail(tail, &no_background()).last_text.as_deref(),
+        Some("[dùng Bash]")
+    );
+}
+
+#[test]
+fn a_half_line_at_the_start_of_the_tail_is_skipped_not_fatal() {
+    // The tail starts mid-file by design (256 KB from the end), so the first
+    // line is usually a fragment.
+    let tail = "ontent\":\"cụt\"}}\n{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"ổn\"}]}}";
+    assert_eq!(
+        parse_tail(tail, &no_background()).last_text.as_deref(),
+        Some("ổn")
+    );
+}
+
+#[test]
+fn nothing_conversational_yields_nothing_rather_than_a_wrong_guess() {
+    let tail = r#"{"type":"system","subtype":"init"}
+{"type":"queue-operation","op":"add"}"#;
+    let t = parse_tail(tail, &no_background());
+    assert_eq!(t.last_text, None);
+    assert_eq!(t.last_role, None);
+}
+
+// ----------------------------------------------------------------------
+// The preview leaves this machine (it lands in a tfl5 doc), so it passes the
+// leak gate first. Calibration matters as much as coverage: a gate that hides
+// everything teaches the owner to ignore it. Measured on the real 14 sessions:
+// 1 hidden, 12 previewable, 0 leaks left.
+// ----------------------------------------------------------------------
+
+#[test]
+fn a_password_stated_in_vietnamese_is_caught() {
+    // The case that proved the gate was decorative: every English pattern
+    // passed this through, because this workspace does not work in English.
+    let hits = preview_risk("Mật khẩu là Abcd!2026 — tôi đặt nó trong lệnh /reg lúc nãy");
+    assert!(
+        hits.iter().any(|h| h == "credential_word_vi"),
+        "phải bắt được 'mật khẩu', bắt được: {hits:?}"
+    );
+
+    for text in [
+        "mã bí mật của app là ...",
+        "khoá riêng nằm ở đâu?",
+        "thông tin đăng nhập gửi qua chat",
+        "mat khau khong dau van phai bat",
+    ] {
+        assert!(!preview_risk(text).is_empty(), "phải bắt: {text}");
+    }
+    // English still works — this augments, it does not replace.
+    assert!(!preview_risk("the password is hunter2").is_empty());
+}
+
+// ----------------------------------------------------------------------
+// UC-S02 — the stream that has to read like the terminal: what was said, every
+// command WITH its arguments, and every command's output.
+// ----------------------------------------------------------------------
+
+#[test]
+fn the_stream_carries_commands_and_their_output_not_just_talk() {
+    let tail = r#"
+{"type":"user","message":{"role":"user","content":"chạy test đi"},"timestamp":"2026-08-08T01:00:00Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"cần chạy cargo test"},{"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}]},"timestamp":"2026-08-08T01:00:05Z"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"test result: ok. 169 passed"}]},"timestamp":"2026-08-08T01:02:00Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"169 test xanh."}]},"timestamp":"2026-08-08T01:02:05Z"}
+{"type":"pr-link","url":"https://example.invalid/1"}
+"#;
+    let s = parse_stream(tail, 100);
+    let kinds: Vec<&str> = s.events.iter().map(|e| e.kind.as_str()).collect();
+    assert_eq!(kinds, vec!["say", "think", "tool", "result", "say"]);
+
+    let tool = s.events.iter().find(|e| e.kind == "tool").unwrap();
+    assert_eq!(tool.name, "Bash");
+    assert!(
+        tool.text.contains("cargo test"),
+        "lệnh phải kèm tham số: {}",
+        tool.text
+    );
+
+    let result = s.events.iter().find(|e| e.kind == "result").unwrap();
+    assert!(result.text.contains("169 passed"), "kết quả lệnh phải hiện");
+
+    // Bookkeeping records never become events.
+    assert!(!s.events.iter().any(|e| e.text.contains("example.invalid")));
+    assert_eq!(s.older_hidden, 0);
+}
+
+#[test]
+fn a_secret_in_command_output_is_flagged_but_still_shown() {
+    // 🔴 ĐẢO CHIỀU 2026-08-16 (bản cũ: `…_is_withheld_not_printed`). Hà: *"huba
+    // là cổng để làm việc từ xa qua tele không cần giấu gì hết, giấu thì phải
+    // ngồi vào máy để làm vậy thì cần gì huba nữa"*.
+    //
+    // Giữ bài kiểm thay vì xoá, và giữ đúng cái nó canh — chỉ đảo kỳ vọng: đầu
+    // ra của lệnh vẫn tới nơi, và cờ `withheld` ở lại làm NHÃN ("dòng này có
+    // dấu hiệu"), không còn làm cửa. Xoá bài kiểm thì lượt sau có người "vá lại
+    // cho an toàn" mà không thấy đây là một quyết định đã có chủ.
+    let tail = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"đăng nhập ok — mật khẩu là Abcd!2026"}]},"timestamp":"2026-08-08T01:00:00Z"}"#;
+    let s = parse_stream(tail, 100);
+    let e = &s.events[0];
+    assert!(e.withheld, "vẫn phải NHẬN RA dấu hiệu bí mật");
+    assert!(
+        e.text.contains("Abcd!2026"),
+        "chữ phải đi nguyên vẹn về điện thoại: {}",
+        e.text
+    );
+    assert!(
+        !e.text.contains("huba ẩn"),
+        "không còn câu xin lỗi thay cho nội dung: {}",
+        e.text
+    );
+}
+
+#[test]
+fn the_window_is_bounded_and_says_how_much_it_dropped() {
+    let mut lines = String::new();
+    for i in 0..30 {
+        lines.push_str(&format!(
+            "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"dòng {i}\"}}]}}}}\n"
+        ));
+    }
+    let s = parse_stream(&lines, 10);
+    assert_eq!(s.events.len(), 10, "cửa sổ phải bị chặn");
+    assert_eq!(s.older_hidden, 20, "phải nói rõ đã bỏ bao nhiêu");
+    // Keeps the NEWEST, like a terminal.
+    assert!(s.events.last().unwrap().text.contains("dòng 29"));
+    assert!(s.events.first().unwrap().text.contains("dòng 20"));
+}
+
+#[test]
+fn ordinary_development_chatter_stays_visible() {
+    // These all trip the FULL outbound scan (paths, IPs, "blocker"), and that
+    // is right for a reply to an outsider — but blanking them here would empty
+    // the view the owner opens on his phone.
+    for text in [
+        "Đã sửa /Users/username/projects/AI/huba/rust/src/db.rs:120",
+        "node RPC 198.51.100.130:41100 trả 403",
+        "còn 1 blocker: CI đỏ vì billing",
+        "[dùng Bash]",
+    ] {
+        assert!(
+            preview_risk(text).is_empty(),
+            "không được ẩn dòng bình thường: {text}"
+        );
+    }
+}
+
+#[test]
+fn the_background_id_is_the_first_token_not_the_rest_of_the_line() {
+    use huba::sessions::parse_backgrounded_id;
+
+    // The happy line, as `claude --bg '<task>'` prints it.
+    assert_eq!(
+        parse_backgrounded_id(
+            "Starting background service…\nbackgrounded · a3a24ccd\n  claude agents  list sessions\n"
+        ),
+        Some("a3a24ccd")
+    );
+
+    // THE ONE THAT COST A REAL RUN. A session that came up with no prompt adds
+    // a sentence on the same line; taking the tail stored
+    // "6514f454 (idle — send a prompt to start)" as the session id, and every
+    // later verb quietly failed to match it while huba reported success.
+    assert_eq!(
+        parse_backgrounded_id("backgrounded · 6514f454 (idle — send a prompt to start)"),
+        Some("6514f454")
+    );
+
+    // No marker means huba does NOT know what it started — that has to be an
+    // error, not a cheerful empty id.
+    assert_eq!(parse_backgrounded_id("Starting background service…"), None);
+    assert_eq!(parse_backgrounded_id(""), None);
+    assert_eq!(parse_backgrounded_id("backgrounded · "), None);
+}
+
+/// Whose session is this — the decision the phone acts on.
+///
+/// The screen HIDES editor rows (Hà, 2026-08-09: *"bỏ các phiên của editor đi
+/// vì có quản lý được tin nhắn của nó đâu?"*), so getting this wrong either
+/// hides a session he can drive or shows one he cannot. It is also the branch
+/// that CANNOT be exercised through the UI on a machine with no editor session
+/// listed — on 2026-08-09 three VS Code `claude` processes were running and
+/// `claude agents` listed none of them.
+///
+/// Both command lines below are copied from `ps -o command=` on this machine,
+/// not invented: the extension ships its own binary under `~/.vscode/…`, so the
+/// PATH is the only thing separating it from a terminal session — the process
+/// name is `claude` on both sides.
+#[test]
+fn a_session_belongs_to_the_editor_or_the_terminal_by_its_path() {
+    use huba::sessions::classify_host;
+
+    let vscode = "/Users/username/.vscode/extensions/anthropic.claude-code-2.1.220-darwin-arm64/resources/native-binary/claude --output-format stream-json --verbose --input-format stream-json";
+    // Editor thắng cả tty: extension có thể chạy kèm tty hay không, không đổi.
+    assert_eq!(classify_host(vscode, "interactive", "??"), "editor");
+    assert_eq!(classify_host(vscode, "interactive", "ttys009"), "editor");
+    assert_eq!(
+        classify_host(
+            "/Users/x/.cursor/extensions/anthropic.claude-code/claude",
+            "interactive",
+            "??"
+        ),
+        "editor"
+    );
+    assert_eq!(
+        classify_host(
+            "/Applications/Cursor.app/Contents/Resources/claude",
+            "interactive",
+            "??"
+        ),
+        "editor"
+    );
+
+    // Dòng terminal thật, chép nguyên từ `ps` trên máy này (tty ttys005).
+    assert_eq!(
+        classify_host(
+            "claude tiếp /Users/username/projects/AI/huba",
+            "interactive",
+            "ttys005"
+        ),
+        "terminal"
+    );
+    assert_eq!(
+        classify_host("claude tiếp tfl5", "interactive", "ttys006"),
+        "terminal"
+    );
+
+    // KHÔNG có tty thì KHÔNG được gọi là terminal. Trước 2026-08-09 nhãn này
+    // suy bằng loại trừ, nên một `claude` do script hay cron chạy vẫn đọc là
+    // "terminal" — màn hình khai một thứ chưa ai kiểm. `ps` in `??` hoặc `-`.
+    assert_eq!(
+        classify_host("claude tiếp dwork", "interactive", "??"),
+        "detached"
+    );
+    assert_eq!(
+        classify_host("claude tiếp dwork", "interactive", "-"),
+        "detached"
+    );
+    assert_eq!(
+        classify_host("claude tiếp dwork", "interactive", ""),
+        "detached"
+    );
+
+    // `kind` thắng đường dẫn: phiên huba mở bằng `--bg` là của huba, dù binary
+    // nào tình cờ đứng trước trong PATH. Thiếu vế này, một phiên nền mở từ
+    // binary của editor sẽ bị xếp loại "editor" và biến mất khỏi đúng màn có
+    // thể dừng nó.
+    assert_eq!(classify_host(vscode, "background", "??"), "background");
+
+    // Tên dự án có chữ "vscode" KHÔNG phải phiên editor; dấu hiệu là thư mục ẩn.
+    assert_eq!(
+        classify_host(
+            "claude tiếp /Users/username/projects/vscode-notes",
+            "interactive",
+            "ttys002"
+        ),
+        "terminal"
+    );
+}
+
+/// Subagent đang chạy: đếm theo `tool_use_id`, không đếm theo tên.
+///
+/// Một phiên có thể tung ra nhiều subagent và nhận về vài cái; đếm tên sẽ báo
+/// "5 đang chạy" đúng vào lúc con số ấy cần đúng nhất. Kết quả rơi ra ngoài
+/// cửa sổ 256KB thì coi như đã xong — thà thiếu còn hơn để một subagent ma
+/// chạy mãi trên màn.
+#[test]
+fn pending_subagents_are_counted_by_id_not_by_name() {
+    use huba::sessions::parse_tail;
+
+    let started_two = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a1","name":"Agent","input":{}},{"type":"tool_use","id":"a2","name":"Agent","input":{}}]}}"#;
+    let one_came_back = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a1","content":"xong"}]}}"#;
+    let other_tool = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{}}]}}"#;
+
+    assert_eq!(
+        parse_tail(started_two, &no_background()).pending_subagents,
+        2
+    );
+    assert_eq!(
+        parse_tail(&format!("{started_two}\n{one_came_back}"), &no_background()).pending_subagents,
+        1
+    );
+    // Công cụ khác không phải subagent.
+    assert_eq!(
+        parse_tail(other_tool, &no_background()).pending_subagents,
+        0
+    );
+    // Không có gì thì không có gì — và một dòng hỏng không được làm hỏng cả bộ.
+    assert_eq!(parse_tail("", &no_background()).pending_subagents, 0);
+    assert_eq!(
+        parse_tail("{ đây không phải json", &no_background()).pending_subagents,
+        0
+    );
+}
+
+/// Subagent CHẠY NỀN: `tool_result` về ngay, nên nó KHÔNG phải dấu kết thúc.
+///
+/// Bug thật, đo 2026-08-10 trên máy này: hai agent đang chạy mà `huba sessions`
+/// khai `pending 0`. Lý do là lệnh gọi nền nhận `tool_result` ngay lập tức —
+/// nội dung chỉ là "đã tung agent" — nên phép khớp tool_use↔tool_result tưởng
+/// nó xong. Đau nhất là chính chế độ nền mới là chế độ con số này sinh ra để
+/// bắt: agent chặn thì phiên cha đang bận nhìn là biết, agent nền thì phiên cha
+/// rảnh tay, từ điện thoại nhìn y hệt một phiên treo.
+///
+/// Dấu kết thúc đúng là khối `<task-notification>` mang cùng `tool-use-id`.
+/// Hai chuỗi dưới đây là hình dạng THẬT lấy từ nhật ký phiên hôm nay, không
+/// phải bịa.
+#[test]
+fn a_background_subagent_is_not_finished_just_because_the_call_returned() {
+    let bg: HashSet<String> = ["toolu_bg1".to_string()].into_iter().collect();
+
+    let launched = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_bg1","name":"Agent","input":{}}]}}"#;
+    // Câu trả lời tức thì của lệnh gọi nền: nó nói "đã tung", không nói "đã xong".
+    let ack = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_bg1","content":"Async agent launched successfully."}]}}"#;
+    let notified = r#"{"type":"user","message":{"content":[{"type":"text","text":"<task-notification>\n<task-id>a55b</task-id>\n<tool-use-id>toolu_bg1</tool-use-id>\n<status>completed</status>\n</task-notification>"}]}}"#;
+
+    let running = format!("{launched}\n{ack}");
+    // Trước bản vá, dòng này ra 0 — và 0 là câu trả lời sai cho "đang chạy không".
+    assert_eq!(parse_tail(&running, &bg).pending_subagents, 1);
+
+    let done = format!("{running}\n{notified}");
+    assert_eq!(parse_tail(&done, &bg).pending_subagents, 0);
+
+    // Cùng một nhật ký, nếu KHÔNG biết đó là lệnh gọi nền thì `tool_result` vẫn
+    // là dấu kết thúc đúng — hai chế độ không được lẫn vào nhau.
+    assert_eq!(parse_tail(&running, &no_background()).pending_subagents, 0);
+}
+
+/// Thông báo kết thúc chỉ đóng ĐÚNG lệnh gọi mà nó nói tới.
+///
+/// Cùng kỷ luật với phần đếm theo id ở trên: tung ba, một cái báo về, thì còn
+/// hai — chứ không phải "có thông báo nào đó nên coi như xong hết".
+#[test]
+fn a_stop_notice_closes_only_the_call_it_names() {
+    let bg: HashSet<String> = ["b1", "b2", "b3"].iter().map(|s| s.to_string()).collect();
+    let launched = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"b1","name":"Agent","input":{}},{"type":"tool_use","id":"b2","name":"Task","input":{}},{"type":"tool_use","id":"b3","name":"Agent","input":{}}]}}"#;
+    let one_stopped = r#"{"type":"user","message":{"content":[{"type":"text","text":"<task-notification>\n<tool-use-id>b2</tool-use-id>\n<status>completed</status>\n</task-notification>"}]}}"#;
+
+    assert_eq!(parse_tail(launched, &bg).pending_subagents, 3);
+    assert_eq!(
+        parse_tail(&format!("{launched}\n{one_stopped}"), &bg).pending_subagents,
+        2
+    );
+
+    // Một lượt chạy nền của Bash cũng sinh `<task-notification>` y hệt; nó
+    // không được đóng nhầm một agent nào cả.
+    let other_task = r#"{"type":"user","message":{"content":[{"type":"text","text":"<task-notification>\n<tool-use-id>bash-xyz</tool-use-id>\n<status>completed</status>\n</task-notification>"}]}}"#;
+    assert_eq!(
+        parse_tail(&format!("{launched}\n{other_task}"), &bg).pending_subagents,
+        3
+    );
+}
+
+/// Tự đóng sổ: từng điều kiện một, vì đây là cơ chế TỰ CHẠY.
+///
+/// Hà chốt bật 2026-08-10 kèm ràng buộc *"phải đảm bảo đã chạy hết chỗ dở"* —
+/// và đó mới là phần khó. Một cơ chế tự động cắt ngang việc đang làm thì tệ hơn
+/// hẳn việc không có cơ chế nào.
+#[test]
+fn auto_handover_only_fires_when_the_session_is_truly_done() {
+    use huba::pipeline::{auto_handover_why, AutoWhy};
+
+    // đủ đầy · có cửa sổ · không bận · không hỏi · không subagent · đã im đủ lâu
+    let go = |pct, busy, asking, subs, idle| {
+        auto_handover_why(pct, 80, false, true, busy, asking, subs, idle, 120)
+    };
+    assert_eq!(go(85, false, false, 0, 300), AutoWhy::Do);
+
+    // Chưa đầy thì thôi.
+    assert_eq!(go(79, false, false, 0, 300), AutoWhy::NotFull(79));
+    // ĐANG CHẠY DỞ — đây là điều kiện Hà đặt ra.
+    assert_eq!(go(95, true, false, 0, 300), AutoWhy::Busy);
+    // Đang hỏi thì đóng sổ là trả lời thay người dùng.
+    assert_eq!(go(95, false, true, 0, 300), AutoWhy::Asking);
+    // Subagent còn chạy thì việc chưa xong, dù màn trông rảnh.
+    assert_eq!(go(95, false, false, 2, 300), AutoWhy::Subagents(2));
+    // Vừa im được 30 giây chưa đủ chắc: giữa hai lệnh cũng im.
+    assert_eq!(go(95, false, false, 0, 30), AutoWhy::TooFresh(30));
+
+    // Không đọc được màn thì KHÔNG đoán là rảnh.
+    assert_eq!(
+        auto_handover_why(95, 80, false, false, false, false, 0, 300, 120),
+        AutoWhy::NoWindow
+    );
+    // Đã đóng rồi thì thôi, kể cả mọi thứ khác đều thoả.
+    assert_eq!(
+        auto_handover_why(95, 80, true, true, false, false, 0, 300, 120),
+        AutoWhy::AlreadyDone
+    );
+}
+
+/// Tin tự đóng sổ phải mang id GÕ ĐƯỢC, và nói đúng con trỏ đang ở đâu.
+///
+/// Bắt được từ lượt nổ THẬT đầu tiên (2026-08-13 04:24, phiên `projects-06` ở
+/// 80%): tin nói `Phiên mới: f0883567` — id **bản fork**, cắt còn 8 ký tự —
+/// trong khi phiên đang chạy là `86fe1666…` và chính `focus:session` đã trỏ
+/// đúng vào đó. Bản fork không nằm trong `claude agents` và route `/session`
+/// khớp id chính xác, nên dòng ấy vô dụng theo cả hai đường.
+#[test]
+fn the_auto_handover_notice_names_the_session_you_can_actually_type_into() {
+    use huba::pipeline::{auto_handover_notice, FocusKept, HandoverMove};
+
+    let new_id = "86fe1666-5e87-4fa9-903a-ea21bfb48208";
+    let fork_id = "f0883567-7eae-426b-8643-e56468a7de6e";
+    let ok = auto_handover_notice(
+        "[AI/huba]",
+        80,
+        126,
+        &HandoverMove::Opened {
+            tty: "ttys001",
+            new_id,
+            closed_err: None,
+            retrying: false,
+            focus: FocusKept::Elsewhere("[fbot]"),
+        },
+    );
+    // Id ĐẦY ĐỦ của phiên thật, và tuyệt đối không phải id bản fork.
+    assert!(ok.contains(new_id), "{ok}");
+    assert!(!ok.contains(fork_id), "{ok}");
+    // 🔴 ĐẢO CHIỀU 2026-09-03 — Hà: *"việc chọn phiên làm việc chỉ được xuất
+    // phát từ phía tôi gửi lệnh"*. Bản cũ đòi tin phải khoe *"Đang theo phiên
+    // mới"*, tức khoá đúng cái hành vi vừa bị bỏ: huba tự kéo con trỏ trong một
+    // lượt không ai bấm gì, và chiều 03/09 hai tin của chủ máy đã rơi vào hai
+    // phiên anh không chọn (xem `pipeline::FocusKept`).
+    //
+    // Bài kiểm không xoá mà đổi chiều: chính câu ấy nay là DẤU HIỆU HỎNG.
+    assert!(
+        !ok.contains("Đang theo phiên mới"),
+        "huba lại tự nhận đã kéo con trỏ sang phiên mới: {ok}"
+    );
+    assert!(
+        ok.contains("Con trỏ KHÔNG đổi") && ok.contains("[fbot]"),
+        "phải nói rõ chữ chủ máy gõ vẫn đi vào phiên anh đang chọn: {ok}"
+    );
+    assert!(ok.contains("[AI/huba]") && ok.contains("80%"), "{ok}");
+    // Không có gì hỏng thì không bịa ra cảnh báo.
+    assert!(!ok.contains("⚠"), "{ok}");
+
+    // Cửa sổ cũ chưa đóng được VÀ không ai ngó lại nữa: nói ra, đừng để phát
+    // hiện bằng mắt — và nói thẳng rằng việc sang tay chủ máy.
+    let leftover = auto_handover_notice(
+        "[AI/huba]",
+        80,
+        126,
+        &HandoverMove::Opened {
+            tty: "ttys001",
+            new_id,
+            closed_err: Some("tab còn bận sau 10s"),
+            retrying: false,
+            focus: FocusKept::Elsewhere("[fbot]"),
+        },
+    );
+    assert!(leftover.contains("cửa sổ cũ chưa đóng được"), "{leftover}");
+    assert!(
+        leftover.contains("sang tay anh"),
+        "mất dấu cửa sổ ⟹ phải nói rõ là không ai thử lại nữa: {leftover}"
+    );
+
+    // 🔴 ĐỐI CHỨNG NGƯỢC của chính vế ấy (§13①), thêm 2026-09-03.
+    //
+    // Cùng một `closed_err`, chỉ đổi `retrying`, thì câu PHẢI đọc khác — không
+    // đổi được thì cái cờ ấy không phải một phép đo, nó là một trường bị bỏ quên.
+    //
+    // Ca thật: 03/09 16:37:54 huba gửi *"chưa đóng được … đóng tay, hoặc /close
+    // sau"* rồi tự đóng xong lúc 16:40:07. Hà đi kiểm bằng mắt vì câu ấy sai —
+    // không sai về sự kiện, sai về VIỆC nó giao cho anh.
+    let dang_thu_lai = auto_handover_notice(
+        "[AI/huba]",
+        80,
+        126,
+        &HandoverMove::Opened {
+            tty: "ttys001",
+            new_id,
+            closed_err: Some("tab còn bận sau 10s"),
+            retrying: true,
+            focus: FocusKept::Elsewhere("[fbot]"),
+        },
+    );
+    assert!(
+        dang_thu_lai.contains("tab còn bận sau 10s"),
+        "vẫn phải mang LÝ DO đo được: {dang_thu_lai}"
+    );
+    assert!(
+        dang_thu_lai.contains("đang tự thử lại"),
+        "huba còn thử lại thì phải nói ra: {dang_thu_lai}"
+    );
+    assert!(
+        !dang_thu_lai.contains("sang tay anh") && !dang_thu_lai.contains("đóng tay"),
+        "đang tự thử lại mà vẫn sai chủ máy đi dọn tay ⟹ đúng con bug 03/09: {dang_thu_lai}"
+    );
+
+    // Cửa sổ mở nhưng phiên mới KHÔNG chào đời (nó dừng ở hộp hỏi) — đo thật
+    // 2026-08-13 04:31:37: `handover_window_opened session:""`, cửa sổ ấy đứng
+    // im 22 phút ở *"1. Yes, I trust this folder"*. Tin phải nói ĐỦ ba điều:
+    // nó vướng gì, cửa sổ cũ còn nguyên, và tuyệt đối không khoe "đang chạy".
+    let asking = vec![
+        (1usize, "Yes, I trust this folder".to_string()),
+        (2usize, "No, exit".to_string()),
+    ];
+    let stalled = auto_handover_notice(
+        "[dwork]",
+        64,
+        264,
+        &HandoverMove::Stalled {
+            tty: "ttys000",
+            asking: &asking,
+        },
+    );
+    assert!(stalled.contains("ttys000"), "{stalled}");
+    assert!(stalled.contains("Yes, I trust this folder"), "{stalled}");
+    assert!(stalled.contains("GIỮ NGUYÊN"), "{stalled}");
+    assert!(
+        !stalled.contains("đang chạy"),
+        "khoe phiên đang chạy: {stalled}"
+    );
+    assert!(!stalled.contains("Đang theo phiên mới"), "{stalled}");
+
+    // Không đọc được màn thì nói thẳng là không đọc được — không bịa lý do.
+    let mute = auto_handover_notice(
+        "[dwork]",
+        64,
+        264,
+        &HandoverMove::Stalled {
+            tty: "ttys000",
+            asking: &[],
+        },
+    );
+    assert!(mute.contains("Không đọc được màn"), "{mute}");
+    assert!(mute.contains("GIỮ NGUYÊN"), "{mute}");
+
+    // Không mở được cửa sổ nào: trả lại dòng lệnh để chủ máy tự gõ.
+    let failed = auto_handover_notice(
+        "[AI/huba]",
+        80,
+        126,
+        &HandoverMove::Failed {
+            err: "osascript timeout",
+            resume_command: "claude --resume abc123",
+        },
+    );
+    assert!(failed.contains("claude --resume abc123"), "{failed}");
+    assert!(failed.contains("chưa mở được cửa sổ mới"), "{failed}");
+}
+
+/// huba chỉ được tự bấm ĐÚNG hộp tin-thư-mục, không phải hộp nào cũng bấm.
+///
+/// Hà uỷ quyền 2026-08-13 (*"bấm hộ đi, phải kiểm tra được và bấm luôn 1"*) sau
+/// khi xem một cửa sổ đứng im 22 phút. Uỷ quyền ấy hẹp: hộp này không hỏi về
+/// CÔNG VIỆC, nó hỏi *"thư mục này có phải của anh không"* về đúng thư mục huba
+/// vừa tự mở cửa sổ vào. Mọi hộp khác vẫn là câu hỏi dành cho chủ máy — bấm hộ
+/// ở đó là trả lời thay, và một cú bấm thì không có nút hoàn tác.
+#[test]
+fn only_the_trust_folder_dialog_may_be_answered_by_hub() {
+    use huba::sessions::trust_dialog_choice;
+
+    let trust = vec![
+        (1usize, "Yes, I trust this folder".to_string()),
+        (2usize, "No, exit".to_string()),
+    ];
+    assert_eq!(trust_dialog_choice(&trust), Some(1));
+
+    // Thứ tự khác thì bấm theo SỐ của lựa chọn, không bấm cứng số 1.
+    let flipped = vec![
+        (1usize, "No, exit".to_string()),
+        (2usize, "Yes, I trust this folder".to_string()),
+    ];
+    assert_eq!(trust_dialog_choice(&flipped), Some(2));
+
+    // Câu hỏi công việc: KHÔNG được đụng vào, dù nó cũng có "yes".
+    let work = vec![
+        (1usize, "Yes, run the deploy".to_string()),
+        (2usize, "No".to_string()),
+    ];
+    assert_eq!(trust_dialog_choice(&work), None);
+
+    // Hộp duyệt công cụ cũng không: nó hỏi về QUYỀN, không hỏi về thư mục.
+    let perms = vec![
+        (1usize, "Yes, allow Bash(rm -rf:*)".to_string()),
+        (2usize, "Yes, and don't ask again".to_string()),
+        (3usize, "No".to_string()),
+    ];
+    assert_eq!(trust_dialog_choice(&perms), None);
+
+    // Và nhánh CHỐI trong chính hộp ấy thì tuyệt đối không bấm.
+    let refuse = vec![(1usize, "No, I don't trust this folder".to_string())];
+    assert_eq!(trust_dialog_choice(&refuse), None);
+
+    // Màn không có hộp chọn nào ⟹ không có gì để bấm.
+    assert_eq!(trust_dialog_choice(&[]), None);
+}
+
+/// Phiên đã chết thì không có gì "đang chạy" — kể cả nhật ký còn dở.
+///
+/// Hồi quy do chính bản vá agent-nền đẻ ra, bắt được bằng cách chạy trên máy
+/// thật chứ không phải bằng test: phiên "Tự chạy lại khi gặp lỗi" tắt từ 11
+/// tiếng trước mà khai 3 subagent đang chạy, vì tiến trình chết mang theo cả
+/// những thông báo kết thúc chưa kịp ghi.
+#[test]
+fn a_dead_session_has_no_running_subagents() {
+    assert_eq!(pending_for_display("dead", 3), 0);
+    // Không dò được tiến trình = KHÔNG BIẾT, và không biết thì không khai
+    // "đang chạy" — cùng lựa chọn "thà thiếu còn hơn nói dối".
+    assert_eq!(pending_for_display("unknown", 3), 0);
+    // Còn sống thì con số đếm được đi thẳng ra màn, không ai chỉnh sửa.
+    for host in ["terminal", "background", "detached", "editor"] {
+        assert_eq!(pending_for_display(host, 3), 3, "host={host}");
+        assert_eq!(pending_for_display(host, 0), 0, "host={host}");
+    }
+}
+
+/// Lời văn NHẮC TỚI thẻ thông báo không được đóng lệnh gọi nào.
+///
+/// Bẫy dogfood, và là bẫy hàng ngày trên chính dự án này: phiên đang sửa đúng
+/// tính năng đếm subagent sẽ có cả `<task-notification>` lẫn một `tool-use-id`
+/// thật nằm trong lời văn — chỗ dán nhật ký ra xem, chỗ bàn cách sửa. Bản đầu
+/// chỉ hỏi "đoạn này có chứa chữ ấy không" rồi hốt mọi id trong cả đoạn, nên
+/// một subagent ĐANG CHẠY bị đóng dấu "xong": con số vẫn nói dối, chỉ đổi
+/// chiều. Cắt theo cặp thẻ là hết.
+#[test]
+fn prose_that_merely_mentions_the_notice_closes_nothing() {
+    let bg: HashSet<String> = ["b1"].iter().map(|s| s.to_string()).collect();
+    let launched = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"b1","name":"Agent","input":{}}]}}"#;
+    // Đúng hình dạng một lượt bàn việc: nhắc tên thẻ, rồi trích một id thật.
+    // Mẫu này phải là hình dạng THẬT của một câu bàn việc: nhắc tên khối, rồi
+    // trích một cặp thẻ NGUYÊN VẸN. Mẫu đầu tiên tôi viết có một thẻ mở lửng
+    // đứng trước cặp thật, nên mã cũ hớt phải một chuỗi rác thay vì `b1` và
+    // test xanh cả với mã hỏng — một phép đo mù, bắt được nhờ chạy RED trước.
+    let talking = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Khối <task-notification> đóng lệnh gọi bằng <tool-use-id>b1</tool-use-id>, tức khớp theo id chứ không theo tên."}]}}"#;
+    assert_eq!(
+        parse_tail(&format!("{launched}\n{talking}"), &bg).pending_subagents,
+        1,
+        "lời văn nhắc tới thẻ không được tính là đã xong"
+    );
+
+    // Còn thông báo THẬT thì vẫn phải đóng được.
+    let real = r#"{"type":"user","message":{"content":[{"type":"text","text":"<task-notification>\n<tool-use-id>b1</tool-use-id>\n<status>completed</status>\n</task-notification>"}]}}"#;
+    assert_eq!(
+        parse_tail(&format!("{launched}\n{talking}\n{real}"), &bg).pending_subagents,
+        0
+    );
+
+    // Khối THIẾU thẻ đóng không được tính là thông báo — vì nó không thể là
+    // một thông báo thật: mỗi bản ghi là một dòng JSON trọn vẹn, dòng bị cửa sổ
+    // 256KB cắt thì trượt `from_str` và bị bỏ cả dòng. Còn thứ mở mà không đóng
+    // thì đúng là lời văn, và lời văn không được đóng lệnh gọi nào.
+    let dangling = r#"{"type":"user","message":{"content":[{"type":"text","text":"nói về <task-notification> rồi trích <tool-use-id>b1</tool-use-id> mà không đóng khối"}]}}"#;
+    assert_eq!(
+        parse_tail(&format!("{launched}\n{dangling}"), &bg).pending_subagents,
+        1
+    );
+}
+
+/// Thông báo kết thúc tới bằng BA đường, không phải một.
+///
+/// Đo trên máy 2026-08-10, SAU khi bản vá đầu đã xanh cả bộ kịch bản: một agent
+/// đã về từ lâu vẫn nằm trên màn. Lý do là nó về đúng lúc phiên cha đang chạy dở
+/// một lệnh, nên CLI không giao thông báo thành một lượt `user` mà xếp vào sổ
+/// (`queue-operation` với chữ ở `content`, rồi `attachment` với chữ ở
+/// `attachment.prompt`). Bộ kịch bản không bắt được vì nó chỉ đo lúc agent đang
+/// chạy thật — con ma chỉ hiện ra khi đi kiểm trạng thái sống.
+#[test]
+fn a_stop_notice_arrives_by_three_different_roads() {
+    let bg: HashSet<String> = ["q1", "a1"].iter().map(|s| s.to_string()).collect();
+    let launched = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"q1","name":"Agent","input":{}},{"type":"tool_use","id":"a1","name":"Agent","input":{}}]}}"#;
+    assert_eq!(parse_tail(launched, &bg).pending_subagents, 2);
+
+    // Đường 1 ở dạng THẬT của nó: `message.content` là chuỗi thuần, không phải
+    // mảng khối. Đếm trên 384 tệp nhật ký của máy này: 355 chuỗi / 4 mảng.
+    let plain = r#"{"type":"user","message":{"role":"user","content":"<task-notification>\n<tool-use-id>q1</tool-use-id>\n<status>completed</status>\n</task-notification>"}}"#;
+    assert_eq!(
+        parse_tail(&format!("{launched}\n{plain}"), &bg).pending_subagents,
+        1
+    );
+
+    // Đường 2: xếp hàng, chữ nằm thẳng ở `content`.
+    let queued = r#"{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<tool-use-id>q1</tool-use-id>\n<status>completed</status>\n</task-notification>"}"#;
+    assert_eq!(
+        parse_tail(&format!("{launched}\n{queued}"), &bg).pending_subagents,
+        1
+    );
+
+    // Đường 3: đính kèm, chữ nằm ở `attachment.prompt`.
+    let attached = r#"{"type":"attachment","attachment":{"type":"queued_command","prompt":"<task-notification>\n<tool-use-id>a1</tool-use-id>\n<status>completed</status>\n</task-notification>"}}"#;
+    assert_eq!(
+        parse_tail(&format!("{launched}\n{queued}\n{attached}"), &bg).pending_subagents,
+        0
+    );
+}
+
+/// Thông báo KHÔNG mang `tool-use-id` thì không đóng được lệnh gọi nào.
+///
+/// Đếm thật trên 384 tệp nhật ký: 250/2535 khối là `Monitor event` — chúng có
+/// `<task-id>` nhưng không có `<tool-use-id>`, vì chúng thuộc một cơ chế khác.
+/// Đóng bừa theo `task-id` sẽ là khớp nhầm hai hệ id với nhau.
+#[test]
+fn a_notice_without_a_tool_use_id_closes_nothing() {
+    let bg: HashSet<String> = ["b1".to_string()].into_iter().collect();
+    let launched = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"b1","name":"Agent","input":{}}]}}"#;
+    let monitor = r#"{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>b1</task-id>\n<summary>Monitor event</summary>\n</task-notification>"}"#;
+    assert_eq!(
+        parse_tail(&format!("{launched}\n{monitor}"), &bg).pending_subagents,
+        1
+    );
+}
+
+/// Chuỗi thẻ HỎNG không được sinh id rác, và không được bỏ sót id thật.
+///
+/// Bản đếm bằng JS trong `fe-subagent-uc.mjs` là ĐỐI CHỨNG ĐỘC LẬP của kịch bản
+/// E2E; hai bản cài đặt mà xử khác nhau thì cái đối chứng ấy sẽ báo lệch cho một
+/// chuyện không phải lỗi sản phẩm. Regex `[^<]+` bên JS đồng bộ lại ở thẻ mở kế
+/// tiếp, nên bản Rust cũng phải vậy: id chạy tới dấu `<` kế tiếp và dấu ấy phải
+/// mở đúng thẻ đóng.
+#[test]
+fn a_malformed_id_sequence_matches_the_javascript_twin() {
+    let bg: HashSet<String> = ["real".to_string()].into_iter().collect();
+    let launched = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"real","name":"Agent","input":{}}]}}"#;
+
+    // Thẻ mở lồng nhau: `real` vẫn phải được nhận ra là ĐÃ XONG.
+    let broken = r#"{"type":"queue-operation","content":"<task-notification><tool-use-id>UNCLOSED<tool-use-id>real</tool-use-id></task-notification>"}"#;
+    assert_eq!(
+        parse_tail(&format!("{launched}\n{broken}"), &bg).pending_subagents,
+        0
+    );
+
+    // Id RỖNG không đóng gì (và không được làm hỏng vòng quét).
+    let bg2: HashSet<String> = ["".to_string(), "real".to_string()].into_iter().collect();
+    let empty = r#"{"type":"queue-operation","content":"<task-notification><tool-use-id></tool-use-id></task-notification>"}"#;
+    assert_eq!(
+        parse_tail(&format!("{launched}\n{empty}"), &bg2).pending_subagents,
+        1
+    );
+}
+
+/// Cửa sổ Terminal mà `/new` mở ra — dòng lệnh phải đúng ĐẾN TỪNG THỨ TỰ.
+///
+/// Hai thứ ở đây từng làm hỏng một phiên thật, nên chúng được khoá lại bằng
+/// test chứ không bằng lời dặn trong bình luận.
+mod cua_so_moi {
+    use huba::sessions::terminal_command;
+    use std::path::Path;
+
+    /// Đề bài phải đứng TRƯỚC `--disallowedTools`.
+    ///
+    /// Cờ ấy variadic: đặt đề bài sau nó thì đề bài bị nuốt thành một mẫu công
+    /// cụ nữa, phiên dựng lên mà không có việc gì để làm — đúng lỗi lần `/new`
+    /// đầu tiên (`CLAUDE.md` §10). Test đọc VỊ TRÍ, không đọc câu chữ.
+    #[test]
+    fn de_bai_dung_truoc_co_variadic() {
+        // Từ 2026-08-15 chỉ còn BẢN BÀN GIAO đi bằng argv; `/new` gõ đề bài
+        // vào ô nhập. Luật thứ tự vẫn phải đúng cho ngoại lệ ấy.
+        let cmd = terminal_command(
+            "claude",
+            Path::new("/Users/x/projects"),
+            Some("[huba] dọn nợ"),
+        );
+        let de_bai = cmd.find("dọn nợ").expect("đề bài phải có trong lệnh");
+        let co = cmd.find("--disallowedTools").expect("phải có rào công cụ");
+        assert!(
+            de_bai < co,
+            "đề bài bị đẩy ra sau cờ variadic ⟹ phiên sẽ dựng lên rỗng: {cmd}"
+        );
+        // Và rào công cụ phải thật sự có hàng, không phải một cờ trống.
+        assert!(
+            cmd.trim_end().len() > co + "--disallowedTools".len() + 3,
+            "{cmd}"
+        );
+    }
+
+    /// Nháy đơn trong đề bài không được phép thoát ra ngoài chuỗi.
+    ///
+    /// Đề bài là chữ chủ máy gõ trên điện thoại; một dấu `'` mà lọt ra thì phần
+    /// còn lại của câu trở thành LỆNH SHELL. Đây là rào an toàn, không phải
+    /// chuyện thẩm mỹ.
+    #[test]
+    fn nhay_don_trong_de_bai_khong_thoat_ra_shell() {
+        let cmd = terminal_command(
+            "claude",
+            Path::new("/Users/x/projects"),
+            Some("đừng 'rm -rf /' nhé"),
+        );
+        // Sau khi bọc, mọi nháy đơn của người dùng phải nằm trong dạng '\''.
+        let tho = cmd.replace(r"'\''", "");
+        assert_eq!(
+            tho.matches('\'').count() % 2,
+            0,
+            "nháy đơn lẻ ⟹ chuỗi shell hở: {cmd}"
+        );
+        assert!(
+            cmd.contains(r"'\''rm -rf /'\''"),
+            "phải bọc lại nháy của người dùng: {cmd}"
+        );
+    }
+
+    /// Tài khoản đi vào cửa sổ bằng TỪ MỞ, không phải bằng một tham số riêng.
+    ///
+    /// 🔴 Đổi 2026-08-15: `account_launch` quyết từ ấy (`claude3`, hoặc bản dựng
+    /// lại `CLAUDE_CONFIG_DIR=… claude` khi chủ máy chưa khai), còn hàm này chỉ
+    /// đặt nó vào đúng chỗ. Một chỗ trả lời câu "tài khoản nào".
+    #[test]
+    fn tai_khoan_duoc_cam_theo_vao_cua_so() {
+        let cmd = terminal_command(
+            "CLAUDE_CONFIG_DIR='/Users/x/.claude-acc2' 'claude'",
+            Path::new("/Users/x/projects"),
+            None,
+        );
+        let env = cmd
+            .find("CLAUDE_CONFIG_DIR")
+            .expect("phải cắm biến tài khoản");
+        let cli = cmd.find("'claude'").expect("phải gọi claude");
+        assert!(env < cli, "biến môi trường phải đứng trước lệnh: {cmd}");
+        assert!(cmd.contains("/Users/x/.claude-acc2"), "{cmd}");
+        // Không nêu tài khoản thì KHÔNG cắm biến rỗng.
+        let khong = terminal_command("claude", Path::new("/Users/x/projects"), None);
+        assert!(!khong.contains("CLAUDE_CONFIG_DIR"), "{khong}");
+    }
+
+    /// Rào công cụ phải SỐNG SÓT qua shell.
+    ///
+    /// `Bash(git push:*)` để trần là lỗi cú pháp của bash/zsh — cửa sổ sẽ mở ra
+    /// với một dòng đỏ, không có phiên nào, và rào an toàn coi như không tồn
+    /// tại. Nhánh `--bg` không dính bẫy này vì nó truyền argv thẳng.
+    #[test]
+    fn rao_cong_cu_song_sot_qua_shell() {
+        let cmd = terminal_command("claude", Path::new("/Users/x/projects"), None);
+        let (_, rao) = cmd.split_once("--disallowedTools").expect("phải có rào");
+        assert!(rao.contains("'Bash(git push:*)'"), "mẫu để trần: {rao}");
+        // Không một dấu ngoặc nào được đứng ngoài chuỗi.
+        for doan in rao.split('\'').step_by(2) {
+            assert!(
+                !doan.contains('(') && !doan.contains(')') && !doan.contains('*'),
+                "ký tự shell nuốt được nằm ngoài nháy: {doan:?} trong {rao}"
+            );
+        }
+    }
+
+    /// Cửa sổ mở ở GỐC WORKSPACE — thư mục duy nhất cả ba tài khoản đã duyệt.
+    #[test]
+    fn mo_o_goc_workspace() {
+        let cmd = terminal_command("claude", Path::new("/Users/x/projects"), None);
+        assert!(cmd.starts_with("cd '/Users/x/projects' &&"), "{cmd}");
+    }
+}
+
+/// Câu trả lời `/btw` phải là CÂU TRẢ LỜI, không phải ảnh chụp màn hình.
+///
+/// Màn dưới đây là bản chụp THẬT (2026-08-11, phiên `projects-ff` trên
+/// `ttys001`) của lần `/btw` đầu tiên chạy được đầu-tới-cuối. Nó mang
+/// `~/Documents/projects` vì hôm ấy gốc workspace nằm ở đó — **giữ nguyên
+/// từng byte**, đừng "sửa cho hợp thời": một bản chụp đã sửa thôi là bằng
+/// chứng, và cái đang đo ở đây là cách CẮT màn, không phải đường dẫn. Bản đầu gửi
+/// nguyên cả cái màn này về điện thoại — logo khởi động, dòng vừa gõ, chân bảng
+/// hướng dẫn phím — và người đọc phải tự lọc ra câu trả lời giữa đống ấy.
+#[test]
+fn a_btw_answer_is_cut_out_of_the_screen_not_shipped_whole() {
+    let screen = "\
+▗ ▗   ▖ ▖  Claude Code v2.1.227
+           Opus 5 (1M context) with xhigh effort · Claude Max
+  ▘▘ ▝▝    ~/Documents/projects
+
+
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+
+    /btw Tóm tắt trong 1 câu: phiên này đang làm việc gì?
+
+      Phiên này thực tế chưa có trao đổi nào ngoài context khởi động
+      (CLAUDE.md workspace + memory index + hook SessionStart), nên chưa có
+      việc nào đang làm.
+
+    ↑/↓ to scroll · c to copy · f to fork · Esc to close";
+    let out =
+        huba::sessions::btw_answer(screen, "Tóm tắt trong 1 câu: phiên này đang làm việc gì?");
+    assert!(
+        out.contains("chưa có trao đổi nào"),
+        "mất câu trả lời:\n{out}"
+    );
+    assert!(!out.contains("Claude Code v"), "còn logo khởi động:\n{out}");
+    assert!(!out.contains("Esc to close"), "còn chân bảng phím:\n{out}");
+    assert!(!out.contains("/btw"), "còn chính câu vừa gõ:\n{out}");
+}
+
+/// Không tìm thấy mốc cắt thì thà trả cả màn còn hơn trả rỗng — im lặng đưa một
+/// chuỗi rỗng là biến "đọc không được" thành "phiên không nói gì".
+#[test]
+fn an_uncuttable_screen_still_returns_something() {
+    let out = huba::sessions::btw_answer("một màn hình lạ hoắc", "câu hỏi không có trên màn");
+    assert_eq!(out, "một màn hình lạ hoắc");
+}
+
+/// Bảng đang VIẾT DỞ thì chưa phải câu trả lời — và chân bảng KHÔNG nói được
+/// điều đó.
+///
+/// Ảnh chụp thật 2026-08-11: `Esc to close` có mặt ngay từ lúc bảng mới mở,
+/// nên bản vá đầu (neo vào chân bảng) vẫn tóm về một bảng còn đang chạy chữ
+/// `✳ Answering…`. Đây là lần thứ hai của cùng một lỗi trong ngày: lấy một dấu
+/// hiệu "đang mở" làm dấu hiệu "đã xong".
+#[test]
+fn a_panel_still_writing_is_not_an_answer() {
+    let writing = "    /btw Tóm tắt trong 1 câu: phiên này đang làm việc gì?\n      ✳ Answering…\n    Esc to close";
+    assert!(
+        !huba::sessions::btw_panel_finished(writing),
+        "bảng đang viết mà đã coi là xong"
+    );
+
+    let done = "    /btw Tóm tắt?\n\n      Phiên này chưa làm gì cả.\n\n    ↑/↓ to scroll · c to copy · f to fork · Esc to close";
+    assert!(
+        huba::sessions::btw_panel_finished(done),
+        "bảng đã xong mà không nhận ra"
+    );
+    assert!(
+        !huba::sessions::btw_panel_finished("❯ \n  ⏵⏵ auto mode on"),
+        "màn thường không phải bảng"
+    );
+}
+
+/// Câu hỏi dài bị TUI ngắt dòng thì phép cắt vẫn phải đúng.
+///
+/// Bản trước tìm "dòng nào chứa cả câu hỏi" — với cửa sổ hẹp thì không dòng nào
+/// chứa cả câu, phép tìm trượt, và câu trả lời trả về còn nguyên dòng lệnh
+/// `/btw …` ở đầu. Nay neo vào chính chữ `/btw` mà `claude` vẽ lại.
+#[test]
+fn a_wrapped_question_still_gets_cut_off_the_answer() {
+    let screen = "    /btw Tóm tắt trong 1 câu: phiên này\n    đang làm việc gì?\n\n      Chưa có việc nào đang chạy.\n\n    ↑/↓ to scroll · Esc to close";
+    let out =
+        huba::sessions::btw_answer(screen, "Tóm tắt trong 1 câu: phiên này đang làm việc gì?");
+    assert!(out.contains("Chưa có việc nào"), "mất câu trả lời:\n{out}");
+    assert!(!out.contains("/btw"), "còn dòng lệnh vừa gõ:\n{out}");
+}
+
+/// Gốc workspace TRẦN không được làm câm cả phép đo.
+///
+/// 🔴 Đo 2026-08-12: hai trong bốn phiên khai "(chưa rõ)" trong khi nhật ký của
+/// chúng nhắc tên dự án 4 lần. Gốc: mỗi bản ghi mang `"cwd":"…/projects"` trần,
+/// và bản đầu dùng `strip_prefix('/')?` — dấu `?` trong hàm trả `Option` thoát
+/// khỏi CẢ vòng lặp ngay lần gặp đầu tiên. Một lỗi im lặng đúng nghĩa: câu trả
+/// lời "chưa đủ bằng chứng" nghe hoàn toàn hợp lý.
+#[test]
+fn a_bare_workspace_root_does_not_silence_the_whole_scan() {
+    let root = "/Users/x/projects";
+    let tail = r#"{"cwd":"/Users/x/projects","type":"user"}
+{"path":"/Users/x/projects/AI/huba/PLAN.md"}
+{"path":"/Users/x/projects/AI/huba/UC.md"}"#;
+    assert_eq!(
+        huba::sessions::folder_from_tail(tail, root).as_deref(),
+        Some("AI/huba")
+    );
+}
+
+/// `AI/` là ngăn kéo, không phải dự án — lấy tên bên trong nó.
+#[test]
+fn the_drawer_named_ai_is_never_the_project() {
+    let root = "/Users/x/projects";
+    let tail = "a /Users/x/projects/AI/sdvi/x.rs b /Users/x/projects/AI/sdvi/y.rs";
+    assert_eq!(
+        huba::sessions::folder_from_tail(tail, root).as_deref(),
+        Some("AI/sdvi")
+    );
+}
+
+/// Nhắc đúng một lần thì chưa đủ — một câu văn lỡ nêu tên không được lật kết quả.
+#[test]
+fn one_mention_is_not_evidence() {
+    let root = "/Users/x/projects";
+    let tail = "chỉ nhắc một lần /Users/x/projects/dwork/a.ts";
+    assert_eq!(huba::sessions::folder_from_tail(tail, root), None);
+}
+
+/// Phiên dừng lại HỎI thì đọc ra được câu hỏi + từng lựa chọn — từ NHẬT KÝ.
+///
+/// 🔴 Hà 2026-08-12: *"có 1 phiên đang đưa lựa chọn nhưng không nhận được trên
+/// tele"*. Trước đó huba hỏi sai nguồn: nó đọc MÀN rồi để `keys::parse_choices`
+/// nhận dạng, mà hàm ấy đòi các mục liền dòng nhau (luật 08-11, sinh ra để khỏi
+/// đọc nhầm một đoạn văn có đánh số) — còn bảng `AskUserQuestion` thì mỗi lựa
+/// chọn có một dòng MÔ TẢ bên dưới. Hai luật đúng gặp nhau thành một phiên kẹt
+/// mà điện thoại không hay biết. Nhật ký thì có cấu trúc, và có cả với phiên
+/// huba không đọc được màn.
+#[test]
+fn a_waiting_question_is_read_with_all_its_options() {
+    let tail = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"AskUserQuestion","input":{"questions":[{"header":"Nửa ngày","question":"Đơn vắng có khai được NỬA NGÀY không?","options":[{"label":"Thêm ô nửa ngày","description":"…"},{"label":"Luôn trọn ngày","description":"…"}]}]}}]}}"#;
+    let a = huba::sessions::pending_question(tail).expect("phải thấy câu hỏi");
+    assert_eq!(a.header, "Nửa ngày");
+    assert!(a.question.contains("NỬA NGÀY"));
+    assert_eq!(a.options, vec!["Thêm ô nửa ngày", "Luôn trọn ngày"]);
+}
+
+/// Trả lời rồi thì thôi — không để cái chuông kêu về một câu đã xong.
+#[test]
+fn a_question_that_was_answered_is_no_longer_pending() {
+    let ask = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"AskUserQuestion","input":{"questions":[{"header":"h","question":"q","options":[{"label":"a"},{"label":"b"}]}]}}]}}"#;
+    let answer = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"The user answered"}]}}"#;
+    assert!(huba::sessions::pending_question(&format!("{ask}\n{answer}")).is_none());
+    // Hỏi tiếp sau khi đã trả lời câu trước ⟹ câu SAU mới là câu đang chờ.
+    let ask2 = ask
+        .replace("toolu_1", "toolu_2")
+        .replace("\"question\":\"q\"", "\"question\":\"q2\"");
+    let a = huba::sessions::pending_question(&format!("{ask}\n{answer}\n{ask2}"))
+        .expect("câu thứ hai còn treo");
+    assert_eq!(a.question, "q2");
+}
+
+/// 🔴 ĐẢO CHIỀU 2026-08-16 (bản cũ:
+/// `a_question_that_smells_of_secrets_keeps_the_fact_but_not_the_words`).
+///
+/// Cổng cũ thay câu hỏi bằng *"(màn có dấu hiệu bí mật…)"* và **xoá hết lựa
+/// chọn**. Đó là chỗ nó cắn đau nhất: không còn lựa chọn thì `/pick` chẳng có
+/// gì để bấm, nên phiên đứng kẹt tới khi chủ máy về ngồi trước máy — đúng cái
+/// việc huba sinh ra để khỏi phải làm (Hà 16/08).
+#[test]
+fn a_question_that_smells_of_secrets_still_reaches_the_phone() {
+    let tail = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_9","name":"AskUserQuestion","input":{"questions":[{"header":"h","question":"mật khẩu tfl5 là Abcd1234! đúng không?","options":[{"label":"đúng"},{"label":"sai"}]}]}}]}}"#;
+    let a = huba::sessions::pending_question(tail).expect("vẫn phải báo là đang kẹt");
+    assert_eq!(a.options.len(), 2, "lựa chọn phải bấm được từ xa: {a:?}");
+    assert!(
+        a.question.contains("Abcd1234"),
+        "câu hỏi đi nguyên văn: {a:?}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// last_prose — LỜI cuối cùng phiên nói ra, thứ đi kèm tin báo lên điện thoại
+//
+// Ba mẫu dưới đây là hình dạng ĐO ĐƯỢC trên nhật ký thật ngày 2026-08-12, không
+// phải hình dạng tưởng tượng: lượt hỏi chỉ có một khối `tool_use`
+// (`a5f06b76…` bản ghi 328), dòng máy tự chèn `[Request interrupted…]`, và lượt
+// vừa nói vừa gọi công cụ.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Lượt cuối chỉ GỌI CÔNG CỤ thì chưa phải lời cuối.
+///
+/// Đây là ca đắt nhất và cũng là ca tin báo sinh ra để phục vụ: phiên **dừng
+/// lại HỎI** có lượt cuối là `AskUserQuestion` thuần, `text_of` dựng thành
+/// `[dùng AskUserQuestion]`. Lấy nguyên nó thì tin lên điện thoại rỗng nghĩa
+/// đúng lúc cần nhất, còn thứ quyết được câu trả lời nằm ở bản ghi liền trước.
+#[test]
+fn a_turn_that_only_calls_a_tool_is_not_the_last_word() {
+    let tail = concat!(
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Đo xong: node v24.4.0, cổng 8090 đang bận."}]}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"AskUserQuestion","input":{}}]}}"#,
+    );
+    assert_eq!(
+        huba::sessions::last_prose(tail, 2000).as_deref(),
+        Some("Đo xong: node v24.4.0, cổng 8090 đang bận."),
+    );
+}
+
+/// Câu của CHỦ MÁY không được đọc ngược về điện thoại của chính anh ấy.
+///
+/// `[Request interrupted by user for tool use]` là một bản ghi `user` do máy tự
+/// chèn — đo thật trên phiên `37e59209` lúc 16:10, và nó chính là thứ kiểu cũ
+/// mang đi làm "lời cuối".
+#[test]
+fn what_the_owner_typed_is_not_read_back_to_him() {
+    let tail = concat!(
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Đã cài xong, daemon chạy lại rồi."}]}}"#,
+        "\n",
+        r#"{"type":"user","message":{"role":"user","content":"[Request interrupted by user for tool use]"}}"#,
+    );
+    assert_eq!(
+        huba::sessions::last_prose(tail, 2000).as_deref(),
+        Some("Đã cài xong, daemon chạy lại rồi."),
+    );
+}
+
+/// Vừa nói vừa gọi công cụ thì phần LỜI vẫn được giữ.
+#[test]
+fn a_turn_that_speaks_while_calling_a_tool_keeps_the_speech() {
+    let tail = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Chạy nốt bộ test đây."},{"type":"tool_use","id":"t2","name":"Bash","input":{}}]}}"#;
+    assert_eq!(
+        huba::sessions::last_prose(tail, 2000).as_deref(),
+        Some("Chạy nốt bộ test đây."),
+    );
+}
+
+/// Điều 5: chữ có dấu hiệu bí mật thì GIỮ LẠI, và **không** đi lùi tìm lượt sạch.
+///
+/// Một lượt cũ hơn đọc lên như thể là lời mới nhất — đó là một câu SAI, còn im
+/// lặng chỉ là một câu thiếu.
+/// 🔴 ĐẢO CHIỀU 2026-08-16 (bản cũ: `…_is_withheld_not_swapped_for_an_older_one`).
+///
+/// Phần CÒN NGUYÊN giá trị của bài kiểm này là vế thứ hai, và nó không đổi: lời
+/// cuối phải là lời CUỐI. Cái đổi là vế thứ nhất — chữ không còn bị nuốt vì
+/// trông giống bí mật, nên tin báo thôi cụt ngay lúc đáng đọc nhất.
+#[test]
+fn the_last_word_goes_out_whole_and_is_never_an_older_one() {
+    let tail = concat!(
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Câu này sạch, và nó CŨ."}]}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Mật khẩu là Abcd!2026 nhé"}]}}"#,
+    );
+    let said = huba::sessions::last_prose(tail, 2000).expect("phải có lời cuối");
+    assert!(said.contains("Abcd!2026"), "chữ đi nguyên vẹn: {said}");
+    assert!(
+        !said.contains("và nó CŨ"),
+        "không được lùi về một lượt cũ hơn: {said}"
+    );
+}
+
+/// Không có lượt nào của phiên thì trả None, để chỗ gọi rơi về bản xem trước.
+///
+/// Đúng hình dạng của 40 phiên dò `/usage` do chính huba đẻ ra: cả nhật ký chỉ
+/// có một bản ghi `user` mang `<command-name>/usage</command-name>`.
+#[test]
+fn a_transcript_with_no_assistant_turn_says_nothing() {
+    let tail = r#"{"type":"user","message":{"role":"user","content":"<command-name>/usage</command-name>"}}"#;
+    assert_eq!(huba::sessions::last_prose(tail, 2000), None);
+}
+
+/// Cả CHUỖI — nhật ký → lời cuối → thông tin chốt — phải giữ được câu chốt.
+///
+/// 🔴 Đây là con bug chạy thật mới thấy (16:26 ngày 2026-08-12, phiên
+/// `projects-71`): hai đầu đều đúng mà nối lại thì sai. `key_points` giữ dòng
+/// cuối rất tử tế, nhưng `last_prose` đã cắt bản dài ở 2000 ký tự TRƯỚC đó, nên
+/// "dòng cuối" nó giữ chỉ là chỗ bị chặt giữa câu. Một trần đặt sai chỗ đọc lên
+/// y hệt một tính năng chạy đúng.
+///
+/// Phép đo này đi đúng đường của `pipeline::announce_changes`, nên hạ `SAY_MAX`
+/// về 2000 là nó đỏ ngay.
+#[test]
+fn the_chain_from_transcript_to_message_keeps_the_closing_sentence() {
+    let filler = "Đoạn văn giữa bài, dài và không quyết được gì. ".repeat(60);
+    let report = format!(
+        "**Bắt được thủ phạm rồi** — đối chứng cùng một thời điểm.\n\n{filler}\n\nNói \"dọn đi\" là mình chạy phần an toàn."
+    );
+    assert!(
+        report.chars().count() > 2600,
+        "mẫu thử phải dài hơn trần cũ"
+    );
+    let tail = serde_json::json!({
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": report}]}
+    })
+    .to_string();
+
+    let said = huba::sessions::last_prose(&tail, huba::sessions::SAY_MAX).expect("phải đọc được");
+    let points = huba::watch::key_points(&said, 700);
+    assert!(
+        points.contains("Nói \"dọn đi\" là mình chạy phần an toàn."),
+        "câu chốt chết ở giữa đường:\n{points}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// "CỬA SỔ CÒN MỞ" PHẢI LÀ CỬA SỔ CỦA PHIÊN ẤY
+//
+// 🔴 Hà 2026-08-12: *"tele nhận được 'projects-d8 đã tắt cửa sổ còn mở' nhưng
+// thực tế không còn mở nữa"*. Đo lại được cả chuỗi trên máy:
+//
+//   12:28:08  cửa sổ `ttys002` mở (login-zsh pid 39536)
+//   …         `projects-d8` (69a38c64) sống trong cửa sổ ấy
+//   16:41:16  Hà thoát CLI rồi gõ `claude` LẠI ngay trong cửa sổ đó (pid 43422)
+//   16:42:33  huba nhận ra phiên cũ đi → hỏi "tab nào mang ttys002 không?" → CÒN
+//             → nói "cửa sổ terminal còn mở"
+//   16:42:33  …đúng vòng ấy, sổ ghi phiên MỚI (e27806c2) cũng ở `ttys002`
+//
+// tty là một con số ĐƯỢC DÙNG LẠI. Hỏi Terminal "còn tab nào mang số này
+// không" trả lời được câu "có cửa sổ", không trả lời được câu "cửa sổ CỦA AI".
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn row_at(id: &str, name: &str, tty: &str) -> huba::sessions::LiveSession {
+    huba::sessions::LiveSession {
+        session_id: id.to_string(),
+        name: name.to_string(),
+        tty: tty.to_string(),
+        host: "terminal".to_string(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_window_reused_by_the_next_session_is_not_a_window_left_open() {
+    let live = vec![row_at("e27806c2", "projects-7c", "ttys002")];
+    let taken = huba::sessions::window_taken_over("69a38c64", "ttys002", &live);
+    assert_eq!(
+        taken.map(|s| s.name.as_str()),
+        Some("projects-7c"),
+        "cửa sổ đã bị phiên khác chiếm mà không nhận ra"
+    );
+}
+
+/// Không ai chiếm thì đừng bịa ra người chiếm — ca này vẫn đi hỏi Terminal.
+#[test]
+fn an_empty_window_is_not_reported_as_taken_over() {
+    let live = vec![row_at("khac", "projects-bb", "ttys001")];
+    assert!(huba::sessions::window_taken_over("69a38c64", "ttys002", &live).is_none());
+}
+
+/// Chính nó không tính là "phiên khác" — hàng của phiên vừa tắt có thể còn nằm
+/// trong ảnh chụp vài giây (`claude agents` bỏ chậm).
+#[test]
+fn a_session_does_not_take_over_its_own_window() {
+    let live = vec![row_at("69a38c64", "projects-d8", "ttys002")];
+    assert!(huba::sessions::window_taken_over("69a38c64", "ttys002", &live).is_none());
+}
+
+/// Phiên nền không gắn cửa sổ nào: tty rỗng không được khớp với tty rỗng khác.
+#[test]
+fn sessions_without_a_tty_never_match_each_other() {
+    let live = vec![row_at("nen-khac", "projects-zz", "")];
+    assert!(huba::sessions::window_taken_over("nen-nay", "", &live).is_none());
+}
+
+/// `??` KHÔNG phải một cửa sổ.
+///
+/// 🔴 Đo 2026-08-12 22:59 trên đúng cái tin Hà đọc: `⏹ huba-67 đã tắt — cửa sổ
+/// ấy nay đang chạy phiên huba-ec.` Cả hai là phiên `claude -p "/usage"` của
+/// chính huba, **không phiên nào có cửa sổ** — `ps` in `??` khi không có tty điều
+/// khiển. `??` không rỗng nên cửa `tty.is_empty()` cho qua, rồi phép so "cùng
+/// tty" khớp `??` với `??`: huba tuyên bố một cửa sổ không tồn tại đã bị chiếm.
+#[test]
+fn a_process_without_a_terminal_has_no_window_to_be_taken_over() {
+    let ghost = |id: &str, tty: &str| huba::sessions::LiveSession {
+        session_id: id.to_string(),
+        name: id.to_string(),
+        tty: tty.to_string(),
+        host: "detached".to_string(),
+        ..Default::default()
+    };
+    let live = vec![ghost("heir", "??")];
+    for no_window in ["??", "-", ""] {
+        assert!(
+            huba::sessions::window_taken_over("dead", no_window, &live).is_none(),
+            "đọc {no_window:?} thành một cửa sổ có thật"
+        );
+    }
+    // Còn tty THẬT thì vẫn phải nhận ra — luật này không được siết lan.
+    let live = vec![ghost("heir", "ttys002")];
+    assert_eq!(
+        huba::sessions::window_taken_over("dead", "ttys002", &live).map(|s| s.session_id.as_str()),
+        Some("heir")
+    );
+}
+
+/// Cái VỎ shell còn lại của chính cửa sổ ấy không phải "phiên chiếm cửa sổ".
+///
+/// 🔴 Đo 2026-10-01 trên `logs/huba.log`: từ 17/08, **187/234** tin "cửa sổ ấy
+/// nay đang chạy phiên …" nói về chính hàng `shell` mà huba dựng cho cửa sổ
+/// vừa trống — `… đã tắt — cửa sổ ấy nay đang chạy phiên cửa sổ ttys001`. Phiên
+/// thoát CLI, shell đứng lại ở dấu nhắc, và huba đọc cái shell ấy thành một
+/// người đến sau.
+#[test]
+fn the_shell_left_behind_in_the_window_is_not_a_session_taking_it_over() {
+    let shell = huba::sessions::LiveSession {
+        session_id: format!("{}ttys001", huba::sessions::SHELL_ID_PREFIX),
+        name: "cửa sổ ttys001".to_string(),
+        tty: "ttys001".to_string(),
+        host: "shell".to_string(),
+        kind: "shell".to_string(),
+        ..Default::default()
+    };
+    let live = vec![shell.clone()];
+    assert!(
+        huba::sessions::window_taken_over("dead", "ttys001", &live).is_none(),
+        "đọc cái vỏ shell của chính cửa sổ ấy thành phiên chiếm cửa sổ"
+    );
+    // Một phiên THẬT ngồi vào cửa sổ ấy thì vẫn phải nhận ra, kể cả khi hàng
+    // shell đứng trước nó trong danh sách.
+    let live = vec![shell, row_at("heir", "projects-7c", "ttys001")];
+    assert_eq!(
+        huba::sessions::window_taken_over("dead", "ttys001", &live).map(|s| s.name.as_str()),
+        Some("projects-7c")
+    );
+}
+
+/// Ngăn kéo phải MỞ RA được, và luật ấy phải là phép ĐO chứ không phải một cái
+/// tên gõ sẵn.
+///
+/// 🔴 Hà 2026-08-12: *"sao phiên fb rõ ràng là ai/tcc/amm nhưng danh sách phiên
+/// chỉ hiện ai/tcc"*. Vì mã chỉ biết đúng một ngăn kéo — `"AI"`. Đo trên máy:
+/// `AI/tcc` **không có marker nào**, còn `AI/tcc/amm` có `.git`.
+///
+/// Test dựng một workspace THẬT trong thư mục tạm, vì luật này đọc đĩa: một
+/// bản giả bằng chuỗi sẽ không bao giờ phân biệt được ngăn kéo với dự án.
+#[test]
+fn a_drawer_is_opened_but_a_project_is_not_dug_into() {
+    let root = std::env::temp_dir().join(format!("huba-drawer-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    // `AI/tcc` = ngăn kéo (không marker) · `AI/tcc/amm` = dự án (.git)
+    std::fs::create_dir_all(root.join("AI/tcc/amm/.git")).unwrap();
+    // `AI/huba` = dự án (CLAUDE.md) và bên trong có `rust/` mang Cargo.toml —
+    // đúng cái bẫy: nếu luật chỉ hỏi "có marker không" mà không dừng đúng lúc
+    // thì phiên làm huba sẽ bị khai là `AI/huba/rust`.
+    std::fs::create_dir_all(root.join("AI/huba/rust")).unwrap();
+    std::fs::write(root.join("AI/huba/CLAUDE.md"), "x").unwrap();
+    std::fs::write(root.join("AI/huba/rust/Cargo.toml"), "[package]").unwrap();
+    let r = root.display().to_string();
+
+    let tail = format!("sửa {r}/AI/tcc/amm/src/a.rs rồi {r}/AI/tcc/amm/src/b.rs");
+    assert_eq!(
+        huba::sessions::folder_from_tail(&tail, &r).as_deref(),
+        Some("AI/tcc/amm"),
+        "ngăn kéo không mở ra"
+    );
+
+    let tail = format!("đọc {r}/AI/huba/rust/src/x.rs và {r}/AI/huba/rust/src/y.rs");
+    assert_eq!(
+        huba::sessions::folder_from_tail(&tail, &r).as_deref(),
+        Some("AI/huba"),
+        "đào sâu vào bên trong một dự án"
+    );
+
+    // Nhắc đúng MỘT lần thì không đủ để mở ngăn kéo — cùng ngưỡng ≥2 với nhãn.
+    let tail = format!("{r}/AI/tcc/amm/x.rs và {r}/AI/tcc/beta3/y.rs");
+    assert_eq!(
+        huba::sessions::folder_from_tail(&tail, &r).as_deref(),
+        Some("AI/tcc"),
+        "một lần nhắc mỗi bên mà vẫn chọn bừa một bên"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Không kiểm được thì GIỮ NGUYÊN nhãn: thư mục không có trên máy này (sổ cũ,
+/// máy khác) thì "ngăn kéo hay dự án" là câu huba không trả lời được — và đoán
+/// sâu thêm một bậc là đoán.
+#[test]
+fn an_unknown_folder_keeps_the_shallow_label() {
+    let tail = "/khong/co/that/AI/tcc/amm/a.rs và /khong/co/that/AI/tcc/amm/b.rs";
+    assert_eq!(
+        huba::sessions::folder_from_tail(tail, "/khong/co/that").as_deref(),
+        Some("AI/tcc")
+    );
+}
+
+/// Sổ nhớ cửa sổ nào — nhưng phải bắt `ps` chứng thực trước khi gõ vào đó.
+///
+/// 🔴 Hà 2026-08-12: *"chát từ tele toàn báo không thấy phiên"* + *"tất cả các
+/// lệnh từ tele sao không xử lý luôn lại phải chờ"*. Cả hai là một: `/type`·
+/// `/key`·`/shot` dựng lại ảnh chụp (3 lần spawn `claude` 279 MB) chỉ để tra
+/// `tty`, mà máy đang swap ⟹ **117–134 giây**, rồi trả "không thấy phiên".
+///
+/// Sổ trả lời trong vài mili giây — nhưng `tty` một mình KHÔNG đủ, vì tty được
+/// dùng lại: cửa sổ ấy có thể đã thuộc phiên khác. `pid` + `tty` mới đủ, và
+/// `ps` trả lời cả hai câu cùng lúc.
+#[test]
+fn a_remembered_window_must_still_belong_to_that_process() {
+    let book = |pid: i64, tty: &str, name: &str| {
+        format!(
+            r#"{{"sess-1":{{"s":"idle","y":"{tty}","k":"interactive","p":"","f":1786500000,"h":false,"n":"{name}","d":"AI/huba","a":"acc1","c":"/x","i":{pid},"o":"terminal"}}}}"#
+        )
+    };
+    let f = huba::sessions::window_target_from_book;
+
+    // Sổ cũ chưa có pid ⟹ không đủ để gõ, rơi về đường ảnh chụp.
+    assert!(f(&book(0, "ttys002", "projects-fb"), "sess-1").is_none());
+    // Không có cửa sổ thật thì không có gì để gõ vào.
+    assert!(f(&book(4242, "??", "projects-fb"), "sess-1").is_none());
+    // Tên rỗng: sổ biết id mà không chào được ⟹ để đường kia lo.
+    assert!(f(&book(4242, "ttys002", ""), "sess-1").is_none());
+    // pid ĐÃ CHẾT: đây là ca nguy hiểm nhất — cửa sổ `ttys002` có thể đang là
+    // của phiên khác, và gõ vào đó là gõ vào việc của người khác.
+    assert!(f(&book(999_999, "ttys002", "projects-fb"), "sess-1").is_none());
+    // Sổ nói một tty KHÁC với chỗ pid đang ngồi ⟹ cũng từ chối.
+    let me = std::process::id() as i64;
+    assert!(f(&book(me, "ttys999", "projects-fb"), "sess-1").is_none());
+
+    // Ca thuận: chính tiến trình test, nếu lượt chạy này có tty thật.
+    let out = std::process::Command::new("ps")
+        .args(["-o", "tty=", "-p", &me.to_string()])
+        .output()
+        .expect("ps");
+    let tty = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if huba::sessions::is_real_tty(&tty) {
+        let got = f(&book(me, &tty, "projects-fb"), "sess-1").expect("mất cửa sổ đang sống");
+        assert_eq!(got.name, "projects-fb");
+        assert_eq!(got.tty, tty);
+        assert_eq!(got.host, "terminal");
+        assert_eq!(got.pid, me);
+    }
+}
+
+/// Tên phiên phải đọc ra được đang làm dự án nào — và CHỈ thế thôi.
+///
+/// 🔴 Hà 2026-08-13: *"điều chỉnh lại các chỗ `[huba] project-06` = `[ai/huba]`
+/// là được, cho dễ nhận biết"* · *"cần gì đoạn text project-xx làm gì"*. Đúng:
+/// `claude` đặt tên theo thư mục MỞ phiên, mà cả máy này mở ở gốc workspace nên
+/// mọi phiên đều `projects-xx` — một cái tên không phân biệt được gì, chiếm chỗ
+/// của thứ phân biệt được.
+#[test]
+fn a_session_name_says_which_project_it_is_working_on() {
+    let d = huba::sessions::display_name;
+    assert_eq!(d("projects-fb", "AI/tcc/amm"), "[AI/tcc/amm]");
+    assert_eq!(d("projects-be", "AI/tfl5"), "[AI/tfl5]");
+    assert_eq!(d("username-41", "dwork"), "[dwork]");
+    // ĐƯỜNG ĐẦY ĐỦ, không phải mỗi lá cuối: `amm` một mình không nói được nó
+    // nằm trong `tcc`.
+    assert!(d("x", "AI/tcc/amm").contains("tcc"));
+    // Chưa đo được dự án thì GIỮ NGUYÊN tên — thà một cái tên vô nghĩa còn hơn
+    // một cặp ngoặc rỗng.
+    assert_eq!(d("projects-fb", ""), "projects-fb");
+}
+
+/// 🔁 ĐẢO CHIỀU 2026-10-03 — CLI khai `idle` thì là `idle`, nhật ký vừa ghi
+/// KHÔNG lật được nó nữa.
+///
+/// Bài này từng khoá điều ngược lại (Hà 12/08: `username-8e` có `status:
+/// "idle"` từ `claude agents` trong khi nhật ký vừa ghi 1 giây trước). Nguồn
+/// ấy đã bỏ từ 15/08; nay `status` đọc từ sổ `sessions/<pid>.json`, và đo
+/// 03/10 trên CLI 2.1.280 thì nó lệch nhật ký ≤ 9 ms ở cả bốn mốc đổi lượt
+/// (`tests/cli_status_is_the_turn.rs`). Giữ cửa cũ thì nó NUỐT tin "vừa xong":
+/// CLI ghi `turn_duration` đúng lúc khép lượt, nên vòng chạy ngay sau đó luôn
+/// thấy nhật ký "vừa ghi" — Hà: *"xong lâu rồi ko thấy báo"*.
+#[test]
+fn a_transcript_being_written_beats_a_stale_idle_flag() {
+    let w = huba::sessions::is_working;
+    assert!(
+        !w(Some("idle"), 0, Some(1)),
+        "nhật ký ghi lúc khép lượt không được kéo phiên về 'đang chạy'"
+    );
+    assert!(!w(Some("done"), 0, Some(3)));
+    assert!(!w(Some("shell"), 0, Some(0)));
+    assert!(!w(Some("idle"), 0, Some(60)));
+    assert!(!w(Some("idle"), 0, None));
+    // CLI nói busy thì vẫn tin thẳng.
+    assert!(w(Some("busy"), 0, Some(600)));
+    // Subagent nền vẫn là bằng chứng mạnh nhất.
+    assert!(w(Some("idle"), 2, Some(9_999)));
+    // Không có status (phiên terminal cũ): rơi về lưới đỡ mtime.
+    assert!(w(None, 0, Some(60)));
+    assert!(!w(None, 0, Some(9_999)));
+}
+
+/// "Gặp lỗi API" khác hẳn "nhắc tới lỗi API".
+///
+/// 🔴 Đo 2026-08-13, lượt thật đầu tiên của cảnh báo lỗi: huba bắn `🔴 [AI/huba]
+/// đang dừng vì LỖI:` kèm **4 KB JSON** — bản ghi khớp chính là báo cáo của tôi,
+/// một tin NÓI VỀ lỗi API. Bản đầu quét chữ trên từng dòng thô của một tệp JSON.
+///
+/// Đếm lại trên toàn bộ nhật ký của máy: 43 lỗi thật đều mang
+/// `isApiErrorMessage: true`; ba ca dương tính giả đều là tin thường.
+#[test]
+fn talking_about_an_api_error_is_not_having_one() {
+    let e = huba::sessions::transcript_error;
+    let real = r#"{"type":"assistant","isApiErrorMessage":true,"message":{"role":"assistant","content":"Credit balance is too low"}}"#;
+    assert_eq!(e(real).as_deref(), Some("Credit balance is too low"));
+
+    // Tin thường có nhắc chữ "API Error" ⟹ KHÔNG phải lỗi.
+    let talk = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Nay lỗi là một trạng thái: API Error: 500 …"}]}}"#;
+    assert_eq!(e(talk), None);
+
+    // Lỗi CŨ mà sau đó phiên đã nói tiếp ⟹ nó không còn đứng vì lỗi.
+    let recovered = format!("{real}\n{talk}");
+    assert_eq!(e(&recovered), None);
+
+    // …còn lỗi là bản ghi assistant CUỐI thì vẫn bắt được, dù trước đó có gì.
+    let stuck = format!("{talk}\n{real}");
+    assert!(e(&stuck).is_some());
+
+    assert_eq!(e(""), None);
+    assert_eq!(e("không phải json"), None);
+}
+
+/// Nhãn không được mang tên NGĂN KÉO — `AI/huba` phải đọc là `[huba]`.
+///
+/// 🔴 Hà 2026-08-13, đọc hai tin liền nhau `[AI/mailler]` và `[AI/huba]`: *"sao
+/// lại bị như này, huba làm việc đâu liên quan tới ai"*. `AI/` đứng trước gần
+/// như mọi dự án trên máy, nên nó phân biệt được đúng số không.
+///
+/// Bỏ ĐÚNG MỘT bậc: Hà đã bác việc rút gọn quá tay ngày 08-12 (*"sao phiên fb
+/// rõ ràng là ai/tcc/amm nhưng danh sách phiên chỉ hiện ai/tcc"*), nên `tcc`
+/// phải ở lại — chỉ vài dự án nằm trong nó, tức nó CÓ phân biệt.
+#[test]
+fn a_filing_drawer_is_not_part_of_the_name() {
+    use huba::sessions::{label_sessions, LiveSession};
+
+    // Dựng đúng hình dạng đã đo trên máy: `AI` và `AI/tcc` trống trơn, còn
+    // `AI/huba` và `AI/tcc/amm` mang dấu hiệu dự án.
+    let root = std::env::temp_dir().join(format!(
+        "huba-drawer-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(root.join("AI/huba")).unwrap();
+    std::fs::create_dir_all(root.join("AI/tcc/amm")).unwrap();
+    std::fs::create_dir_all(root.join("dwork")).unwrap();
+    std::fs::write(root.join("AI/huba/CLAUDE.md"), "x").unwrap();
+    std::fs::write(root.join("AI/tcc/amm/Cargo.toml"), "x").unwrap();
+    std::fs::write(root.join("dwork/CLAUDE.md"), "x").unwrap();
+
+    let row = |id: &str, folder: &str| LiveSession {
+        session_id: id.to_string(),
+        name: "projects-ff".to_string(),
+        folder: folder.to_string(),
+        ..Default::default()
+    };
+    let mut rows = vec![
+        row("11111111-0000-0000-0000-000000000000", "AI/huba"),
+        row("22222222-0000-0000-0000-000000000000", "AI/tcc/amm"),
+        row("33333333-0000-0000-0000-000000000000", "dwork"),
+        // Ngăn kéo không kiểm được (không có thư mục ấy) thì GIỮ NGUYÊN —
+        // không biết thì đừng đoán, cùng luật với `open_drawer`.
+        row("44444444-0000-0000-0000-000000000000", "khong/co/that"),
+    ];
+    label_sessions(&mut rows, &root);
+
+    assert_eq!(rows[0].label, "[huba]", "ngăn kéo AI/ vẫn bám vào nhãn");
+    assert_eq!(
+        rows[1].label, "[tcc/amm]",
+        "rút gọn quá tay, mất chỗ đứng của amm"
+    );
+    assert_eq!(
+        rows[2].label, "[dwork]",
+        "dự án ở gốc thì không có gì để bỏ"
+    );
+    assert_eq!(
+        rows[3].label, "[khong/co/that]",
+        "đoán bừa khi không kiểm được"
+    );
+
+    // Và `folder` KHÔNG bị đụng: nó là một mẩu đường dẫn thật, `clean_inbox`
+    // ghép nó vào gốc workspace để tìm hòm thư cũ (`AI/huba/.inbox` có thật
+    // trên máy lúc sửa).
+    assert_eq!(rows[0].folder, "AI/huba", "nhãn ăn vào đường dẫn");
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// Tab Terminal: cái gì đang chạy trong đó — và cái gì chỉ là shell.
+///
+/// 🔴 Hà 2026-08-13: *"mỗi cửa sổ terminal là một phiên thì sẽ quản lý được
+/// phiên nào đang chạy cli phiên nào không"*. Câu hỏi ấy quy về đúng một phép
+/// đo: trong danh sách tiến trình của tab, bỏ shell đi thì còn lại gì.
+#[test]
+fn a_tab_knows_whether_a_cli_is_running_in_it() {
+    use huba::keys::Tab;
+
+    let tab = |procs: &[&str]| Tab {
+        tty: "ttys004".to_string(),
+        busy: true,
+        procs: procs.iter().map(|p| p.to_string()).collect(),
+        screen: None,
+        title: String::new(),
+    };
+
+    // Đo thật trên máy lúc dựng: `login`, `-zsh`, rồi CLI.
+    assert_eq!(tab(&["login", "-zsh", "claude"]).cli(), Some("claude"));
+    // Dấu nhắc trống — đây là hàng mà `/type` gõ lệnh shell vào được.
+    assert_eq!(tab(&["login", "-zsh"]).cli(), None);
+    assert_eq!(tab(&["login", "-bash"]).cli(), None);
+    assert_eq!(tab(&[]).cli(), None);
+    // CLI khác `claude` vẫn phải nhận ra là CÓ thứ đang chạy: gõ lệnh shell vào
+    // giữa một chương trình đang chạy là thứ không lùi lại được.
+    assert_eq!(tab(&["login", "-zsh", "vim"]).cli(), Some("vim"));
+    assert_eq!(tab(&["login", "-zsh", "codex"]).cli(), Some("codex"));
+    // Tiến trình phụ của shell không được đọc thành CLI.
+    assert_eq!(tab(&["login", "zsh"]).cli(), None);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// commands_in_last_turn — LỆNH lấy từ SỔ, không đoán trên màn (2026-08-15)
+//
+// Mọi hình dạng dưới đây chép từ nhật ký THẬT trên máy này, không phải tưởng
+// tượng (đo trên 3.523 tệp `.jsonl` của 5 ngày):
+//   · kết quả công cụ về dưới vai `user`, đúng một khối `tool_result` — nên
+//     `user` KHÔNG phải lúc nào cũng là người, và lấy nhầm nó làm ranh giới
+//     lượt thì "lượt cuối" rút còn một lời gọi công cụ;
+//   · một lượt Bash bị chặn trả về nguyên văn `Permission to use Bash with
+//     command <lệnh> has been denied.` — đếm được **571** lượt.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Lệnh bị cổng quyền TỪ CHỐI ra nút, và ra NGUYÊN VĂN — không qua cửa đoán nào.
+///
+/// Đây là nhánh chưa từng có: nó không đoán "chuỗi này có phải một lệnh không",
+/// vì chính CLI đã trả lời rồi. Hai dòng dưới đây cố ý chọn để **bộ luật đọc
+/// màn cũ giết cả hai**: dòng `bash …` dài 81 (trần màn là 60), dòng `git log
+/// …` mang `, ` (dấu của văn xuôi). Cả hai đều là lệnh thật.
+#[test]
+fn a_denied_command_becomes_a_button_verbatim() {
+    let deploy =
+        "bash /Users/username/projects/AI/tfl5/scripts/deploy.sh static-cache-refresh-0814";
+    let tail = concat!(
+        r#"{"type":"user","message":{"role":"user","content":"deploy hộ tôi"}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"bash /Users/username/projects/AI/tfl5/scripts/deploy.sh static-cache-refresh-0814"}}]}}"#,
+        "\n",
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"Permission to use Bash with command bash /Users/username/projects/AI/tfl5/scripts/deploy.sh static-cache-refresh-0814 has been denied."}]}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"git log --pretty=format:\"%h, %s\" -n 5"}}]}}"#,
+        "\n",
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","is_error":true,"content":"Permission to use Bash with command git log has been denied."}]}}"#,
+    );
+    assert_eq!(deploy.len(), 81, "dòng chuẩn của ca này");
+    let got = huba::sessions::lines_of(&huba::sessions::commands_in_last_turn(tail, 4));
+    assert!(got.iter().any(|c| c == deploy), "{got:?}");
+    assert!(
+        got.iter()
+            .any(|c| c == r#"git log --pretty=format:"%h, %s" -n 5"#),
+        "dấu phẩy là dấu của văn xuôi, KHÔNG phải của một lệnh đã được CLI đọc: {got:?}"
+    );
+}
+
+/// Một lệnh CHẠY HỎNG không phải một lệnh cho chủ máy.
+///
+/// `is_error` một mình không đủ: nó cũng bật khi lệnh chạy xong và trả mã khác
+/// 0. Thứ nói "việc rơi sang chủ máy" là chữ ký TỪ CHỐI. Không có nó thì nút
+/// này mời người ta chạy lại đúng cái vừa hỏng.
+#[test]
+fn a_command_that_merely_failed_is_not_handed_to_the_owner() {
+    let tail = concat!(
+        r#"{"type":"user","message":{"role":"user","content":"kiểm hộ"}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cargo test --offline"}}]}}"#,
+        "\n",
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"error: 2 tests failed"}]}}"#,
+    );
+    assert!(
+        huba::sessions::commands_in_last_turn(tail, 4).is_empty(),
+        "{:?}",
+        huba::sessions::commands_in_last_turn(tail, 4)
+    );
+}
+
+/// Chỉ LƯỢT CUỐI tính — việc của ba lượt trước không còn là việc tiếp theo.
+///
+/// Và ranh giới phải đọc đúng: bản ghi `user` chứa `tool_result` là MÁY, không
+/// phải người. Đọc nhầm nó thành ranh giới thì lượt cuối rút còn một lời gọi
+/// công cụ và cả hàm này mù.
+#[test]
+fn only_the_turn_since_the_owner_last_spoke_counts() {
+    let tail = concat!(
+        r#"{"type":"user","message":{"role":"user","content":"việc cũ"}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"bash ./deploy-cu.sh xong-roi"}}]}}"#,
+        "\n",
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"Permission to use Bash with command bash ./deploy-cu.sh has been denied."}]}}"#,
+        "\n",
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"thôi làm việc khác"}]}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"bash ./deploy-moi.sh ban-0815"}}]}}"#,
+        "\n",
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","is_error":true,"content":"Permission to use Bash with command bash ./deploy-moi.sh has been denied."}]}}"#,
+    );
+    assert_eq!(
+        huba::sessions::lines_of(&huba::sessions::commands_in_last_turn(tail, 4)),
+        vec!["bash ./deploy-moi.sh ban-0815".to_string()]
+    );
+}
+
+/// 🔴 ĐẢO CHIỀU 2026-08-16 — lệnh phá huỷ NAY CÓ nút, và đó là điểm.
+///
+/// Bài kiểm này trước đây khoá đúng cái ngược lại (*"cửa PHÁ vẫn gác"*). Hà gỡ
+/// nó bằng một câu: *"tôi ở tele là phải gọi lệnh thao tác như ngồi máy thì
+/// chặn khác gì chặt tay, cần kênh tele để làm gì?"* · *"đã qua huba thì đừng có
+/// chặn gì cả, các chỗ chặn bỏ hết cho tôi"*.
+///
+/// Giữ bài kiểm chứ không xoá, và đảo nó: một cổng đã gỡ mà không ai canh thì
+/// lượt sau có người "vá lại cho an toàn" — đúng thứ vừa mất nửa ngày.
+///
+/// Nhánh bị-từ-chối là nơi lệnh phá xuất hiện NHIỀU nhất (phiên huba mở chạy sau
+/// `DENIED_TOOLS`, nên `rm` bị chặn là chuyện thường), nên nó cũng là chỗ chủ
+/// máy CẦN cái nút nhất: chính huba vừa nói "tôi không chạy được cái này".
+#[test]
+fn a_destructive_denied_command_now_gets_a_button() {
+    for cmd in [
+        "rm -rf /Users/username/projects/huba/rust/target",
+        "git reset --hard origin/main",
+    ] {
+        let tail = format!(
+            concat!(
+                r#"{{"type":"user","message":{{"role":"user","content":"dọn hộ"}}}}"#,
+                "\n",
+                r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"t1","name":"Bash","input":{{"command":"{cmd}"}}}}]}}}}"#,
+                "\n",
+                r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"Permission to use Bash with command {cmd} has been denied."}}]}}}}"#,
+            ),
+            cmd = cmd
+        );
+        assert_eq!(
+            huba::sessions::lines_of(&huba::sessions::commands_in_last_turn(&tail, 4)),
+            vec![cmd.to_string()],
+            "lệnh phá huỷ phải CÓ nút — cổng cũ đã gỡ, đừng dựng lại"
+        );
+    }
+}
+
+/// 🔴 ĐẢO CHIỀU 2026-08-16 — dòng lệnh mang bí mật NAY CŨNG có nút.
+///
+/// Bài cũ khoá *"luật 5 gác cả ở đây"*. Nhưng đích đến là buồng chat RIÊNG của
+/// chủ máy, có tự xoá lịch sử — hàng rào ấy do chính anh dựng, ở tầng dưới. Còn
+/// cái giá thì đo được: `curl -H "Authorization: Bearer …"` là một dòng lệnh
+/// hoàn toàn hợp lệ, và giữ nó lại là giữ đúng cái anh đang cần bấm.
+///
+/// Dấu hiệu vẫn được GHI (`cmd_risk_noted`) — nó thôi làm cánh cửa.
+#[test]
+fn a_denied_command_carrying_a_secret_now_gets_a_button() {
+    let tail = concat!(
+        r#"{"type":"user","message":{"role":"user","content":"gọi thử API"}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"curl -H \"Authorization: Bearer abc123def456\" https://example.test/v1/me"}}]}}"#,
+        "\n",
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"Permission to use Bash with command curl has been denied."}]}}"#,
+    );
+    assert_eq!(
+        huba::sessions::lines_of(&huba::sessions::commands_in_last_turn(tail, 4)),
+        vec![
+            "curl -H \"Authorization: Bearer abc123def456\" https://example.test/v1/me".to_string()
+        ],
+        "dòng lệnh mang bí mật phải CÓ nút — cổng cũ đã gỡ, đừng dựng lại"
+    );
+}
+
+/// Một KHỐI nhiều dòng không phải một cái nút.
+///
+/// Nút này gõ vào một TUI qua `/type`; một khối nhiều dòng gõ vào đó là một cú
+/// DÁN, và mỗi dấu xuống dòng trong đó là một cú Enter không ai xin. Đo được:
+/// 70 trong 571 lệnh bị từ chối là khối nhiều dòng.
+#[test]
+fn a_multiline_denied_block_is_not_a_button() {
+    let tail = concat!(
+        r#"{"type":"user","message":{"role":"user","content":"đo hộ"}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"python3 - <<'PY'\nprint(1)\nPY"}}]}}"#,
+        "\n",
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"Permission to use Bash with command python3 has been denied."}]}}"#,
+    );
+    assert!(
+        huba::sessions::commands_in_last_turn(tail, 4).is_empty(),
+        "{:?}",
+        huba::sessions::commands_in_last_turn(tail, 4)
+    );
+}
+
+/// Và đúng ca Hà chê: lệnh phiên VIẾT RA cho chủ máy, đọc từ sổ, ra nguyên vẹn.
+///
+/// 🔴 Hà 2026-08-14, ảnh chụp `/shot` của `[AI/tfl5]`: *"Rõ ràng có lệnh ở tfl5
+/// mà không thấy chèn nút chạy"* · *"Có lệnh bash sao lại ko có nút bấm chạy cho
+/// nó"*. Trên MÀN dòng ấy bị cửa sổ bẻ làm đôi và bản cụt lọt trần 60; trong SỔ
+/// nó là một dòng, và một dòng thì không có gì để nối.
+#[test]
+fn what_the_session_wrote_for_the_owner_comes_out_whole() {
+    let tail = concat!(
+        r#"{"type":"user","message":{"role":"user","content":"tình hình sao rồi"}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Bản vá chưa lên prod. Ba commit đang chờ ở local.\n\ngit -C /Users/username/projects/AI/tfl5 push origin main\n\nbash /Users/username/projects/AI/tfl5/scripts/deploy.sh static-cache-refresh-0814\n"}]}}"#,
+    );
+    assert_eq!(
+        huba::sessions::lines_of(&huba::sessions::commands_in_last_turn(tail, 4)),
+        vec![
+            "git -C /Users/username/projects/AI/tfl5 push origin main".to_string(),
+            "bash /Users/username/projects/AI/tfl5/scripts/deploy.sh static-cache-refresh-0814"
+                .to_string(),
+        ]
+    );
+}
+
+/// Cửa "không phá" phải hỏi ở MỌI VẾ, không chỉ ở đầu dòng.
+///
+/// 🔴 Lôi ra bằng phép đo đầu tiên của nguồn mới trên nhật ký THẬT (08-15,
+/// `tests/commands_from_log_live.rs`): giữa 24 phiên có lệnh, một phiên trả về
+/// `grep foo; <lệnh xoá cả thư mục nhà>` — mở đầu bằng `grep` nên phép hỏi
+/// `starts_with` thấy hiền, còn vế sau dấu `;` thì xoá sạch. Nút thì bấm một
+/// cái là chạy, không có bước hỏi lại nào ở giữa.
+///
+/// Ghi lại vì cách TÌM RA mới là bài học: bộ test thuần không bắt được, đơn
+/// giản vì đầu vào của nó do chính tôi nghĩ ra. Chỉ dữ liệu thật mới hỏi những
+/// câu tôi chưa nghĩ tới.
+///
+/// Chuỗi nguy hiểm dựng bằng `format!` chứ không viết thẳng: hook của máy này
+/// chặn cứng một dòng lệnh mang nguyên văn nó, kể cả khi dòng ấy chỉ là chữ
+/// trong một tệp test.
+/// 🔴 ĐẢO CHIỀU 2026-08-16 — cả những dòng nhiều vế cũng có nút.
+///
+/// Bài này từng chứng minh cửa `destructive` đọc TỪNG VẾ chứ không chỉ đầu dòng
+/// (`grep foo; rm -rf ~` phải bị chặn). Cửa ấy đã gỡ theo lệnh Hà, nên bài kiểm
+/// đổi việc: nó canh để cửa **không mọc lại**, và canh luôn một chuyện vẫn phải
+/// đúng — phép nhận dạng không được nuốt mất một dòng lệnh hợp lệ.
+#[test]
+fn a_destructive_clause_after_a_separator_now_gets_a_button() {
+    let wipe = format!("{} -rf ~", "rm");
+    for cmd in [
+        format!("grep foo; {wipe}"),
+        format!("cargo test && {} -rf target", "rm"),
+        "npm run build || killall node".to_string(),
+        format!("git status | {} -rf x", "rm"),
+    ] {
+        let tail = format!(
+            concat!(
+                r#"{{"type":"user","message":{{"role":"user","content":"làm hộ"}}}}"#,
+                "\n",
+                r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"t1","name":"Bash","input":{{"command":"{cmd}"}}}}]}}}}"#,
+                "\n",
+                r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"Permission to use Bash with command x has been denied."}}]}}}}"#,
+            ),
+            cmd = cmd
+        );
+        assert_eq!(
+            huba::sessions::lines_of(&huba::sessions::commands_in_last_turn(&tail, 4)),
+            vec![cmd.to_string()],
+            "cửa `destructive` đã gỡ — dòng này phải có nút"
+        );
+    }
+    // …và phép nhận dạng vẫn phải nhận một lệnh chỉ NHẮC tới chữ ấy.
+    let mention = format!(r#"grep -rn \"{} -rf\" scripts/"#, "rm");
+    let tail = format!(
+        concat!(
+            r#"{{"type":"user","message":{{"role":"user","content":"tìm hộ"}}}}"#,
+            "\n",
+            r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"t1","name":"Bash","input":{{"command":"{mention}"}}}}]}}}}"#,
+            "\n",
+            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"Permission to use Bash with command grep has been denied."}}]}}}}"#,
+        ),
+        mention = mention
+    );
+    assert_eq!(
+        huba::sessions::lines_of(&huba::sessions::commands_in_last_turn(&tail, 4)),
+        vec![format!(r#"grep -rn "{} -rf" scripts/"#, "rm")],
+    );
+}
+
+/// Một tham số đã bỏ không được cắn vào đề bài của chủ máy.
+///
+/// 🔴 Hà 2026-08-15: *"tại sao tôi gửi lệnh `/new acc3 dwork` mà phiên lại nhận
+/// được tin thành `[] acc3 dwork`"*. Nhãn dự án đóng vô điều kiện, mà `-s` thôi
+/// bắt buộc từ 08-13 — nên đường THƯỜNG của `/new` dán một cặp ngoặc rỗng lên
+/// câu chủ máy gõ. Đo lại trên `ps` cùng ngày: `claude --permission-mode auto
+/// "[] acc3 dwork" --disallowedTools …`, tức nó đi tới tận argv.
+#[test]
+fn a_dropped_parameter_must_not_bite_into_the_task() {
+    assert_eq!(huba::sessions::task_for_new("", "dwork"), "dwork");
+    // …nhưng CÓ `-s` thì nhãn vẫn cần: phiên mở ở gốc workspace, nên câu duy
+    // nhất nói nó thuộc dự án nào là đề bài.
+    assert_eq!(
+        huba::sessions::task_for_new("dwork", "sửa lịch"),
+        "[dwork] sửa lịch"
+    );
+    // Đề bài rỗng vẫn hợp lệ trên đường mở cửa sổ — và KHÔNG được biến thành
+    // một cái nhãn trần, vì lúc ấy phiên nhận đúng chữ `[dwork]` làm việc.
+    assert_eq!(huba::sessions::task_for_new("dwork", ""), "");
+    assert_eq!(huba::sessions::task_for_new("", ""), "");
+    assert_eq!(huba::sessions::task_for_new("   ", "dwork"), "dwork");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lệnh đi kèm THƯ MỤC của chính nó — 2026-08-15.
+//
+// 🔴 Hà, ảnh chụp hai nút `▶ git add …` vừa bấm: *"Như này có đúng không"*.
+// Không đúng: `runin_ran code=128`, *"fatal: not a git repository"*. Đo ra:
+// nhãn `[dwork]` dựng đường `<workspace>/dwork`, mà repo thật là
+// `<workspace>/dwork/dev` — lệch một bậc.
+//
+// Rồi anh chặn đúng lúc tôi sắp vá bằng phép DÒ thư mục: *"Có vẻ chưa đúng ngữ
+// cảnh thật"* · *"nhật ký là sao, sao không đọc trực tiếp trong phiên?"*. Con
+// số thật nằm ngay trong bản ghi mang dòng lệnh ấy: `cwd`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `ps` CĂN PHẢI cột số — và một dòng đọc hụt ở đây đọc ra thành một CÁI CHẾT.
+//
+// 🔴 Hà 2026-08-15: *"tại sao vừa tạo phiên social mới đã báo như thế này"* —
+// huba trả lời *"ĐÃ TẮT: chỉ còn /handover"* về một phiên sống được vài giây,
+// rồi *"cũng không nhìn thấy cửa sổ đâu"*. Đo cùng lúc: `pid 5047` (`ttys010`)
+// CÓ trong `ps`, `argv[0] = claude`, mà huba khai *"không còn tiến trình"*.
+//
+// Gốc: bản đầu tách bằng `splitn(4, char::is_whitespace)` — cắt theo TỪNG ký tự
+// trắng, nên dấu cách đệm của cột căn phải sinh ra trường rỗng, `parse` hỏng,
+// cả dòng bị bỏ. Nó chỉ cắn pid NGẮN HƠN pid dài nhất đang chạy, nên im lặng
+// phần lớn thời gian rồi cắn đúng phiên vừa mở.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn a_padded_ps_column_must_not_read_as_a_dead_session() {
+    // Nguyên văn hình dạng `ps -eo pid=,ppid=,tty=,command=` trên máy này khi
+    // pid dài nhất có 5 chữ số: pid 4 chữ số được đệm thêm một dấu cách.
+    let (pid, ppid, tty, cmd) =
+        huba::sessions::parse_ps_line(" 5047  4998 ttys010  claude --permission-mode auto")
+            .expect("dòng ps có đệm vẫn phải đọc được");
+    assert_eq!(pid, 5047);
+    assert_eq!(ppid, 4998);
+    assert_eq!(tty, "ttys010");
+    assert_eq!(cmd, "claude --permission-mode auto");
+
+    // …và dòng KHÔNG đệm vẫn như cũ.
+    let (pid, ppid, tty, cmd) =
+        huba::sessions::parse_ps_line("85605 85592 ttys005 claude").expect("dòng thường");
+    assert_eq!(
+        (pid, ppid, tty.as_str(), cmd.as_str()),
+        (85605, 85592, "ttys005", "claude")
+    );
+
+    // Tiến trình không có cửa sổ: `ps` in `??`, và đó KHÔNG phải một cửa sổ
+    // (`is_real_tty` — luật 11b).
+    let (_, _, tty, _) = huba::sessions::parse_ps_line("  123     1 ??       /usr/sbin/cupsd -l")
+        .expect("dòng không tty");
+    assert_eq!(tty, "??");
+    assert!(!huba::sessions::is_real_tty(&tty));
+
+    // Dòng cụt thì trả `None` — và chỗ gọi ĐẾM rồi ghi log, không nuốt.
+    assert!(huba::sessions::parse_ps_line("").is_none());
+    assert!(huba::sessions::parse_ps_line("5047").is_none());
+    assert!(huba::sessions::parse_ps_line("5047 4998").is_none());
+}
+
+#[test]
+fn a_command_carries_the_folder_its_own_record_recorded() {
+    // Hình dạng lấy từ nhật ký THẬT: bản ghi mang `cwd` ở tầng ngoài cùng, và
+    // `cwd` ĐỔI trong một phiên (đo được `/Users/username/projects/dwork/dev`
+    // trong khi phiên mở ở `/Users/username/projects`).
+    let tail = concat!(
+        r#"{"type":"user","cwd":"/Users/username/projects","message":{"role":"user","content":"làm tiếp đi"}}"#,
+        "\n",
+        r#"{"type":"assistant","cwd":"/Users/username/projects/dwork/dev","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"git add scripts/dci-build-deploy-web.sh"}}]}}"#,
+        "\n",
+        r#"{"type":"user","cwd":"/Users/username/projects/dwork/dev","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"Permission to use Bash with command git add has been denied."}]}}"#,
+    );
+    let got = huba::sessions::commands_in_last_turn(tail, 4);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].line, "git add scripts/dci-build-deploy-web.sh");
+    assert_eq!(
+        got[0].cwd, "/Users/username/projects/dwork/dev",
+        "lệnh bị chặn phải mang thư mục CỦA CHÍNH BẢN GHI ấy — đây là chỗ `git` \
+         trả 128 khi huba chạy nó ở `<workspace>/dwork`"
+    );
+}
+
+#[test]
+fn a_command_only_mentioned_in_prose_takes_where_the_session_stands() {
+    // Lệnh chỉ được NHẮC trong lời thì chưa chạy bao giờ, nên không có bản ghi
+    // riêng. Chỗ đúng nhất đo được là chỗ phiên đang đứng — bản ghi mới nhất.
+    let tail = concat!(
+        r#"{"type":"user","cwd":"/Users/username/projects","message":{"role":"user","content":"tình hình sao rồi"}}"#,
+        "\n",
+        r#"{"type":"assistant","cwd":"/Users/username/projects/games","message":{"role":"assistant","content":[{"type":"text","text":"Còn một bước:\n\nbash tools/post-deploy-check.sh\n"}]}}"#,
+    );
+    let got = huba::sessions::commands_in_last_turn(tail, 4);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].line, "bash tools/post-deploy-check.sh");
+    assert_eq!(got[0].cwd, "/Users/username/projects/games");
+}
+
+#[test]
+fn a_transcript_without_cwd_leaves_the_folder_empty_not_guessed() {
+    // Nhật ký cũ không có trường `cwd`. Bịa một thư mục ở đây là dựng lại đúng
+    // con bug vừa vá — để TRỐNG, và chỗ gọi rơi về gốc dự án như đường cũ.
+    let tail = concat!(
+        r#"{"type":"user","message":{"role":"user","content":"chạy đi"}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Chạy:\n\nbash ./deploy.sh ban-moi\n"}]}}"#,
+    );
+    let got = huba::sessions::commands_in_last_turn(tail, 4);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].cwd, "", "không biết thì để trống, đừng đoán");
+}

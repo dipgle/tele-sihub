@@ -1,0 +1,6988 @@
+//! Gõ vào cửa sổ terminal của một phiên, và chụp lại cửa sổ ấy.
+//!
+//! # Vì sao có tệp này
+//!
+//! Cho tới 2026-08-09 huba **không gõ được** vào phiên interactive: `claude` từ
+//! chối `--resume` một phiên đang chạy, và không có primitive nào nhét chữ vào
+//! đó (`CLAUDE.md` điều 10). Hệ quả thực tế: một phiên dừng lại hỏi *"chọn
+//! phương án nào?"* thì từ điện thoại **không thấy và không trả lời được** —
+//! bản ghi câu hỏi chỉ vào nhật ký SAU khi lượt kết thúc, nên nó vô hình cả với
+//! `sessions::stream`.
+//!
+//! Hà chốt 2026-08-09, sau khi tôi nêu rõ đánh đổi: cho huba **gõ tự do** vào
+//! phiên. Đây là quyết định của chủ máy, và nó **bỏ qua `DENIED_TOOLS`** —
+//! chữ gõ thẳng vào terminal không đi qua bộ khoá nào. Ghi rõ ở đây để không ai
+//! đọc mã sau này tưởng đó là sơ suất.
+//!
+//! # Hàng rào còn giữ (không phải về quyền, mà về ĐÚNG ĐÍCH)
+//!
+//! * Chỉ gõ vào cửa sổ **ghép được với một phiên có thật** qua `tty`. Không ghép
+//!   được thì từ chối — gõ vào cửa sổ lạ là gõ vào việc của người khác.
+//! * Mọi lần gõ đều **log** (`keys_typed`) kèm phiên và độ dài chuỗi. Nội dung
+//!   không log: nó là chữ của chủ máy, và log là tệp nằm lâu.
+//! * Lệnh đi qua phòng chat như mọi động từ khác, nên có dấu vết ở nơi đọc được.
+//!
+//! # Cái giá phải nói trước
+//!
+//! `System Events` gõ vào **cửa sổ đang ở trước**, nên huba phải kéo cửa sổ ấy
+//! lên trước khi gõ. Tức là gõ từ điện thoại sẽ **giật tiêu điểm** trên máy.
+//! Không có đường vòng: đó là cách macOS cho gõ vào một tiến trình interactive.
+
+use std::time::Duration;
+
+use anyhow::{anyhow, Result};
+use serde_json::json;
+
+use crate::exec::{run, RunOpts};
+use crate::logging;
+
+// ─────────────────────────────────────────────────────────────────────────
+// Windows — mỗi hàm dưới đây có một bản `#[cfg(target_os = "macos")]` cùng
+// tên ngay trong tệp này (gọi `osascript`/`cgkeys`). Đây là TOÀN BỘ mặt tiếp
+// xúc với hệ điều hành của `keys.rs`; phần còn lại của tệp (phân tích chữ
+// trên màn, quyết định điều hướng…) thuần Rust và chạy y hệt trên mọi nền.
+//
+// Gộp các shim vào MỘT chỗ, đầu tệp, thay vì xen giữa từng hàm macOS: mỗi cặp
+// tên trùng nhau nằm CÁCH XA nhau hàng nghìn dòng nếu xen kẽ, và một người sửa
+// chữ ký một bên mà quên bên kia sẽ không thấy chữ ký kia ở gần đó để so.
+// Gộp lại thì `cargo check --target x86_64-pc-windows-gnu` là phép đối
+// chiếu chữ ký DUY NHẤT cần chạy.
+//
+// CHƯA CHẠY THỬ TRÊN WINDOWS THẬT — xem đầu `keys_win.rs`.
+#[cfg(windows)]
+pub fn open_window(cmd: &str) -> Result<(i64, String)> {
+    crate::keys_win::open_window(cmd)
+}
+#[cfg(windows)]
+pub fn window_size(window: i64) -> Result<(i64, i64)> {
+    crate::keys_win::window_size(window)
+}
+#[cfg(windows)]
+pub fn terminal_pid() -> Result<i32> {
+    crate::keys_win::terminal_pid()
+}
+#[cfg(windows)]
+pub fn focus_window(window: i64) -> Result<()> {
+    crate::keys_win::focus_window(window)
+}
+#[cfg(windows)]
+pub fn send_bare(window: i64, keys: &[String]) -> Result<()> {
+    crate::keys_win::send_bare(window, keys)
+}
+#[cfg(windows)]
+pub fn screen_scrollback(window: i64, steps: usize, du: impl Fn(&str) -> bool) -> Result<String> {
+    crate::keys_win::screen_scrollback(window, steps, du)
+}
+#[cfg(windows)]
+pub fn window_of(tty: &str) -> Result<Option<i64>> {
+    crate::keys_win::window_of(tty)
+}
+/// Trên Windows mỗi console là một "tab" — tab đang chọn của nó là chính nó.
+#[cfg(windows)]
+pub fn selected_tab_tty(window: i64) -> Result<String> {
+    crate::keys_win::selected_tab_tty(window)
+}
+#[cfg(windows)]
+pub fn window_of_any(tty: &str) -> Result<Option<i64>> {
+    crate::keys_win::window_of_any(tty)
+}
+#[cfg(windows)]
+pub fn tab_proc_count(window: i64) -> Result<usize> {
+    crate::keys_win::tab_proc_count(window)
+}
+#[cfg(windows)]
+pub fn tab_state(window: i64) -> Result<TabState> {
+    crate::keys_win::tab_state(window)
+}
+#[cfg(windows)]
+pub fn screen_locked() -> Option<bool> {
+    crate::keys_win::screen_locked()
+}
+#[cfg(windows)]
+pub fn frame_is_blank(path: &std::path::Path) -> Option<bool> {
+    crate::keys_win::frame_is_blank(path)
+}
+#[cfg(windows)]
+pub fn bring_to_front(window: i64) -> Result<()> {
+    crate::keys_win::bring_to_front(window)
+}
+#[cfg(windows)]
+pub fn front_window() -> Result<Option<i64>> {
+    crate::keys_win::front_window()
+}
+#[cfg(windows)]
+pub fn photograph_window(window: i64, path: &std::path::Path) -> Result<()> {
+    crate::keys_win::photograph_window(window, path)
+}
+#[cfg(windows)]
+pub fn window_gone(window: i64) -> Result<bool> {
+    crate::keys_win::window_gone(window)
+}
+#[cfg(windows)]
+pub fn close_window(window: i64) -> Result<Closed> {
+    crate::keys_win::close_window(window)
+}
+#[cfg(windows)]
+pub fn tab_process_count(window: i64) -> Result<Option<usize>> {
+    crate::keys_win::tab_process_count(window)
+}
+#[cfg(windows)]
+pub fn close_hidden_again(window: i64) -> Result<bool> {
+    crate::keys_win::close_hidden_again(window)
+}
+#[cfg(windows)]
+pub fn type_into(window: i64, text: &str) -> Result<()> {
+    crate::keys_win::type_into(window, text)
+}
+#[cfg(windows)]
+pub fn clear_box(window: i64) -> Result<Cleared> {
+    crate::keys_win::clear_box(window)
+}
+#[cfg(windows)]
+pub fn clear_queue(window: i64) -> Result<(usize, usize)> {
+    crate::keys_win::clear_queue(window)
+}
+#[cfg(windows)]
+pub fn press_writes(window: i64, writes: &[Vec<String>]) -> Result<()> {
+    crate::keys_win::press_writes(window, writes)
+}
+#[cfg(windows)]
+pub fn screen_text(window: i64) -> Result<String> {
+    crate::keys_win::screen_text(window)
+}
+
+/// Có gửi được phím rời vào cửa sổ khác không — câu hỏi macOS trả lời bằng
+/// một QUYỀN hệ điều hành (`AXIsProcessTrusted`, xin ở Cài đặt ▸ Trợ năng);
+/// Windows không có quyền tương đương cho một tiến trình KHÔNG NÂNG QUYỀN gửi
+/// input tới cửa sổ khác cũng không nâng quyền, nên câu trả lời luôn "có" —
+/// TRỪ hàng rào UIPI khi đích chạy nâng quyền, thứ chưa đo được ở đây (xem
+/// đầu `keys_win.rs`). `pipeline.rs`/`runtime.rs` gọi qua đây, không gọi
+/// thẳng `cgkeys`/`keys_win`, để không phải tự rào `#[cfg]` ở bốn chỗ.
+#[cfg(target_os = "macos")]
+pub fn accessibility_trusted() -> bool {
+    crate::cgkeys::trusted()
+}
+#[cfg(windows)]
+pub fn accessibility_trusted() -> bool {
+    crate::keys_win::trusted()
+}
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Trần cho một lượt `osascript` — **tuỳ ai đang chờ**.
+///
+/// 🔴 Hà 2026-08-25, ảnh một tin mang `⚠ không đọc được màn: osascript quá
+/// 20s`: *"Sao quá 20s lại không chụp được màn"*.
+///
+/// Trần 20 giây cũ là MỘT con số cho mọi lượt gọi, và lý do của nó chỉ đúng cho
+/// một nửa: *"một cái treo ở đây sẽ giữ cả vòng chạy của daemon"*. Đúng với
+/// vòng quét định kỳ — ở đó không ai đang chờ, và giữ vòng là giữ mọi thứ khác.
+/// Sai với `/shot`: lúc ấy chủ máy **đang ngồi nhìn điện thoại chờ đúng câu trả
+/// lời này**, nên bỏ cuộc ở giây thứ 20 là đem câu trả lời của anh đi đổi lấy
+/// một vòng quét chẳng có việc gì gấp.
+///
+/// Đo được cái giá: **386 lượt `osascript quá 20s` trong một ngày** (log
+/// 23/08), rải khắp mọi phép hỏi Terminal. Terminal bận theo cơn — một lượt
+/// chờ dài hơn thường qua được, còn hai lượt ngắn thì trượt cả hai.
+///
+/// `exec::lane()` đã biết câu trả lời sẵn: nó theo LUỒNG, và mọi đường đi từ
+/// một cú bấm đều đã được `exec::urgent()` đánh dấu. Nên chỗ này không cần thêm
+/// tham số nào — chỉ cần hỏi.
+/// Lượt `osascript` THÀNH CÔNG gần nhất mất bao nhiêu mili-giây.
+///
+/// Không có sổ, không có khoá: một số duy nhất, ghi bởi mỗi lượt thành công.
+/// Sai một nhịp cũng không sao — nó chỉ dùng để CHỌN TRẦN, không để phán gì.
+static OSA_LAST_OK_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Trần cho một lượt `osascript`, **tự giãn theo máy** thay vì gõ cứng.
+///
+/// 🔴 Hà 2026-08-25, tối máy quá tải: *"sao giờ vào phiên nào cung báo quá 20s
+/// ko xem được màn vậy?"* — mọi phiên cùng lúc, vì cả 11 phiên dùng CHUNG một
+/// phép dò.
+///
+/// Đo được đêm ấy: `load average` **41,5 trên máy 8 nhân** (quá tải gấp 5), do
+/// mấy lượt `cargo test` của chính tôi cộng với Spotlight đi lập chỉ mục
+/// `target/`. Ở mức ấy `osascript` không được cấp CPU trong 20 giây. Đo lại lúc
+/// load 13: **chính kịch bản ấy mất 1,0 giây**. Nên không có gì hỏng — nó ĐÓI.
+///
+/// Một con số gõ cứng không trả lời được câu hỏi ấy, vì câu hỏi là *"máy đang
+/// bận tới đâu"* — thứ chỉ đo được lúc chạy. Đúng luật Hà đã chốt: vấn đề
+/// runtime thì tự điều chỉnh, đừng gõ cứng ngưỡng.
+///
+/// Nên: lấy lượt THÀNH CÔNG gần nhất làm thước. Máy rảnh thì `last_ok` ~0,3s và
+/// trần đứng nguyên ở mức cũ; máy tải nặng thì `last_ok` nở ra và trần nở theo.
+/// Máy hồi phục thì lượt thành công kế tiếp kéo nó về — không cần ai reset.
+pub fn osa_timeout() -> Duration {
+    osa_budget(
+        crate::exec::lane(),
+        Duration::from_millis(OSA_LAST_OK_MS.load(std::sync::atomic::Ordering::Relaxed)),
+    )
+}
+
+/// Phần THUẦN của [`osa_timeout`] — tách ra để kiểm được mà không cần máy bận.
+///
+/// Ba ràng buộc, và cái thứ ba là cái giữ cho nó không thành một cái bẫy khác:
+/// ① **sàn** đúng bằng trần cũ (45s có người chờ · 20s vòng nền) — bản vá này
+///   chỉ được NỚI, không được rút ngắn thứ đang chạy đúng;
+/// ② **hệ số 6 lần** lượt thành công gần nhất: đủ rộng để qua một cơn tải, đủ
+///   hẹp để không ngồi chờ một cửa sổ đã chết thật;
+/// ③ **trần cứng** — nếu không thì một lượt chậm bất thường đẩy trần lên vô hạn
+///   và huba ngồi chờ mãi. Có người đang chờ thì 180s (anh còn bỏ đi được);
+///   vòng nền 90s, vì ở đây một lượt treo giữ cả nhịp quét.
+pub fn osa_budget(lane: crate::exec::Lane, last_ok: Duration) -> Duration {
+    let (san, tran) = match lane {
+        // Có người đang chờ: thà chờ thêm còn hơn trả về một câu "không đọc
+        // được màn" mà chính người ấy không làm gì được với nó.
+        crate::exec::Lane::Urgent => (Duration::from_secs(45), Duration::from_secs(180)),
+        // Vòng nền: một lượt treo ở đây giữ cả vòng chạy của daemon.
+        crate::exec::Lane::Background => (Duration::from_secs(20), Duration::from_secs(90)),
+    };
+    (last_ok * 6).clamp(san, tran)
+}
+
+/// Ngân sách hỏi Terminal cho **MỘT vòng nền** — tổng, không phải trần mỗi lượt.
+///
+/// 🔴 Hà 2026-09-13: *"Tại sao thi thoảng bị treo chờ rất lâu lệnh mới phản
+/// hồi… chạy đơn luồng bị nghẽn đọc ghi?"*. Đo trên nhật ký trước khi trả lời,
+/// và câu trả lời không phải đĩa cũng không phải CPU:
+///
+/// ```text
+/// 02:49:53  terminal_probe_failed                     ← khe 14,9s
+/// 02:49:53  sessions_snapshot_ms  ms=45311            ← bình thường 890ms
+/// 02:50:14  terminal_probe_failed                     ← khe 18,6s
+/// 02:50:35  trust_tick_probe_failed                   ← khe 20,1s
+/// 02:50:41  window_of_from_cache  "hỏi Terminal hết giờ"
+/// 02:50:49  cycle_done  ms=101463
+/// ```
+///
+/// Bước đọc ảnh chụp phiên **đọc tệp**, p50 của nó ổn định 1–2,7 giây suốt hai
+/// tuần. Nó phình lên 45 giây vì mỗi lượt hỏi Terminal không được trả lời thì
+/// đốt trọn trần của [`osa_budget`]. Vòng > 30 giây theo ngày, kèm mẫu số:
+/// `0/131` (30/08) · `22/1081` (01/09) · **`70/857` (09/09)** · **`73/733`
+/// (10/09)** · `61/881` (12/09); chậm nhất **448,2 giây**.
+///
+/// ⚠ Ngân sách này **KHÔNG rút ngắn một lượt hỏi nào** — luật của `osa_budget`
+/// (*"chỉ được NỚI, không được rút ngắn thứ đang chạy đúng"*) vẫn nguyên. Nó
+/// chặn việc hỏi **lượt thứ N** sau khi vòng đã tiêu hết chừng này. Hai chiều
+/// khác nhau: một cái là *một câu hỏi được chờ bao lâu*, cái này là *một vòng
+/// được phép chờ tổng cộng bao lâu*.
+///
+/// 10 giây: ảnh chụp phiên (0,9–2,7s ở p50) luôn lọt, vì nó chạy ĐẦU vòng; còn
+/// những phép dò tuỳ chọn chạy sau nó thì bị bỏ đúng vào những vòng mà Terminal
+/// đang câm — tức đúng lúc chúng cũng sẽ không đọc được gì.
+pub const PROBE_BUDGET_MS: u64 = 10_000;
+
+/// Sau một lượt hỏi GẤP, việc nền nhường Terminal bao lâu.
+///
+/// Terminal.app trả lời AppleScript **tuần tự**, nên huba có bao nhiêu luồng
+/// cũng vô ích: hai bên cùng hỏi thì ngón tay chủ máy xếp hàng sau vòng quét.
+/// [`crate::exec::Lane`] đã hứa *"chúng nhường đường"* từ 14/08, nhưng nó mới
+/// nhường ở tầng QoS của CPU (`taskpolicy -b`) — thứ khan hiếm ở đây không phải
+/// CPU, mà là **lượt nói chuyện với Terminal**.
+///
+/// Cửa sổ nhường bám theo **lượt hỏi Terminal gấp gần nhất**, không bám theo
+/// tuổi thọ của `exec::urgent()`: một việc dài (`watch_long_job` giữ hạng gấp cả
+/// tiếng) sẽ bỏ đói vòng quét vĩnh viễn nếu tính theo tuổi thọ.
+pub const PROBE_YIELD_MS: i64 = 2_000;
+
+static PROBE_SPENT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PROBE_SKIPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Trong số bị bỏ, bao nhiêu là do NHƯỜNG (phần còn lại là hết ngân sách).
+///
+/// 🔴 Tách ra vì chính tôi vừa vấp: dòng `probe_budget_spent` bản đầu chỉ có một
+/// con số `bo_qua`, nên đọc `bo_qua=15 · da_tieu_ms=4952` xong vẫn phải đi
+/// `grep` chuỗi lỗi mới biết cửa nào đang bắn. Một phép đếm gộp hai nguyên nhân
+/// là một phép đo thiếu mẫu số.
+static PROBE_SKIPPED_YIELD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PROBE_TIMEOUTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Mốc (ms epoch) một lượt hỏi Terminal GẤP vừa chạy xong.
+#[cfg_attr(windows, allow(dead_code))]
+static URGENT_TERMINAL_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+thread_local! {
+    /// Lượt dò đang chạy có phải phép dò **LÕI** không.
+    ///
+    /// 🔴 Dựng 13/09 ngay sau khi cài bản đầu, vì bản ấy đo được là sai hướng:
+    /// cửa nhường trúng `terminal_screens` — phép dò dựng nên CẢ danh sách phiên
+    /// — nên nó làm hỏng đúng cái màn Hà đang nhìn, đúng lúc Hà đang bấm. Log
+    /// `09:11–09:15`: **32 lượt nhường · 23 lượt hết ngân sách**, và lượt nhường
+    /// mang nguyên hậu quả `"cửa sổ rảnh không lên danh sách · mọi phiên tạm coi
+    /// là không gõ vào được · không đọc được dòng đang-làm-gì"`.
+    ///
+    /// Phân biệt LÕI ↔ TUỲ CHỌN là có thật và đã ngầm có: ngân sách cố ý cho ảnh
+    /// chụp lọt bằng cách để nó chạy ĐẦU vòng. Đây chỉ là nói ra điều ấy thành
+    /// một cái cờ, thay vì trông vào thứ tự.
+    ///
+    /// Lõi vẫn TÍNH vào ngân sách — nó chỉ được miễn cửa nhường. Một vòng mà
+    /// riêng ảnh chụp đã đốt 45 giây thì vẫn phải nghỉ.
+    static LOI_COI: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Đánh dấu: lượt dò trong tầm guard này là **LÕI** — xem [`LOI_COI`].
+pub struct CoreGuard(bool);
+
+impl Drop for CoreGuard {
+    fn drop(&mut self) {
+        LOI_COI.with(|c| c.set(self.0));
+    }
+}
+
+/// Lượt dò đang chạy có nằm trong tầm một [`core_probe`] không.
+///
+/// 🔴 Công khai vì bài kiểm cần với tới: `LOI_COI` là thread-local riêng tư, và
+/// chỗ đọc nó thật (`osascript`) thì đòi một Terminal thật nên không bài kiểm
+/// nào gọi được. Đo 13/09 `09:34–09:53`, cấy `CoreGuard::drop` đặt `true` thay
+/// vì trả cờ về ⇒ **`RED_L6 = 0`**: cả 14 bài vẫn xanh. Mutant ấy im lặng biến
+/// MỌI phép dò sau lượt lõi đầu tiên thành "lõi" ⇒ cửa nhường chết hẳn, mà
+/// `probe_budget_spent` vẫn in ra một dòng trông bình thường.
+pub fn dang_la_loi() -> bool {
+    LOI_COI.with(|c| c.get())
+}
+
+pub fn core_probe() -> CoreGuard {
+    let truoc = LOI_COI.with(|c| c.get());
+    LOI_COI.with(|c| c.set(true));
+    CoreGuard(truoc)
+}
+
+/// Ba kết cục của câu hỏi *"lượt dò này có được chạy không"*.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeVerdict {
+    /// Hỏi đi.
+    Hoi,
+    /// Vòng nền đã tiêu hết ngân sách — **không đo được**, không phải "không có".
+    HetNganSach { da_tieu_ms: u64 },
+    /// Có người đang chờ một câu trả lời từ Terminal — nhường.
+    Nhuong { con_ms: i64 },
+}
+
+/// Phần THUẦN của hai cửa ① và ② — tách ra để kiểm được mà không cần một máy
+/// đang tải nặng và một Terminal đang câm.
+///
+/// Thứ tự hai cửa có ý nghĩa: **nhường trước, ngân sách sau**. Một vòng còn dư
+/// ngân sách mà chen ngang ngón tay chủ máy vẫn là chen ngang; còn một vòng hết
+/// ngân sách thì nó nghỉ dù có ai chờ hay không.
+///
+/// Hạng GẤP không bao giờ bị chặn bởi cả hai: người đang nhìn màn hình chờ câu
+/// trả lời thì không có ngân sách nào đáng hơn.
+pub fn probe_verdict(
+    lane: crate::exec::Lane,
+    la_loi_coi: bool,
+    da_tieu_ms: u64,
+    ngan_sach_ms: u64,
+    bay_gio_ms: i64,
+    gap_luc_ms: i64,
+    cua_so_nhuong_ms: i64,
+) -> ProbeVerdict {
+    if lane == crate::exec::Lane::Urgent {
+        return ProbeVerdict::Hoi;
+    }
+    // Phép dò LÕI được miễn cửa nhường, KHÔNG được miễn ngân sách — xem
+    // [`LOI_COI`]. Nhường một phép dò tuỳ chọn là mất một dòng chi tiết; nhường
+    // phép dò lõi là trả về một danh sách phiên SAI.
+    if la_loi_coi {
+        return if da_tieu_ms >= ngan_sach_ms {
+            ProbeVerdict::HetNganSach { da_tieu_ms }
+        } else {
+            ProbeVerdict::Hoi
+        };
+    }
+    let con = gap_luc_ms + cua_so_nhuong_ms - bay_gio_ms;
+    // 🪦 Ở đây từng có thêm một chốt `gap_luc_ms > 0`, với lời giải thích *"mốc
+    // 0 nghĩa là chưa có lượt gấp nào, đừng để nó cộng cửa sổ ra một khoảng còn
+    // nhường"*. **Đối chứng ngược đo được nó là mutant TƯƠNG ĐƯƠNG** (`RED_G5=0`,
+    // 13/09): mốc chưa dùng là `0`, còn `bay_gio_ms` là giờ epoch thật (~1,79e12),
+    // nên `con` luôn âm sâu và nhánh dưới không bao giờ chạm tới. Chốt ấy chưa
+    // từng chặn một lượt nào.
+    //
+    // Gỡ chứ không giữ — cùng lựa chọn đã ghi trong PLAN.md cho mutant *"bỏ lượt
+    // cắt `(` trong `minutes_until_reset`"*: một dòng mã không đỏ được kèm một
+    // câu chuyện nghe hợp lý là thứ tệ hơn cả hai vế của nó.
+    if con > 0 {
+        return ProbeVerdict::Nhuong { con_ms: con };
+    }
+    if da_tieu_ms >= ngan_sach_ms {
+        return ProbeVerdict::HetNganSach { da_tieu_ms };
+    }
+    ProbeVerdict::Hoi
+}
+
+/// Vòng vừa rồi đã tiêu bao nhiêu, bỏ qua bao nhiêu, hết giờ mấy lượt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ProbeUsed {
+    pub da_tieu_ms: u64,
+    pub bo_qua: u64,
+    /// Trong `bo_qua`, bao nhiêu là do nhường. `bo_qua - bo_qua_nhuong` = hết
+    /// ngân sách. Hai nguyên nhân, hai bản vá khác nhau — đừng gộp.
+    pub bo_qua_nhuong: u64,
+    pub het_gio: u64,
+}
+
+pub fn probe_used() -> ProbeUsed {
+    use std::sync::atomic::Ordering::Relaxed;
+    ProbeUsed {
+        da_tieu_ms: PROBE_SPENT_MS.load(Relaxed),
+        bo_qua: PROBE_SKIPPED.load(Relaxed),
+        bo_qua_nhuong: PROBE_SKIPPED_YIELD.load(Relaxed),
+        het_gio: PROBE_TIMEOUTS.load(Relaxed),
+    }
+}
+
+/// Mở ngân sách cho một vòng mới. Gọi ở ĐẦU [`crate::pipeline::run_once`].
+pub fn probe_budget_reset() {
+    use std::sync::atomic::Ordering::Relaxed;
+    PROBE_SPENT_MS.store(0, Relaxed);
+    PROBE_SKIPPED.store(0, Relaxed);
+    PROBE_SKIPPED_YIELD.store(0, Relaxed);
+    PROBE_TIMEOUTS.store(0, Relaxed);
+}
+
+/// Máy đang thế nào, đo bằng nguồn **KHÔNG phải AppleScript**.
+///
+/// 🔴 Bắt buộc phải là nguồn khác: chỗ gọi nó là chỗ vừa hỏi Terminal mà không
+/// được trả lời, nên hỏi thêm một câu AppleScript nữa để chẩn đoán là hỏi đúng
+/// cái miệng vừa câm — và treo thêm một trần nữa.
+///
+/// Trả `(cpu Terminal, cpu WindowServer, load 1 phút)`; `-1.0` = không đọc được,
+/// **không phải 0** (§13②: "không đo được" là một trạng thái riêng).
+#[cfg(target_os = "macos")]
+fn may_dang_the_nao() -> (f64, f64, f64) {
+    // `RunOpts` không `Clone` được (nó mượn), nên dựng lại cho từng lượt — hai
+    // dòng thừa còn hơn một `derive` mở rộng ra cả tệp vì một chỗ dùng.
+    let ngan = || RunOpts {
+        timeout: Some(Duration::from_secs(3)),
+        ..Default::default()
+    };
+    let (mut term, mut ws) = (-1.0, -1.0);
+    if let Ok(o) = run("ps", &["-Aceo", "pcpu,comm"], ngan()) {
+        for dong in o.stdout.lines() {
+            let mut it = dong.split_whitespace();
+            let (Some(cpu), Some(ten)) = (it.next(), it.next()) else {
+                continue;
+            };
+            let Ok(v) = cpu.parse::<f64>() else { continue };
+            // Cộng dồn: Terminal có thể có nhiều dòng, và WindowServer thì tên
+            // đầy đủ dài hơn cái ta so.
+            if ten == "Terminal" {
+                term = if term < 0.0 { v } else { term + v };
+            } else if ten == "WindowServer" {
+                ws = if ws < 0.0 { v } else { ws + v };
+            }
+        }
+    }
+    let load = run("sysctl", &["-n", "vm.loadavg"], ngan())
+        .ok()
+        .and_then(|o| {
+            o.stdout
+                .split_whitespace()
+                .nth(1)
+                .and_then(|x| x.parse::<f64>().ok())
+        })
+        .unwrap_or(-1.0);
+    (term, ws, load)
+}
+
+#[cfg(not(target_os = "macos"))]
+#[cfg_attr(windows, allow(dead_code))]
+fn may_dang_the_nao() -> (f64, f64, f64) {
+    (-1.0, -1.0, -1.0)
+}
+
+/// Một câu đọc được về hoàn cảnh của lượt hết giờ. Thuần, để kiểm được.
+///
+/// `-1.0` phải đọc ra **"?"**, không đọc ra `-1.0%` — một con số âm trên màn là
+/// một phép đo hỏng đội lốt một phép đo.
+pub fn timeout_context(
+    terminal_cpu: f64,
+    ws_cpu: f64,
+    load1: f64,
+    het_gio_vong_nay: u64,
+    last_ok_ms: u64,
+) -> String {
+    let so = |v: f64, don_vi: &str| -> String {
+        if v < 0.0 {
+            "?".to_string()
+        } else {
+            format!("{v:.0}{don_vi}")
+        }
+    };
+    format!(
+        "Terminal {} · WindowServer {} · load {} · hết giờ lượt thứ {} của vòng này · lượt đọc trót lọt gần nhất {:.1}s",
+        so(terminal_cpu, "%"),
+        so(ws_cpu, "%"),
+        so(load1, ""),
+        het_gio_vong_nay,
+        last_ok_ms as f64 / 1000.0
+    )
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+fn osascript(script: &str) -> Result<String> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let lane = crate::exec::lane();
+    // Hai cửa ① + ② — xem `probe_verdict`. Cả hai trả `Err`, và đó là ĐÚNG hình
+    // dạng: mọi chỗ gọi ở đây đã đọc `Err` thành *"huba mù"* (luật 11b), tức
+    // fail-closed. Không cửa nào biến một lượt không-đo-được thành một sự thật.
+    match probe_verdict(
+        lane,
+        dang_la_loi(),
+        PROBE_SPENT_MS.load(Relaxed),
+        PROBE_BUDGET_MS,
+        crate::quota::now_ms(),
+        URGENT_TERMINAL_MS.load(Relaxed),
+        PROBE_YIELD_MS,
+    ) {
+        ProbeVerdict::Hoi => {}
+        ProbeVerdict::HetNganSach { da_tieu_ms } => {
+            PROBE_SKIPPED.fetch_add(1, Relaxed);
+            return Err(anyhow!(
+                "vòng nền đã tiêu hết ngân sách hỏi Terminal ({:.1}s/{:.1}s) — KHÔNG hỏi lượt này",
+                da_tieu_ms as f64 / 1000.0,
+                PROBE_BUDGET_MS as f64 / 1000.0
+            ));
+        }
+        ProbeVerdict::Nhuong { con_ms } => {
+            PROBE_SKIPPED.fetch_add(1, Relaxed);
+            PROBE_SKIPPED_YIELD.fetch_add(1, Relaxed);
+            return Err(anyhow!(
+                "nhường Terminal cho một lượt hỏi đang có người chờ (còn {con_ms}ms)"
+            ));
+        }
+    }
+    let tran = osa_timeout();
+    let bat_dau = std::time::Instant::now();
+    let out = run(
+        "osascript",
+        &["-e", script],
+        RunOpts {
+            timeout: Some(tran),
+            ..Default::default()
+        },
+    );
+    // Tính giờ TRƯỚC khi phán: một lượt hỏng vẫn đã tiêu thời gian của vòng, và
+    // bỏ nó khỏi sổ là để ngân sách không bao giờ cạn ở đúng những vòng tệ nhất.
+    PROBE_SPENT_MS.fetch_add(
+        bat_dau.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+        Relaxed,
+    );
+    if lane == crate::exec::Lane::Urgent {
+        URGENT_TERMINAL_MS.store(crate::quota::now_ms(), Relaxed);
+    }
+    let out = out?;
+    if out.timed_out {
+        PROBE_TIMEOUTS.fetch_add(1, Relaxed);
+        // 🔴 NÓI RA VÌ SAO, đừng chỉ nói con số — Hà 2026-08-25 nhận hàng loạt
+        // `⚠ không đọc được màn: osascript quá 20s` và không có cách nào biết đó
+        // là máy bận hay cửa sổ chết. Hai chuyện ấy cần hai hành động khác nhau.
+        //
+        // Lượt thành công gần nhất là câu trả lời rẻ nhất: bình thường ~0,3s,
+        // nên một con số vài giây đã tự tố cáo máy đang tải nặng.
+        let truoc = OSA_LAST_OK_MS.load(std::sync::atomic::Ordering::Relaxed);
+        let vi = if truoc >= 2_000 {
+            format!(
+                " (máy đang tải nặng: lượt đọc gần nhất đã mất {:.1}s)",
+                truoc as f64 / 1000.0
+            )
+        } else {
+            String::new()
+        };
+        // ③ Ghi lại MÁY đang thế nào, bằng nguồn không phải AppleScript — xem
+        // `may_dang_the_nao`. Chỉ ghi log, không đưa vào câu trả lời: câu ấy đi
+        // ra Telegram, và một dòng số liệu hệ thống ở đó là chữ không ai dùng.
+        let (tcpu, wscpu, load) = may_dang_the_nao();
+        crate::logging::warn(
+            "osa_timeout_context",
+            serde_json::json!({
+                "tran_giay": tran.as_secs(),
+                "lane": format!("{lane:?}"),
+                "hoan_canh": timeout_context(
+                    tcpu, wscpu, load,
+                    PROBE_TIMEOUTS.load(Relaxed),
+                    truoc,
+                ),
+            }),
+        );
+        return Err(anyhow!("osascript quá {}s{vi}", tran.as_secs()));
+    }
+    // Chỉ ghi lượt THÀNH CÔNG: một lượt quá hạn không nói được nó "mất bao lâu",
+    // nó chỉ nói "lâu hơn trần" — lấy nó làm thước là tự đẩy trần lên mãi.
+    OSA_LAST_OK_MS.store(
+        bat_dau.elapsed().as_millis().min(u64::MAX as u128) as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    if out.code != Some(0) {
+        return Err(anyhow!(
+            "osascript hỏng: {}",
+            crate::exec::truncate(out.stderr.trim(), 200)
+        ));
+    }
+    Ok(out.stdout.trim().to_string())
+}
+
+/// Chuỗi cho AppleScript: chỉ có hai ký tự phải thoát, và bỏ sót một cái là
+/// script hỏng cú pháp — hoặc tệ hơn, đổi nghĩa.
+fn as_string(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// Đoạn AppleScript hỏi cửa sổ nào đang chạy `dev`.
+///
+/// Tách ra thành hàm THUẦN để kiểm được bằng test: lỗi đầu tiên của tính năng
+/// này là một dòng `return ""` thừa ở cuối, bị cú pháp chuỗi thô của Rust nuốt
+/// mất dấu nháy, và nó chỉ lộ khi chạy thật vì không có gì soi chuỗi sinh ra.
+#[cfg(target_os = "macos")]
+fn window_script(dev: &str) -> String {
+    // `try` quanh vòng trong, KHÔNG phải cho đẹp: Terminal có những cửa sổ
+    // không có tab nào (cửa sổ cài đặt, inspector), và hỏi `tabs of w` ở đó thì
+    // cả script chết giữa chừng — *"Can't get every tab of item 1 of every
+    // window. (-1728)"*, đo 2026-08-10. Một cửa sổ lạ không được phép làm hỏng
+    // việc tìm cửa sổ đúng.
+    // 🔴 Khớp tty KHÔNG đủ — đo 2026-08-11.
+    //
+    // Terminal giữ lại `tty` của một tab **đã chết** (shell thoát, tab hiện
+    // `[Process completed]`), còn macOS thì **dùng lại số tty**. Trên máy này,
+    // cùng lúc có BA cửa sổ khai `/dev/ttys005`:
+    //
+    // ```text
+    // win=54312 tty=/dev/ttys005 busy=false proc=          ← xác
+    // win=54299 tty=/dev/ttys005 busy=false proc=          ← xác
+    // win=54478 tty=/dev/ttys005 busy=false proc=login-zsh ← thật
+    // ```
+    //
+    // Bản trước trả về cửa sổ ĐẦU TIÊN khớp, tức rất dễ trúng một cái xác. Hậu
+    // quả không nhẹ: màn hình đẩy lên điện thoại là màn của phiên CŨ (Hà thấy
+    // `accept edits on` trong khi phiên thật đang `auto mode on`), `/type` gõ
+    // vào cửa sổ chết, `can_type` khai bừa là gõ được, và `tab_state` — thứ
+    // quyết định có dám đóng cửa sổ không — đọc một tab không còn ai ở đó.
+    //
+    // Lọc bằng thứ Terminal trả lời được: tab CÒN TIẾN TRÌNH. Trong các tab còn
+    // sống, ưu tiên tab đang chạy chương trình (`busy`) — một phiên `claude`,
+    // kể cả lúc đứng ở dấu nhắc, luôn `busy = true`; một shell trống thì không.
+    format!(
+        r#"tell application "Terminal"
+  set alive to missing value
+  repeat with w in every window
+    try
+      repeat with t in tabs of w
+        if tty of t is {} and (count of (processes of t)) > 0 then
+          if busy of t then return id of w
+          if alive is missing value then set alive to id of w
+        end if
+      end repeat
+    end try
+  end repeat
+  if alive is not missing value then return alive
+end tell"#,
+        as_string(dev)
+    )
+}
+
+/// Chữ vừa gõ đã đi đâu — đọc từ màn, không phải từ mã trả về của osascript.
+///
+/// Đây là bài học đắt nhất của cả tính năng này (2026-08-10): `osascript` trả
+/// về 0, log ghi `keys_typed`, huba báo "⌨ đã bấm" — mà Hà **không thấy hiện
+/// tượng gì**. Vì `do script` chỉ nói "đã đẩy được byte vào tab", nó không nói
+/// chương trình bên trong làm gì với byte ấy. Muốn biết thì phải NHÌN.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Landed {
+    /// `claude` đang chạy dở nên xếp chữ vào hàng chờ, sẽ xử lý khi xong.
+    Queued,
+    /// Phiên đang làm việc (có đồng hồ) — chữ đã khởi động một lượt.
+    Running,
+    /// 🔴 Chữ VẪN NẰM trong ô nhập — tức CHƯA gửi được.
+    ///
+    /// Hà 2026-08-15, ảnh chụp ô nhập của `[dwork]` mang **hai tin dính liền**:
+    /// *"sao nội dung lại bị lặp thế này"*. Đọc log ra đúng chuyện đã xảy ra:
+    /// tin trước gõ xong, huba bắn hai Enter, đọc màn, rồi trả lời `✓ đã gửi` —
+    /// trong khi chữ vẫn nằm nguyên trong ô. Tin sau gõ tiếp vào đúng ô ấy, nối
+    /// đuôi, và cuối cùng cả hai đi **làm một tin**.
+    ///
+    /// Gốc là một PHÉP ĐO MÙ: `landed` chỉ biết ba trạng thái *hàng chờ · đang
+    /// chạy · rảnh*, mà "rảnh" ở đây có hai nghĩa ngược nhau — *đã gửi xong* và
+    /// *chưa gửi được*. Không có trạng thái này thì mọi màn không-bận đều đọc
+    /// thành thành công, và huba **không thể** nói sai theo hướng nào khác.
+    ///
+    /// 📌 `still_in_box` đã có từ 12-08 và làm đúng việc của nó; nó chỉ không
+    /// được ai hỏi sau khi bấm Enter. *Một hàm đúng không được gọi thì bằng
+    /// không* — và chỗ nó vắng mặt là chỗ huba tự khen mình.
+    InBox,
+    /// Phiên đang đứng ở dấu nhắc, ô nhập TRỐNG — chữ đã đi.
+    Idle,
+}
+
+/// Phần màn hình thuộc **ô nhập** — khối đóng khung cuối cùng.
+///
+/// `claude` vẽ ô nhập bằng khung `╭─╮ │ ╰─╯` ở đáy màn. Lấy từ dấu `╭` cuối cùng
+/// trở đi là được đúng ô ấy (kèm dòng gợi ý dưới chân nó, vô hại). Không thấy
+/// khung nào — chủ đề khác, cửa sổ hẹp — thì lùi về **4 dòng không rỗng cuối**:
+/// vẫn là vùng đáy, chỉ kém sắc nét hơn, và thà kém sắc nét còn hơn soi cả màn
+/// rồi đọc phần hội thoại thành nội dung ô nhập.
+/// Phần màn TRƯỚC ô nhập — tức nội dung phiên đã nói, không kể chữ đang chờ gõ.
+///
+/// 🔴 Hà 2026-08-17, ảnh `/shot` `[codetrail]` có dòng `❯ vá luôn runner.sh 📎`:
+/// *"Tại sao lại gắn nút tải file vào ô chát gợi ý mờ"*. Đúng: ô nhập là chỗ để
+/// GỬI, và đích chạm của nó đã có rồi (⏎ · ⌫). Một cái 📎 mọc lên giữa câu chưa
+/// gửi vừa thừa vừa gây hiểu nhầm — nó trông như thể chữ ấy đã là nội dung.
+///
+/// Không có khung ô nhập ⟹ trả cả màn: thà giữ nguyên hành vi cũ còn hơn cắt
+/// mất phần thân vì một phép đoán.
+pub fn body_before_box(screen: &str) -> String {
+    let Some(i) = box_start(screen) else {
+        return screen.to_string();
+    };
+    let head = &screen[..i];
+    // 🔴 BỎ ĐÚNG CÁI Ô, KHÔNG BỎ MỌI THỨ SAU NÓ — 2026-08-19.
+    //
+    // Bản cũ cắt từ ô nhập tới hết, và điều đó vô hại chừng nào chuỗi đưa vào
+    // đúng là một ẢNH MÀN (dưới ô chỉ còn dòng trạng thái). Nhưng hai chỗ gọi
+    // thật lại đưa vào **tin `/shot` đã dựng xong**: ảnh màn, rồi khối *"Lời
+    // cuối nó nói"* huba nối thêm — và khối ấy nằm SAU ô nhập. Cắt tới hết là
+    // vứt luôn nó, tức mọi đường dẫn tệp huba tự viết ra đều mất nút 📎.
+    //
+    // Bài kiểm `file_button_beside_command` bắt được ngay: đường dẫn báo cáo
+    // `.html` nằm ở dòng 29, ô nhập ở dòng 19–21.
+    let rest = &screen[i..];
+    match box_close(rest) {
+        Some((_, end)) => format!("{head}{}", &rest[end..]),
+        // Ô chạy tới hết màn (bị mép dưới cắt) — không còn gì phía sau để giữ.
+        None => head.to_string(),
+    }
+}
+
+/// Dòng kẻ ngang — viền của ô nhập ở bản không khung. Đòi dài (≥ 8) để một dòng
+/// gạch ngắn giữa văn bản không bị đọc thành viền.
+fn is_rule_line(t: &str) -> bool {
+    t.chars().count() >= 8 && t.chars().all(|c| "─━—▔═".contains(c))
+}
+
+/// VIỀN DƯỚI của ô nhập: `(đầu dòng viền, cuối dòng viền)`, tính theo byte của
+/// `rest` — chuỗi bắt đầu ở viền TRÊN, tức `&screen[box_start(screen)?..]`.
+/// `None` = ô chạy tới hết màn (mép dưới cắt mất viền).
+///
+/// Một chỗ cho câu hỏi "ô nhập dừng ở đâu", dùng chung cho [`body_before_box`]
+/// (bỏ đúng cái ô) và [`box_inner`] (đọc đúng cái ô).
+///
+/// 🔴 VIỀN DƯỚI RỘNG ĐÚNG BẰNG VIỀN TRÊN — 2026-09-23. TUI vẽ hai vạch suốt bề
+/// ngang, nên chúng dài bằng nhau từng ký tự (màn thật hôm ấy: 206 và 206). Một
+/// vạch NGẮN trong nội dung ô (đầu ra lệnh dán vào hay có) thì không. Vạch cùng
+/// bề rộng không có thì lùi về vạch ≥ 8 đầu tiên — đúng phép cũ của
+/// `body_before_box`, nên ca nào phép cũ đã tìm đúng viền thì phép này tìm ra
+/// cùng dòng ấy.
+fn box_close(rest: &str) -> Option<(usize, usize)> {
+    let mut lines = rest.split_inclusive('\n');
+    let top = lines.next()?;
+    let width = top.trim().chars().count();
+    let mut at = top.len();
+    let mut loose = None;
+    for line in lines {
+        let t = line.trim();
+        let span = (at, at + line.len());
+        if t.starts_with('╰') || (is_rule_line(t) && t.chars().count() == width) {
+            return Some(span);
+        }
+        if loose.is_none() && is_rule_line(t) {
+            loose = Some(span);
+        }
+        at += line.len();
+    }
+    loose
+}
+
+/// Phần NẰM GIỮA HAI VIỀN của ô nhập — từ dòng ngay dưới viền trên tới dòng
+/// ngay trên viền dưới. `None` khi màn không có ô nhập (cùng neo `box_start`).
+///
+/// 🔴 Hà 2026-09-23: *"chỉnh lại lệnh clean để xóa toàn bộ ô nhập của phiên,
+/// hiện tại xóa mỗi dòng thì phải"*. `input_box_text` từng đọc từ viền trên tới
+/// HẾT MÀN, tức gói luôn mọi thứ TUI vẽ dưới viền dưới — dòng chân thì có bộ lọc
+/// chữ riêng, còn **bảng subagent** (`⏺ main` · `◯ general-purpose  <việc>
+/// 14m 8s · ↓ 165.4k tokens`) thì không. Đo trên `[dwork]` cùng ngày: ô TRỐNG
+/// mà đọc ra 194 ký tự ⟹ `/clean` bắn 16 lô × 400 DEL rồi vẫn khai "còn chữ"
+/// (`keys_clear_gave_up`, 15 lượt từ 29/08), và vòng tự gỡ kẹt bấm Enter vào ô
+/// trống ấy (`auto_unstick_box_firing text_len=194`). Bảng ấy nằm ngoài ô, nên
+/// sửa ở chỗ cắt vùng — không thêm một cụm chữ nữa vào bộ lọc.
+pub fn box_inner(screen: &str) -> Option<&str> {
+    let rest = &screen[box_start(screen)?..];
+    let top_end = rest.find('\n').map_or(rest.len(), |n| n + 1);
+    let end = box_close(rest).map_or(rest.len(), |(start, _)| start);
+    Some(&rest[top_end..end.max(top_end)])
+}
+
+/// Ô nhập BẮT ĐẦU ở byte nào — một cái neo, hai chỗ dùng.
+///
+/// 🔴 **Bản `claude` hiện nay KHÔNG vẽ khung nữa** — đo 2026-08-19 trên màn thật
+/// của phiên `[dwork]` (`ttys000`, 25 dòng): `╭` · `╰` · `│` đều **0 lần**, chỉ
+/// còn **một dòng kẻ `─` suốt bề ngang** rồi tới `❯`. Cái neo `rfind('╭')` viết
+/// từ 08-12 vì thế trượt ở MỌI lượt đọc, và cả họ hàm dựng trên nó lặng lẽ rơi
+/// về đường lùi *"bốn dòng cuối"* — một vùng gần đúng, đủ để mọi thứ trông vẫn
+/// chạy.
+///
+/// Cái giá đo được, cùng ngày, cùng một màn ấy: `still_in_box` đọc nhầm vùng ⟹
+/// `type_and_send` không bấm Enter ⟹ **cả khối kết quả `▶️` nằm lại trong ô
+/// nhập hơn một tiếng**, trong khi huba đã báo *"✅ Đã chạy trên máy rồi dán kết
+/// quả vào [dwork]"*; rồi `clear_box` đếm chữ trên chính vùng sai ấy nên bấm ⊠
+/// hai lần đều không sạch (`keys_clear_incomplete` ×2). Hà, ảnh chụp: *"nội
+/// dung sao bị chèn lung tung ở đâu vào ô chat"*.
+///
+/// Nên neo phải nhận CẢ HAI hình dạng. Còn khi cả hai đều không có, câu trả lời
+/// là `None` — *"màn này không có ô nhập"* — và đó là một KẾT CỤC, không phải
+/// chỗ để đoán: `still_in_box` trả `false` từ trước, `input_box_text` im từ
+/// 2026-09-09 (trước đó nó gói cái đuôi màn tĩnh thành "câu đang chờ gửi", và
+/// `auto_unstick_box` bắn 197 cú Enter vào đó trong 2h15). Đường lùi "bốn dòng
+/// cuối" của [`box_region`] vẫn còn cho những phép ĐẾM không hỏi "có ô nhập
+/// không" (`queued_count`).
+///
+/// `pub` vì nó là cái neo DUY NHẤT cho câu hỏi ấy — chỗ nào cần biết "màn có ô
+/// nhập không" thì hỏi đây, đừng tự dò lấy một hình dạng thứ ba.
+pub fn box_start(screen: &str) -> Option<usize> {
+    if let Some(i) = screen.rfind('╭') {
+        return Some(i);
+    }
+    // Dòng kẻ ngang: viền của ô nhập ở bản không khung. Đòi dài (≥ 8) để một
+    // dòng gạch ngắn giữa văn bản không cắt nhầm chỗ.
+    //
+    // 🔴 KHÔNG PHẢI CỨ VẠCH CUỐI CÙNG. Ô nhập nằm GIỮA HAI vạch (bản chụp thật
+    // `tests/fixtures/shot-screen-2026-08-18.txt`), nên "vạch cuối" là viền
+    // DƯỚI và vùng sau nó chỉ còn dòng chân `⏵⏵ auto mode on` — lấy nó là mất
+    // sạch chữ trong ô. Bài kiểm bắt được ngay lượt chạy đầu.
+    //
+    // Nên đi ngược từ vạch cuối lên, lấy vạch đầu tiên mà vùng SAU nó có một
+    // dòng dấu nhắc `❯` thật. `❯` cũng là con trỏ của hộp chọn (`❯ 1. Set it
+    // up`), nên dòng `❯ <số>.` không tính — ở đó không có ô nhập nào.
+    let mut rules: Vec<usize> = Vec::new();
+    let mut at = 0usize;
+    for line in screen.split_inclusive('\n') {
+        if is_rule_line(line.trim()) {
+            rules.push(at);
+        }
+        at += line.len();
+    }
+    rules.into_iter().rev().find(|i| {
+        screen[*i..].lines().any(|l| {
+            let t = l.trim();
+            match t.strip_prefix('❯') {
+                Some(rest) => {
+                    let rest = rest.trim_start();
+                    !rest
+                        .split_once('.')
+                        .is_some_and(|(n, _)| n.trim().parse::<usize>().is_ok())
+                }
+                None => false,
+            }
+        })
+    })
+}
+
+pub fn box_region(screen: &str) -> String {
+    if let Some(i) = box_start(screen) {
+        return screen[i..].to_string();
+    }
+    let mut tail: Vec<&str> = screen
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .rev()
+        .take(4)
+        .collect();
+    tail.reverse();
+    tail.join("\n")
+}
+
+// 🪦 `asks_for_go_ahead(screen)` — gỡ 2026-08-16 cùng cái nút nó nuôi
+// (`pipeline.rs`, bia mộ ở đó). Nó so màn với bảy cụm chữ mời (*"nói một
+// tiếng"*, *"có muốn"*…) để dựng nút gửi hai chữ "làm đi" vào phiên. Hà: *"1
+// xóa nút đó đi không cần nữa"*. Gỡ cả hàm chứ không để lại một phép đo không
+// ai đọc: một hàm còn đó là một lời mời dựng lại cái nút ấy ở chỗ khác.
+
+/// Ngắn nhất bao nhiêu ký tự thì chữ trong ô nhập là một câu để gửi — MỘT chỗ
+/// cho mọi hàm đọc ô nhập. Một ký tự trơ trọi là dấu trang trí, không phải câu.
+///
+/// 🔴 Hà 2026-10-02 (ảnh `❯ Ok` không có ⏎): câu "ô nhập có gì" từng có hai
+/// ngưỡng — 2 ở [`input_box_text`], 4 ở `pipeline::prompt_line_text` (thứ dựng
+/// nút ⏎) — nên mọi gợi ý dưới 4 ký tự (`Ok`, `ừ`, `có`) chưa bao giờ có nút.
+/// Bài kiểm `tests/box_send_short_suggestion.rs` đòi hai hàm trả lời giống nhau.
+pub const BOX_TEXT_MIN_CHARS: usize = 2;
+
+/// Chữ đang NẰM SẴN trong ô nhập, nếu có — thứ chỉ cần một Enter là gửi đi.
+///
+/// 🔴 Hà 2026-08-13, gửi ảnh một màn `/shot`: *"như ảnh vừa gửi có gợi ý nội
+/// dung chat cần có cách bấm nhanh để gửi nó"*. Đúng: màn ấy có sẵn dòng
+/// `❯ làm quota phép đi` nằm trong ô — chữ đã tới nơi, chỉ thiếu cú Enter — mà
+/// từ điện thoại thì không có cách nào bấm cú ấy ngoài gõ lại cả câu.
+///
+/// Trả về chữ đã dọn (bỏ khung, dấu nhắc, dòng trạng thái), để chỗ gọi vừa
+/// dựng được nhãn nút vừa biết có đáng dựng hay không.
+pub fn input_box_text(screen: &str) -> Option<String> {
+    // 🔴 KHÔNG CÓ Ô NHẬP thì trả `None` — đó là một câu trả lời, không phải một
+    // chỗ để đoán (vá 2026-09-09).
+    //
+    // `box_region` có đường lùi "bốn dòng không rỗng cuối màn" cho trường hợp
+    // `box_start` không nhận ra khung. Với `still_in_box` thì vô hại (nó đã tự
+    // gác `box_start(screen).is_none()` từ trước); với hàm NÀY thì nó bịa: một
+    // màn không có ô nhập nào vẫn trả về `Some(<đuôi màn>)`, và chữ tĩnh ấy
+    // được đọc thành "câu đang nằm chờ gửi".
+    //
+    // Đo được, `logs/huba.log` 08/09 13:22→15:37: `auto_unstick_box` bấm Enter
+    // **197 lượt** vào 5 phiên, `auto_unstick_box_failed` **0 lần**, và
+    // `text_len` của `projects-ef` đứng nguyên **55** suốt 2h15 — vì thứ nó
+    // "thấy trong ô" là một băng chữ tĩnh, không phải input, nên không cú Enter
+    // nào làm nó đổi được. Cùng phiên ấy `keys_typed` vẫn chạy tốt 11 lượt, tức
+    // cửa sổ/cơ chế đều lành.
+    //
+    // Luật này `CLAUDE.md` đã ghi rồi (*"rơi âm thầm về đường lùi bốn dòng
+    // cuối — đủ để mọi thứ trông vẫn chạy, và đã trả giá"* · *"Một cái neo duy
+    // nhất: `keys::box_start`"*); chỗ thiếu chỉ là hàm này chưa nhận nó.
+    //
+    // 🔴 VÀ CHỈ ĐỌC GIỮA HAI VIỀN (vá 2026-09-23) — dưới viền dưới là dòng chân
+    // và bảng subagent, không phải chữ của người gõ. Xem [`box_inner`].
+    let mut buf = String::new();
+    for line in box_inner(screen)?.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        // Đường kẻ khung.
+        if t.chars().all(|c| "─━-—_═".contains(c)) {
+            continue;
+        }
+        // Dòng chân (chế độ quyền, gợi ý phím) và dòng tip — không phải chữ của
+        // người gõ.
+        if t.contains("auto mode on")
+            || t.contains("esc to interrupt")
+            || t.contains("shift+tab")
+            || t.starts_with("Tip:")
+            || t.starts_with("⎿")
+        {
+            continue;
+        }
+        let t = t
+            .trim_start_matches(['❯', '>', '│', '┃', '|'])
+            .trim_matches(|c: char| c.is_whitespace())
+            .trim_end_matches(['│', '┃', '|'])
+            .trim();
+        if t.is_empty() {
+            continue;
+        }
+        if !buf.is_empty() {
+            buf.push(' ');
+        }
+        buf.push_str(t);
+    }
+    let out = buf.trim().to_string();
+    (out.chars().count() >= BOX_TEXT_MIN_CHARS).then_some(out)
+}
+
+/// Bóp một đoạn chữ về dạng SO ĐƯỢC giữa màn và nguồn: bỏ khoảng trắng (ô nhập
+/// ngắt dòng theo bề ngang cửa sổ) và các ký tự khung/dấu nhắc.
+///
+/// `$` nằm trong bộ bỏ đi cùng `❯`, và đó là một cặp: khối dán mở đầu dòng lệnh
+/// bằng `$ `, còn TUI vẽ lại chính dòng ấy dưới dấu nhắc `❯ ` của nó. Không bỏ
+/// thì hai chuỗi chỉ khác nhau đúng một ký tự ở đầu — và khác một ký tự là trượt
+/// hẳn (đo 2026-08-19, `[dwork]`).
+///
+/// MỘT hàm cho mọi phép so "chữ trên màn ↔ chữ gốc" ([`still_in_box`], và
+/// `pipeline::cau_da_vao_nhat_ky` so ô nhập với nhật ký) — hai bộ lọc chép tay
+/// lệch nhau một ký tự là hai phép đo cho hai câu trả lời khác nhau.
+pub fn squash_box(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_whitespace() && !"│┃|>❯$".contains(*c))
+        .collect()
+}
+
+/// Chữ vừa gõ CÒN NẰM trong ô nhập, hay đã đi?
+///
+/// 🔴 Hà đo 2026-08-12: *"nhận được text nhưng không tự gửi"*. Chú thích của
+/// `do_script` (và cả CLAUDE.md) tin rằng `do script` luôn kèm một dấu xuống
+/// dòng nên "gõ xong là gửi" — điều đó đúng với một cái shell, mà **sai với ô
+/// nhập của `claude`**: chữ và dấu xuống dòng đi trong CÙNG MỘT lượt ghi, và
+/// TUI đọc lượt ấy như một cú DÁN, tức nuốt luôn dấu xuống dòng vào nội dung.
+/// Nên phải NHÌN xem chữ có còn nằm đó không rồi mới gửi Enter rời.
+///
+/// So sánh sau khi bóp bỏ khoảng trắng và khung viền: ô nhập ngắt dòng theo bề
+/// ngang cửa sổ, nên một câu dài nằm trong ô sẽ bị cắt làm nhiều đoạn có `│` xen
+/// vào — so nguyên văn thì trượt sạch. Cần **16 ký tự cuối** làm dấu vân tay:
+/// đủ đặc trưng để không trùng ngẫu nhiên với chữ khác trên màn, mà vẫn ngắn hơn
+/// một dòng của ô nhập.
+pub fn still_in_box(screen: &str, typed: &str) -> bool {
+    let squash = squash_box;
+    // ⚠ CHỈ soi trong Ô NHẬP, không soi cả màn.
+    //
+    // Đây là chỗ phép đo suýt trỏ sai: gửi đi RỒI thì `claude` in lại chính câu
+    // ấy vào phần hội thoại phía trên — chữ vẫn còn trên màn, mà ý nghĩa ngược
+    // hẳn. Soi cả màn thì huba đọc "đã gửi" thành "còn nằm trong ô", rồi bắn một
+    // Enter thừa và báo sai cho chủ máy. Ô nhập là khối đóng khung cuối cùng.
+    // 🔴 KHÔNG CÓ Ô NHẬP THÌ KHÔNG CÓ GÌ "CÒN NẰM TRONG Ô" — Hà 2026-08-25:
+    // *"gõ 1 lệnh mà có 4 lần enter"*.
+    //
+    // `box_region` rơi về **bốn dòng cuối** khi `box_start` không thấy khung.
+    // Đường lùi ấy đúng cho màn `claude` mà phép dò khung trượt; nó SAI hẳn cho
+    // một cửa sổ shell trần: ở đó `do script` đã gửi lệnh rồi, và dòng lệnh vừa
+    // gõ **nằm lại trên màn vĩnh viễn** dưới dấu nhắc (`… projects % cd
+    // projects`). Nên phép kiểm luôn trả "còn trong ô", và `type_and_send` bắn
+    // thêm hai cú Enter — đúng mấy dấu nhắc trống Hà chụp được.
+    //
+    // Không thấy khung ⟹ trả `false`. Vừa vá đúng ca này, vừa bỏ một cú Enter
+    // BẮN MÙ: quyết định bấm Enter dựa trên bốn dòng cuối của một màn không rõ
+    // hình dạng chính là thứ `CLAUDE.md` §13 cấm — một Enter lạc thì không lùi
+    // lại được (ca `☐ RPC pool` → `☒` của phiên amm).
+    if box_start(screen).is_none() {
+        return false;
+    }
+    let screen = box_region(screen);
+    let t = squash(typed);
+    let n = t.chars().count();
+    // Chữ quá ngắn ("2", "ok") không đủ đặc trưng: nó nằm sẵn trong mọi màn.
+    // Thà bỏ sót một lần gửi Enter còn hơn bắn Enter vì một chữ trùng.
+    if n < 6 {
+        return false;
+    }
+    // 🔴 HAI ĐẦU, không riêng đuôi — 2026-08-16. Hà, ảnh chụp phiên `[games]`:
+    // *"Sao lại có lệnh ở ô chờ trong tin thế này"*. Log cùng lúc:
+    // `run_quick n=abdd2611` rồi `runin_ran code=0 ms=55824` — lệnh CHẠY XONG
+    // trên máy; thứ kẹt là bước dán KẾT QUẢ vào phiên.
+    //
+    // Khối dán ấy nhiều dòng (`[huba chạy hộ]` · `$ <lệnh>` · đầu ra). Ô nhập
+    // của TUI chỉ hiện được phần ĐẦU, còn dấu vân tay ở đây lấy 16 ký tự CUỐI —
+    // nên phép đo đọc ra "chữ đã rời ô", `type_and_send` không bấm Enter, và cả
+    // khối nằm lại. Một phép đo đúng cho câu ngắn, mù với khối dài, và nó mù
+    // đúng về phía im lặng.
+    let tail: String = t.chars().skip(n.saturating_sub(16)).collect();
+    let head: String = t.chars().take(16).collect();
+    let seen = squash(&screen);
+    // 🔴 KHỐI DÁN KHÔNG CÒN LÀ CHỮ CỦA CHÍNH NÓ — 2026-08-16. Hà, ảnh chụp phiên
+    // `[mailler]`: *"Chạy lệnh xong dán vào ô chat không gửi đi"* · *"Thiếu
+    // enter"*. Trên màn, ô nhập hiện `[Pasted text #4 +3 lines][Pasted text #5]`
+    // — TUI của `claude` RÚT GỌN mọi khối dán nhiều dòng thành một cái nhãn, nên
+    // cả 16 ký tự đầu lẫn 16 ký tự cuối của khối đều không có mặt để mà tìm.
+    //
+    // Phép đo vì thế đọc ra "chữ đã rời ô", `type_and_send` không bấm Enter
+    // rời, và cả kết quả lệnh nằm lại trong ô — im lặng, đúng cái hình dạng bản
+    // vá "hai đầu" ở trên vừa mới sửa cho một ca khác cùng ngày.
+    //
+    // Chỉ áp cho khối NHIỀU DÒNG: đó đúng là thứ TUI rút gọn, và giới hạn ấy
+    // giữ cho một câu một dòng không bao giờ ăn nhầm cái nhãn của lượt trước.
+    if typed.contains('\n') && seen.contains("[Pastedtext") {
+        return true;
+    }
+    if seen.contains(&tail) || seen.contains(&head) {
+        return true;
+    }
+    // 🔴 VÀ MỘT KHÚC BẤT KỲ, không chỉ hai đầu — 2026-08-19. Ca đo được: khối
+    // bốn dòng (`[huba chạy hộ]` · `$ <lệnh>` · `✅ xong (0.1s)` · đầu ra) dán vào
+    // một cửa sổ 80×24 ở đáy màn. Ô nhập hiện được đúng **một khúc giữa**: dòng
+    // đầu đã cuộn khỏi ô, dòng cuối nằm dưới mép màn, và dòng lệnh ở giữa thì
+    // bị GẤP DÒNG nên cũng không còn nguyên vẹn. Cả `head` lẫn `tail` đều vắng
+    // mặt ⟹ phép đo trả "chữ đã đi" ⟹ không bấm Enter ⟹ cả khối nằm lại trong ô
+    // hơn một tiếng, trong khi huba đã báo *"✅ đã dán kết quả vào phiên"*.
+    //
+    // Hai đầu — và cả "từng dòng", bản vá đầu tiên tôi viết cho đúng ca này —
+    // đều là phép đoán về CHỖ TUI cắt. Cửa sổ trượt thì không đoán: chỉ cần
+    // **một khúc 24 ký tự** của khối còn nhìn thấy được là đủ kết luận chữ chưa
+    // đi. `squash` bỏ hết khoảng trắng kể cả dấu xuống dòng, nên một dòng bị gấp
+    // vẫn nối lại thành chuỗi liền — đúng thứ làm phép so "từng dòng" trượt.
+    const WIN: usize = 24;
+    const STRIDE: usize = 12;
+    let ch: Vec<char> = t.chars().collect();
+    if ch.len() < WIN {
+        return false;
+    }
+    (0..=ch.len() - WIN).step_by(STRIDE).any(|i| {
+        let w: String = ch[i..i + WIN].iter().collect();
+        seen.contains(&w)
+    })
+}
+
+/// Phân loại thuần từ chữ trên màn, để test được không cần Terminal.
+pub fn landed(screen: &str, typed: &str) -> Landed {
+    // Chính `claude` in dòng này khi có tin trong hàng chờ (đo trên máy:
+    // "Press up to edit queued messages").
+    if screen.contains("queued message") {
+        return Landed::Queued;
+    }
+    // 🔴 HỎI Ô NHẬP TRƯỚC KHI HỎI ĐỒNG HỒ, và thứ tự này là cả bản vá.
+    //
+    // Một phiên có thể VỪA bận VỪA còn chữ trong ô (nó đang chạy lượt trước,
+    // chữ mới chưa đi). Hỏi `is_busy` trước thì ca ấy đọc thành `Running` —
+    // nghe như "chữ đã khởi động một lượt", đúng câu SAI đã gửi cho Hà.
+    if still_in_box(screen, typed) {
+        return Landed::InBox;
+    }
+    if is_busy(screen) {
+        return Landed::Running;
+    }
+    Landed::Idle
+}
+
+/// Mở một cửa sổ Terminal MỚI và chạy `cmd` trong đó; trả về `(id cửa sổ, tty)`.
+///
+/// Vì sao huba cần biết mở cửa sổ (Hà 2026-08-11: *"cli claude cài trên máy tôi,
+/// huba là cầu kết nối ra ui"*): một phiên `--bg` là hạng phiên **chủ máy không
+/// bao giờ tự tạo ra** khi ngồi trước máy — không cửa sổ, không màn sống, muốn
+/// nói chen vào phải dừng nó trước. Cầu nối thì phải bắc sang đúng thứ có thật
+/// ở đầu bên kia, nên `/new` mở đúng cái người ta sẽ mở: một cửa sổ.
+///
+/// `tty` lấy NGAY sau khi dựng, vì đó là thứ duy nhất ghép được cửa sổ này với
+/// hàng mà `claude agents` sắp khai ra — tên phiên thì `claude` tự đặt, và id
+/// thì chưa tồn tại lúc này.
+#[cfg(target_os = "macos")]
+pub fn open_window(cmd: &str) -> Result<(i64, String)> {
+    // 🔴 Bản cũ hỏi `id of window 1` — **cửa sổ đang ở TRƯỚC, không phải cửa sổ
+    // vừa mở**. `do script` trả về một TAB, và tab ấy có thể nằm ở cửa sổ nào
+    // cũng được. Trả giá thật 2026-08-13 08:36, lượt tự đóng sổ của `[AI/tfl5]`:
+    //
+    //   ⚠ chưa mở được cửa sổ mới (osascript hỏng: execution error:
+    //     Can't make id of window 1 of application "Terminal" into type text. (-1700))
+    //
+    // Hà thấy hậu quả trước tôi: *"mở phiên mới rồi mà cửa sổ cũ vẫn còn nguyên
+    // trong cli là sao vậy?"* — vì `do script` **đã dựng xong cửa sổ** rồi mới
+    // chết ở dòng đọc id. Kết cục: một cửa sổ mới mồ côi (huba không biết nó
+    // tồn tại), cửa sổ cũ vẫn nguyên, một lượt fork đã tiêu, và phiên bị ghi
+    // vào sổ "đã đóng" nên sẽ không bao giờ được giúp lại.
+    //
+    // Điều đáng học không phải "AppleScript khó tính": tác giả cũ ĐÃ lường
+    // đúng hình dạng hỏng này — có hẳn một chốt ngay dưới, *"id chỉ để ghi sổ,
+    // đừng cho nó làm hỏng cả việc"*. Nhưng chốt đặt ở phía Rust, trong khi lỗi
+    // ném ra từ phía AppleScript, nên nó không bao giờ chạy tới. **Một cái chốt
+    // đặt sau chỗ hỏng là một cái chốt không tồn tại.**
+    //
+    // Nay chỉ hỏi thứ BẮT BUỘC phải có — `tty` của chính tab vừa tạo — rồi lấy
+    // id bằng `window_of`, đúng hàm đã dùng ở mọi chỗ khác. Hỏi ít đi một thứ,
+    // và không còn chỗ nào cho `window 1` sai.
+    // 🔴 HẾT CỠ NGAY LÚC SINH RA — Hà 2026-08-30: *"để nó luôn full màn hình nếu
+    // là cửa sổ mới, còn là tab thì không động đến kích thước"*.
+    //
+    // Đặt ở ĐÂY chứ không ở một hàm nới về sau, và đó là cả chỗ đổi: cửa sổ này
+    // chưa thuộc về ai lúc dòng lệnh chạy, nên cho nó cỡ nào cũng không giật
+    // khỏi tay chủ máy. Một cửa sổ ĐANG SỐNG thì ngược lại — xem tấm bia của
+    // `screen_text_tall`.
+    //
+    // Và đặt TRƯỚC `delay 1`, không phải sau: `claude` đọc bề ngang lúc khởi
+    // động để tự bố cục, nên nới sau khi TUI vẽ xong là bắt nó vẽ lại lần nữa.
+    //
+    // `try` bọc riêng khúc đổi cỡ vì bài học của chính hàm này: cửa sổ ĐÃ dựng
+    // xong rồi mới tới mấy dòng sau, nên một lỗi ở đây mà ném ra là bỏ lại đúng
+    // một cửa sổ mồ côi. Cỡ hụt thì phiên vẫn chạy được; mất dấu thì không.
+    //
+    // Trả về cả cỡ THẬT sau khi đổi, không chỉ tty: "đã mở hết cỡ" là một mệnh
+    // đề, và mệnh đề nào cũng phải có số đứng sau (luật 13). Terminal kẹp giùm
+    // nên số nhận về là trần thật của màn hình này.
+    //
+    // 🔴 `on error` chứ không `try` TRẦN — Hà 2026-09-03, sau khi hỏi *"chiều
+    // cao của terminal … chỉ chiếm chưa đến nửa màn hình, sao không có chế độ
+    // full screen à"*.
+    //
+    // Cái `try` trần nuốt đúng một hình dạng hỏng, và nuốt nó vào chỗ tệ nhất:
+    // đổi cỡ trượt ⟹ cửa sổ nằm nguyên cỡ mặc định của hồ sơ `Basic` (24×80,
+    // **chưa tới nửa màn**) ⟹ mà dòng log vẫn mang tên
+    // `window_opened_full_screen`. Hai con số ở trong nó nói thật, nhưng cái TÊN
+    // nói dối, và người đọc nhật ký đọc cái tên. Đúng thứ luật 3 cấm: một `Err`
+    // gấp vào giá trị mặc định mà không để lại dòng nào.
+    //
+    // Vẫn KHÔNG ném ra ngoài — bài học của chính hàm này: cửa sổ đã dựng xong
+    // rồi mới tới mấy dòng sau, nên một lỗi ném ra ở đây là bỏ lại một cửa sổ mồ
+    // côi. Nên lỗi đi ra bằng một Ô THỨ TƯ trong chuỗi trả về: bắt được, nói ra,
+    // và phiên vẫn chạy.
+    //
+    // 📐 Đo 2026-09-03 trước khi đụng vào: xin 999 dòng/cột và `set zoomed to
+    // true` (đúng cái nhấp đúp thanh tiêu đề làm — cách Hà mô tả) cho ra **cùng
+    // một hình chữ nhật** `0,33 → 1463,972`, `61×206`, kể cả khi cửa sổ đang
+    // nằm lệch ở `{420,420,900,700}` trước đó. Nên chỗ hỏng không nằm ở phép
+    // chọn cỡ; nó nằm ở chỗ phép ấy trượt mà không ai biết.
+    let script = format!(
+        r#"tell application "Terminal"
+  set w to do script {}
+  set szErr to ""
+  try
+    set number of rows of w to {rows}
+    set number of columns of w to {cols}
+  on error e
+    set szErr to e
+  end try
+  delay 1
+  return (tty of w) & "|" & ((number of rows of w) as text) & "|" & ((number of columns of w) as text) & "|" & szErr
+end tell"#,
+        as_string(cmd),
+        rows = FULL_SCREEN_ASK,
+        cols = FULL_SCREEN_ASK,
+    );
+    let out = osascript(&script)?;
+    let mut phan = out.trim().split('|');
+    let tty = phan.next().unwrap_or("").trim().to_string();
+    if tty.is_empty() {
+        return Err(anyhow!("Terminal mở cửa sổ nhưng không khai tty"));
+    }
+    // Cỡ chỉ để GHI SỔ. Không đọc được cỡ mà vẫn có tty thì cửa sổ vẫn dùng
+    // được — nhưng lúc ấy huba KHÔNG được nói "đã mở hết cỡ", nên hai ca ấy đi
+    // ra log bằng hai hình dạng khác nhau chứ không cùng một dòng.
+    let rows = phan.next().and_then(|s| s.trim().parse::<i64>().ok());
+    let cols = phan.next().and_then(|s| s.trim().parse::<i64>().ok());
+    // Ô thứ tư: lời than của chính AppleScript khi lượt đổi cỡ trượt. Rỗng =
+    // đặt được. Ba ca dưới là BA dòng log khác nhau, không phải một dòng có ba
+    // nghĩa — đặt được / đặt trượt / không đọc nổi cỡ.
+    let size_err = phan.next().map(str::trim).unwrap_or("");
+    match (rows, cols) {
+        (Some(r), Some(c)) if size_err.is_empty() => logging::info(
+            "window_opened_full_screen",
+            json!({ "tty": tty, "xin": FULL_SCREEN_ASK, "rows": r, "cols": c }),
+        ),
+        // Cỡ đọc được mà lệnh đặt thì trượt: cửa sổ đang mang cỡ mặc định của hồ
+        // sơ Terminal, KHÔNG phải trần màn hình. Nói ra bằng một cái tên khác —
+        // `window_opened_full_screen` mà đứng trên một cửa sổ 24×80 là một dòng
+        // nhật ký nói dối, và người đọc nhật ký đọc cái tên trước con số.
+        (Some(r), Some(c)) => logging::warn(
+            "window_size_not_applied",
+            json!({ "tty": tty, "xin": FULL_SCREEN_ASK, "rows": r, "cols": c,
+                    "err": crate::exec::truncate(size_err, 200),
+                    "effect": "cửa sổ mở ra ở cỡ mặc định của hồ sơ Terminal — đừng khai là đã hết cỡ" }),
+        ),
+        _ => logging::warn(
+            "window_size_unread",
+            json!({ "tty": tty, "raw": out.trim(),
+                    "err": crate::exec::truncate(size_err, 200),
+                    "effect": "cửa sổ mở được nhưng không đọc được cỡ — đừng khai là đã hết cỡ" }),
+        ),
+    }
+    // Id lấy sau, và hỏng thì thôi: cửa sổ đã dựng rồi, ném lỗi ở đây là bỏ lại
+    // đúng một cửa sổ mồ côi — cái giá vừa trả hôm nay.
+    let id = window_of(&tty).ok().flatten().unwrap_or(0);
+    Ok((id, tty))
+}
+
+/// Cỡ hiện tại của một cửa sổ: `(dòng, cột)`.
+///
+/// 🔴 Chỉ ĐỌC — và đó là cả điểm của nó. Từ 2026-08-30 huba không đổi cỡ cửa sổ
+/// đang sống nữa (xem tấm bia ở `screen_text_tall`), nên thứ nó còn được phép
+/// làm với một cái màn hẹp là **nói ra con số**. Một câu *"màn đang hẹp"* không
+/// có số thì chủ máy không biết nới bao nhiêu là đủ; `24×80` thì biết.
+#[cfg(target_os = "macos")]
+pub fn window_size(window: i64) -> Result<(i64, i64)> {
+    let out = osascript(&format!(
+        r#"tell application "Terminal"
+  return ((number of rows of selected tab of window id {window}) as text) & "|" & ((number of columns of selected tab of window id {window}) as text)
+end tell"#
+    ))?;
+    let (r, c) = out
+        .trim()
+        .split_once('|')
+        .ok_or_else(|| anyhow!("Terminal trả cỡ lạ: {:?}", crate::exec::truncate(&out, 40)))?;
+    Ok((
+        r.trim()
+            .parse()
+            .map_err(|e| anyhow!("số dòng {r:?}: {e}"))?,
+        c.trim().parse().map_err(|e| anyhow!("số cột {c:?}: {e}"))?,
+    ))
+}
+
+/// PID của Terminal.app — đích của [`crate::cgkeys::post`].
+///
+/// Hỏi `ps` chứ không hỏi AppleScript: đây là câu hỏi về TIẾN TRÌNH, và
+/// osascript là thứ huba đang tìm cách đi vòng qua ở đường phím rời. Hỏi nó một
+/// câu nữa là buộc đường mới vào đúng chỗ nghẽn của đường cũ. (Hỏi System Events
+/// còn tệ hơn: nó đòi thêm một quyền Automation nữa cho một con số.)
+///
+/// 🔴 `pgrep -x Terminal` là bản đầu và nó trả RỖNG trên chính máy này (đo
+/// 2026-08-19) trong khi `ps aux` thấy tiến trình ấy rõ ràng — nên đừng đổi lại.
+/// Khớp theo ĐUÔI đường dẫn: `comm` là
+/// `/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal`.
+#[cfg(target_os = "macos")]
+pub fn terminal_pid() -> Result<i32> {
+    let out = run(
+        "ps",
+        &["-Ao", "pid=,comm="],
+        RunOpts {
+            timeout: Some(osa_timeout()),
+            ..Default::default()
+        },
+    )?;
+    for line in out.stdout.lines() {
+        let Some((pid, comm)) = line.trim().split_once(char::is_whitespace) else {
+            continue;
+        };
+        // Đuôi `/Terminal` chứ không phải chuỗi con `Terminal`: `iTerm`,
+        // `Terminal Helper`, hay một tệp nào đó có chữ ấy trong đường dẫn đều
+        // KHÔNG phải cái app huba đang nói chuyện qua AppleScript.
+        if comm.trim().ends_with("/MacOS/Terminal") {
+            return pid
+                .parse::<i32>()
+                .map_err(|e| anyhow!("ps trả '{pid}', không đọc ra pid: {e}"));
+        }
+    }
+    Err(anyhow!("Terminal.app không chạy"))
+}
+
+/// Đưa cửa sổ ấy lên làm cửa sổ NHẬN PHÍM của Terminal.
+///
+/// 🔴 Phím rời đi bằng `CGEventPostToPid` tới cả TIẾN TRÌNH, không tới một cửa
+/// sổ — Terminal tự phát nó cho cửa sổ đang nhận phím của mình. Nên bước này
+/// KHÔNG phải thủ tục lịch sự: bỏ nó là gõ vào cửa sổ nào tình cờ đang được
+/// chọn, tức đúng cái lỗi "gõ vào việc của người khác" mà cả tệp này đứng ra
+/// chặn.
+///
+/// Vẫn đi bằng AppleScript, và ở đây thì đúng chỗ: nó chỉ SẮP XẾP cửa sổ, không
+/// gửi phím nào, nên cái CR của `do script` không dính dáng gì.
+#[cfg(target_os = "macos")]
+pub fn focus_window(window: i64) -> Result<()> {
+    osascript(&format!(
+        "tell application \"Terminal\"\n\
+           set frontmost of window id {window} to true\n\
+         end tell"
+    ))?;
+    Ok(())
+}
+
+/// Dãy phím đưa con trỏ NGANG về đúng tab số `target` (đếm từ 1; `0` = bước
+/// `Review your answers` ở cuối).
+///
+/// 🔴 KHÔNG đếm từ chỗ đang đứng, vì huba KHÔNG BIẾT nó đang đứng đâu: tab hiện
+/// hành được vẽ bằng màu nền, mà `contents of tab` trả chữ trần nên màu không đi
+/// qua. Cách duy nhất chắc chắn là **về mốc rồi đếm từ mốc**.
+///
+/// 📐 Mốc ấy có thật, và đây là phép đo dựng nên nó (2026-08-19, bảng 3 câu của
+/// phiên `[AI/tcc/amm]`, gửi bằng [`crate::cgkeys`] nên không phím nào chốt gì):
+/// * `→` **không quấn vòng**: 6 lượt liên tiếp đều đứng lại ở `Review your
+///   answers` — bước cuối bên phải.
+/// * `←` cũng không quấn: 6 lượt thì bước 3, 4, 5 đều là *"Mặt ĐỌC của native
+///   pool…"* — tức câu số 1, mép trái.
+/// * Thứ tự đọc được đúng như thanh tab vẽ: `RPC pool` → `NativeAssets v3` →
+///   `Việc tiếp` → `Review`.
+/// * `answered` giữ nguyên `[true,false,false]` qua **cả 12 lượt** — bằng chứng
+///   phím ngang gửi kiểu này không chốt câu nào.
+///
+/// Nên: đẩy sát mép trái bằng `tabs + 1` lượt `←` (thừa một lượt cho chắc, vì
+/// mép trái nuốt lượt thừa), rồi đi sang phải `target - 1` lượt.
+pub fn tab_keys(tabs: usize, target: usize) -> Vec<String> {
+    let right = || "right".to_string();
+    // Bước Review nằm sát mép PHẢI, nên nó rẻ hơn: cứ đẩy hết sang phải.
+    if target == 0 {
+        return std::iter::repeat_n(right(), tabs + 1).collect();
+    }
+    let mut keys: Vec<String> = std::iter::repeat_n("left".to_string(), tabs + 1).collect();
+    keys.extend(std::iter::repeat_n(right(), target.saturating_sub(1)));
+    keys
+}
+
+/// Gửi một dãy phím RỜI vào cửa sổ ấy — không kèm dấu xuống dòng nào.
+///
+/// Hai bước, và bước đầu không phải thủ tục: [`focus_window`] quyết định phím
+/// rơi vào cửa sổ NÀO (xem chú thích ở đó), rồi [`crate::cgkeys::post`] mới đưa
+/// phím vào tiến trình Terminal.
+#[cfg(target_os = "macos")]
+pub fn send_bare(window: i64, keys: &[String]) -> Result<()> {
+    let pid = terminal_pid()?;
+    focus_window(window)?;
+    crate::cgkeys::post(pid, keys)
+}
+
+/// Mỗi lượt cuộn bao nhiêu dòng, và cuộn tối đa mấy lượt — xem [`screen_scrollback`].
+///
+/// Nhỏ hơn chiều cao khung một chút để hai khung liên tiếp CHỒNG NHAU: chỗ ghép
+/// cần phần chồng ấy để biết nối vào đâu. Bằng đúng chiều cao là hai khung khít
+/// nhau, và một dòng rớt giữa hai lượt vẽ thì không gì phát hiện được.
+#[cfg(target_os = "macos")]
+const SCROLL_STEP: i32 = 8;
+/// Trần lượt cuộn: 40 × 8 = 320 dòng ngược. Có trần vì đây là cửa sổ chủ máy
+/// đang nhìn, và mỗi lượt tốn ~0,1 giây cộng một lượt đọc màn.
+#[cfg(target_os = "macos")]
+const SCROLL_MAX_STEPS: usize = 40;
+
+/// Ghép một khung CŨ HƠN vào phía trên phần đã có.
+///
+/// Hai khung liên tiếp chồng nhau, nên phép ghép là: tìm đoạn chồng dài nhất
+/// giữa ĐUÔI khung cũ và ĐẦU phần đã có, rồi nối phần không chồng lên trước.
+/// Không tìm được chỗ chồng thì nối thẳng — thà thừa một khung còn hơn mất một
+/// đoạn, và chỗ nối vẫn đọc được.
+///
+/// So bằng dòng đã cắt khoảng trắng: TUI vẽ lại có thể đổi phần đệm bên phải
+/// giữa hai lượt, mà một dấu cách thừa không được phép biến hai bản sao của
+/// cùng một dòng thành hai dòng khác nhau.
+#[cfg(target_os = "macos")]
+fn merge_above(older: &[String], have: &[String]) -> Vec<String> {
+    let key = |s: &String| s.trim_end().to_string();
+    let max = older.len().min(have.len());
+    for n in (1..=max).rev() {
+        let tail = &older[older.len() - n..];
+        let head = &have[..n];
+        if tail.iter().map(key).eq(head.iter().map(key)) {
+            let mut out: Vec<String> = older[..older.len() - n].to_vec();
+            out.extend_from_slice(have);
+            return out;
+        }
+    }
+    let mut out = older.to_vec();
+    out.extend_from_slice(have);
+    out
+}
+
+/// Đọc NGƯỢC lịch sử phiên bằng cách cuộn chuột, rồi trả màn về đáy.
+///
+/// 🔴 Hà 2026-08-20: *"Chỉ cần focus tới cửa sổ di chuột tới khung nhìn cuộn
+/// chuột là được"* — sau khi vặn đúng chỗ tôi nói hớ: *"một phiên chạy tầm 50%
+/// context thì nó phải dài ít nhất 10 trang màn hình"*.
+///
+/// Anh đúng. Ba đường trước đều KHÔNG lấy được 10 trang ấy, và mỗi đường hỏng
+/// một kiểu (đo cùng ngày, đừng dò lại):
+/// * `history of tab` — bộ đệm cuộn của Terminal chạy tốt (shell thường: 504
+///   dòng cho 500 dòng in ra), nhưng `claude` không đẩy dòng nào vào đó. Đọc 4
+///   lần cách nhau nhiều phút vẫn đúng 43 dòng, đóng băng ở phần trước lúc CLI
+///   khởi động.
+/// * Menu `View ▸ Scroll to Top` — click được (`MENU-OK`), `contents` không đổi
+///   một ký tự. Đó là cuộn của Terminal, và Terminal chẳng giữ gì để cuộn.
+/// * Nới cửa sổ hết cỡ (`screen_text_tall`, đã chết 30/08) — lấy thêm thật,
+///   nhưng đụng trần cứng 61×206 của màn hình, và nó phóng to rồi thu nhỏ cửa
+///   sổ của chủ máy ngay trước mắt anh. Hàm này nay là đường DUY NHẤT lấy thêm
+///   chữ, và nó không đụng tới cỡ cửa sổ — chỉ cuộn rồi trả về đáy.
+///
+/// Bánh xe thì đi thẳng vào TUI, và TUI có sẵn cả lịch sử trong bộ nhớ nó: đo
+/// được 934 → 1391 ký tự sau 10 lượt, đầu khung lùi về một đoạn đã trôi.
+///
+/// Ba điều hàm này giữ:
+/// * **luôn trả màn về đáy**, kể cả khi đọc hỏng giữa chừng — cửa sổ này là cửa
+///   sổ chủ máy đang nhìn, bỏ nó ở lưng chừng quá khứ là một lỗi thấy được;
+/// * cuộn xuống DƯ (`+4` lượt) chứ không đếm cho khít: đáy nuốt lượt thừa, còn
+///   thiếu một lượt là màn nằm lại lưng chừng;
+/// * **dừng sớm khi không lấy thêm được gì** — hai lượt liên tiếp không thêm
+///   dòng nào nghĩa là đã tới đầu lịch sử, và cuộn tiếp chỉ tốn thời gian của
+///   người đang chờ trên điện thoại.
+#[cfg(target_os = "macos")]
+pub fn screen_scrollback(window: i64, steps: usize, du: impl Fn(&str) -> bool) -> Result<String> {
+    let steps = steps.min(SCROLL_MAX_STEPS);
+    // 🔴 LÀN GẤP, và đây không phải tinh chỉnh cho vui — đo 2026-08-20: vòng
+    // cuộn-rồi-đọc mất **6,3 giây mỗi nấc** trong mã, trong khi đúng hai lệnh ấy
+    // gõ từ shell mất **0,20 giây**. Gấp ba mươi lần, và thủ phạm là
+    // `exec::lane_wrap`: nó bọc mọi lệnh bằng `taskpolicy -b`, tức QoS NỀN —
+    // đúng cho vòng quét định kỳ, sai hẳn cho một cú `/shot` có người đang cầm
+    // điện thoại chờ. 12 nấc vì thế thành 76 giây.
+    let _lane = crate::exec::urgent();
+    let pid = terminal_pid()?;
+    focus_window(window)?;
+
+    let lines_of = |s: &str| -> Vec<String> { s.lines().map(str::to_string).collect() };
+    let mut have = lines_of(&screen_text(window)?);
+    let mut dry = 0;
+    let mut used = 0;
+
+    for _ in 0..steps {
+        if let Err(e) = crate::cgkeys::scroll(pid, SCROLL_STEP, 1) {
+            // Không cuộn được thì thôi cuộn — nhưng vẫn phải trả màn về đáy,
+            // nên đừng `?` ở đây.
+            crate::logging::warn(
+                "scroll_read_stopped",
+                serde_json::json!({ "window": window, "err": e.to_string(),
+                                    "effect": "trả về phần đọc được tới lúc này" }),
+            );
+            break;
+        }
+        used += 1;
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        let Ok(frame) = screen_text(window) else {
+            break;
+        };
+        let before = have.len();
+        have = merge_above(&lines_of(&frame), &have);
+        // ĐỦ RỒI THÌ DỪNG. Chỗ gọi biết "đủ" nghĩa là gì (thường: lời cuối theo
+        // nhật ký đã nằm trọn trong đây), và cuộn thêm sau khi đủ là kéo cửa sổ
+        // của chủ máy đi xa hơn mức cần, cho một người đang chờ trên điện thoại.
+        if du(&have.join("\n")) {
+            break;
+        }
+        if have.len() == before {
+            dry += 1;
+            if dry >= 2 {
+                break;
+            }
+        } else {
+            dry = 0;
+        }
+    }
+
+    // Trả về đáy — dư mấy lượt cho chắc. Đây là bước KHÔNG được bỏ qua.
+    if used > 0 {
+        if let Err(e) = crate::cgkeys::scroll(pid, -SCROLL_STEP, used + 4) {
+            crate::logging::error(
+                "scroll_restore_failed",
+                serde_json::json!({ "window": window, "err": e.to_string(),
+                                    "effect": "MÀN CỦA CHỦ MÁY CÒN Ở LƯNG CHỪNG QUÁ KHỨ" }),
+            );
+        }
+    }
+    crate::logging::info(
+        "scroll_read",
+        serde_json::json!({ "window": window, "steps": used, "lines": have.len() }),
+    );
+    Ok(have.join("\n"))
+}
+
+/// Cửa sổ Terminal đang chạy `tty` này, nếu có.
+///
+/// `Terminal` công bố `tty` của từng tab qua AppleScript (đo 2026-08-09:
+/// `/dev/ttys005, /dev/ttys000, …`), và huba đã biết `tty` của từng phiên từ
+/// `ps -o tty=`. Ghép hai đầu ấy lại là ra đúng cửa sổ của phiên.
+/// `tty` của TAB ĐANG CHỌN trong cửa sổ `window` — đúng cái tab mà
+/// [`do_script`] (`… in selected tab of window id W`) sẽ gõ chữ vào.
+///
+/// 🔴 Thêm 2026-09-23 (báo của main dwork 44): kết quả `/runin` của phiên dorg
+/// (`ttys000`, cửa sổ 8411) lúc 17:40Z lại vào hàng chờ của phiên dci (`ttys001`,
+/// cửa sổ 8410) — đo trên nhật ký của chính hai phiên. Mọi mắt xích đọc lại được
+/// đều đúng, nên thứ còn lại phải được HỎI ngay tại cửa gõ: tab sắp nhận chữ có
+/// đúng là tty của phiên đích không.
+#[cfg(target_os = "macos")]
+pub fn selected_tab_tty(window: i64) -> Result<String> {
+    osascript(&format!(
+        "tell application \"Terminal\" to return tty of selected tab of window id {window}"
+    ))
+}
+
+#[cfg(target_os = "macos")]
+pub fn window_of(tty: &str) -> Result<Option<i64>> {
+    if tty.is_empty() || tty == "??" || tty == "-" {
+        return Ok(None);
+    }
+    // `ps` in `ttys005`, AppleScript trả `/dev/ttys005`.
+    let dev = if tty.starts_with("/dev/") {
+        tty.to_string()
+    } else {
+        format!("/dev/{tty}")
+    };
+    // 🔴 BỘ ĐỆM TRƯỚC, kiểm bằng MỘT Apple Event — rồi mới quét (2026-09-24).
+    //
+    // Hà: *"Tại sao mỗi lần phiên chạy thì kênh tele treo vậy"*. Đo lượt gõ chữ
+    // 08:54:50Z mất 71,5 s: **45 s** là `window_script` (đi qua TỪNG tab, hàng
+    // chục Apple Event) hết giờ lúc Terminal bận vẽ cho các phiên đang chạy — rồi
+    // mới rơi về đúng id cửa sổ đã nhớ (8754), thứ đã đúng ngay từ đầu. Bản cũ chỉ
+    // dùng bộ nhớ SAU khi phép quét hỏng, tức trả trọn 45 s mỗi lần Terminal bận.
+    //
+    // Phép kiểm là CÂU HỎI mà `do_script` cần đúng: tab ĐANG CHỌN của cửa sổ ấy có
+    // mang tty này không (chữ luôn được gõ vào `selected tab of window id W`).
+    // Khớp ⟹ dùng; lệch (cửa sổ đổi tab, tty bị dùng lại) ⟹ quên và quét như cũ;
+    // hỏi hỏng (Terminal câm) ⟹ quét như cũ, và đường lùi bộ nhớ bên dưới vẫn còn.
+    if let Some(w) = recall_window(&dev) {
+        match selected_tab_tty(w) {
+            Ok(t) if t.trim().trim_start_matches("/dev/") == dev.trim_start_matches("/dev/") => {
+                return Ok(Some(w));
+            }
+            Ok(t) => {
+                forget_window(&dev);
+                logging::info(
+                    "window_cache_stale",
+                    json!({ "tty": dev, "window": w, "tab_tty": t.trim(),
+                            "effect": "tab đang chọn không còn mang tty này — quên id ấy, quét lại" }),
+                )
+            }
+            // Cửa sổ đã đóng ⟹ id đã nhớ là xác — quét lại.
+            Err(e) if cua_so_da_mat(&e.to_string()) => {
+                forget_window(&dev);
+                logging::info(
+                    "window_cache_stale",
+                    json!({ "tty": dev, "window": w, "err": e.to_string(),
+                            "effect": "cửa sổ đã nhớ không còn — quên id ấy, quét lại" }),
+                )
+            }
+            // Terminal BẬN (hết giờ · ngân sách · nhường): phép quét hàng chục Apple
+            // Event sẽ hết giờ lâu hơn rồi rơi về đúng id này (đường lùi bên dưới) —
+            // trả luôn, và nói ra. Chỗ gõ vẫn qua `paste_target_ok`/đọc lại màn.
+            Err(e) => {
+                logging::warn(
+                    "window_of_from_cache",
+                    json!({ "tty": dev, "window": w, "err": e.to_string(),
+                            "why": "Terminal bận — dùng id cửa sổ đã nhớ, KHÔNG quét từng tab" }),
+                );
+                return Ok(Some(w));
+            }
+        }
+    }
+    // 🔴 MỘT LƯỢT QUÉT MỘT LÚC, và NGHỈ sau khi hỏng (2026-09-24, báo của main
+    // dwork 17:3x giờ máy): Terminal không nhận Apple Event (-1712) từ ~09:55Z,
+    // `sample` luồng chính Terminal: ~80 % trong callback trạng thái ứng dụng của
+    // LaunchServices, 0 khung hộp thoại; hubd sinh `window_script` liên tục — mỗi
+    // lượt treo tới trần rồi chồng lên lượt sau (2 lượt treo cùng lúc lúc đo), còn
+    // dwork mở vai hỏng 6 lượt. Quét khi Terminal đang câm không đọc được gì, chỉ
+    // xếp thêm Apple Event vào đúng cái hàng đang nghẹt.
+    let _mot_luot = match QuetCuaSo::xin() {
+        Ok(g) => g,
+        Err(why) => {
+            return match recall_window(&dev) {
+                Some(w) => Ok(Some(w)),
+                None => Err(anyhow!(why)),
+            }
+        }
+    };
+    let script = window_script(&dev);
+    // Không tìm thấy thì script chạy hết mà không `return` gì — `osascript` in
+    // ra chuỗi rỗng, `parse` hỏng, và ta được `None`. Đó là câu trả lời đúng.
+    //
+    // ⚠ Bản đầu có thêm dòng `return ""` ở cuối để nói rõ "không thấy". Trong
+    // chuỗi thô `r#"…"#` của Rust, dấu `"` đầu là nội dung còn `"#` đóng chuỗi,
+    // nên AppleScript nhận được `return "` treo lửng và hỏng ngay ở dòng đầu:
+    // *"Expected string but found end of script. (-2741)"*. Một dòng thừa viết
+    // cho dễ hiểu lại làm hỏng cả tính năng — và nó chỉ lộ khi CHẠY THẬT, vì
+    // test của tệp này chỉ kiểm phần thoát chuỗi.
+    let bat_dau = std::time::Instant::now();
+    match osascript(&script) {
+        Ok(out) => {
+            let id = out.trim().parse::<i64>().ok();
+            if let Some(w) = id {
+                remember_window(&dev, w);
+            }
+            Ok(id)
+        }
+        // 🔴 Hà 2026-08-14, gõ một câu vào phiên và nhận `⚠ không tìm được cửa
+        // sổ: osascript quá 20s`. Cửa sổ ấy vẫn nằm đó — thứ hỏng là phép HỎI:
+        // máy đang tải nặng thì một lời gọi AppleScript vượt trần 20 giây.
+        //
+        // Mà id cửa sổ là thứ KHÔNG ĐỔI suốt đời cửa sổ, còn `window_of` thì bị
+        // gọi ở mọi `/type`, `/key`, `/shot` — tức huba hỏi lại Terminal hàng
+        // chục lần một điều không đổi, đúng lúc Terminal đang bận nhất. Nhớ lấy
+        // câu trả lời cũ và dùng khi phép hỏi hết giờ: sai lầm tệ nhất của bản
+        // nhớ (cửa sổ đã đóng) chỉ dẫn tới một `do script` hỏng có thông báo,
+        // còn hỏng như hiện nay là mất hẳn đường gõ.
+        Err(e) => {
+            QuetCuaSo::hong(bat_dau.elapsed(), &e.to_string());
+            match recall_window(&dev) {
+                Some(w) => {
+                    logging::warn(
+                        "window_of_from_cache",
+                        json!({ "tty": dev, "window": w, "err": e.to_string(),
+                            "why": "hỏi Terminal hết giờ — dùng id cửa sổ đã nhớ" }),
+                    );
+                    Ok(Some(w))
+                }
+                None => Err(e),
+            }
+        }
+    }
+}
+
+/// Cửa sổ mang tty này, **KỂ CẢ tab đã chết** (shell thoát, `[Process
+/// completed]`, 0 tiến trình).
+///
+/// 🔴 Hà 2026-08-17: *"Ko còn sao vẫn liệt kê, hay nó ở tab con"*. Anh bấm ◻ ở
+/// một hàng `/terminal` và nhận `⚠ không còn cửa sổ terminal nào chạy ttys014`
+/// — trong khi cửa sổ ấy đang nằm ngay đó. Đo ra ngay: `tabs_script` (thứ DỰNG
+/// danh sách) đọc **mọi** tab, còn [`window_of`] (thứ THI HÀNH) lọc
+/// `count of processes > 0`. Hai bộ liệt kê, một câu hỏi, hai câu trả lời — nên
+/// huba vẽ ra một cái nút trỏ vào chỗ chính nó nói là không tồn tại. Cùng hình
+/// dạng với lỗi "lệnh in hai biến thể" cùng ngày.
+///
+/// Cái lọc ấy KHÔNG sai và không được gỡ: tab chết vẫn khai tty cũ, macOS thì
+/// dùng lại số tty, nên gõ chữ theo tty trần là gõ vào một cái xác (đo
+/// 2026-08-11, ba cửa sổ cùng khai `/dev/ttys005`). Nhưng ĐÓNG thì ngược lại:
+/// cái xác chính là thứ cần đóng. Nên tách hai đường, và chỉ đường ĐÓNG được
+/// nhìn thấy tab chết.
+///
+/// Thứ tự ưu tiên giữ nguyên như [`window_of`] — tab đang chạy chương trình,
+/// rồi tab còn sống — và chỉ khi không còn gì sống mới nhận tab chết.
+#[cfg(target_os = "macos")]
+pub fn window_of_any(tty: &str) -> Result<Option<i64>> {
+    if tty.is_empty() || tty == "??" || tty == "-" {
+        return Ok(None);
+    }
+    let dev = if tty.starts_with("/dev/") {
+        tty.to_string()
+    } else {
+        format!("/dev/{tty}")
+    };
+    // Cùng cửa MỘT LƯỢT + nghỉ sau hỏng với `window_of` — hai bản quét, một hàng
+    // Apple Event của Terminal (xem `QuetCuaSo`).
+    let _mot_luot = QuetCuaSo::xin().map_err(|why| anyhow!(why))?;
+    let bat_dau = std::time::Instant::now();
+    let out = osascript(&window_any_script(&dev))
+        .inspect_err(|e| QuetCuaSo::hong(bat_dau.elapsed(), &e.to_string()))?;
+    Ok(out.trim().parse::<i64>().ok())
+}
+
+/// Tách ra để KIỂM ĐƯỢC — cùng lý do với [`window_script`]: ba lỗi AppleScript
+/// đắt nhất của tệp này đều nằm trong một chuỗi mà không bài kiểm nào chạm tới.
+#[cfg(target_os = "macos")]
+fn window_any_script(dev: &str) -> String {
+    format!(
+        r#"tell application "Terminal"
+  set alive to missing value
+  set dead to missing value
+  repeat with w in every window
+    try
+      repeat with t in tabs of w
+        if tty of t is {} then
+          if (count of (processes of t)) > 0 then
+            if busy of t then return id of w
+            if alive is missing value then set alive to id of w
+          else
+            if dead is missing value then set dead to id of w
+          end if
+        end if
+      end repeat
+    end try
+  end repeat
+  if alive is not missing value then return alive
+  if dead is not missing value then return dead
+end tell"#,
+        as_string(dev)
+    )
+}
+
+/// Tab của cửa sổ ấy còn tiến trình nào không — `0` nghĩa là shell đã thoát.
+///
+/// Dùng để biết có gì để `exit` hay không: gõ `exit` vào một tab `[Process
+/// completed]` là gõ vào chỗ không ai đọc, rồi huba ngồi chờ một cú thoát không
+/// bao giờ tới.
+#[cfg(target_os = "macos")]
+pub fn tab_proc_count(window: i64) -> Result<usize> {
+    let out = osascript(&format!(
+        r#"tell application "Terminal"
+  try
+    return (count of processes of selected tab of window id {window}) as text
+  on error
+    return "0"
+  end try
+end tell"#
+    ))?;
+    Ok(out.trim().parse::<usize>().unwrap_or(0))
+}
+
+/// Cửa MỘT LƯỢT cho những phép hỏi Terminal đi qua TỪNG tab (`window_script`,
+/// `window_any_script`, `tabs_script`): giữ `co` tới khi rời tầm — kể cả khi rời
+/// bằng panic, nên một lượt hỏng không khoá cửa mãi.
+///
+/// Báo của main dwork 24/09: Terminal không nhận Apple Event, các lượt quét của
+/// hubd chồng lên nhau — mỗi lượt treo tới trần rồi xếp thêm vào đúng cái hàng
+/// đang nghẹt.
+pub struct MotLuot(&'static std::sync::atomic::AtomicBool);
+
+/// Nhịp hỏi lại khi đang CHỜ một lượt khác trả về.
+const MOT_LUOT_NHIP: Duration = Duration::from_millis(100);
+
+impl MotLuot {
+    /// Xin lượt. Đang có lượt khác thì chờ nó trả về, tối đa `cho`
+    /// (`Duration::ZERO` = không chờ). `None` = hết giờ chờ mà lượt kia vẫn chưa trả.
+    pub fn xin(co: &'static std::sync::atomic::AtomicBool, cho: Duration) -> Option<MotLuot> {
+        let het = std::time::Instant::now() + cho;
+        loop {
+            if !co.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return Some(MotLuot(co));
+            }
+            if std::time::Instant::now() >= het {
+                return None;
+            }
+            std::thread::sleep(MOT_LUOT_NHIP);
+        }
+    }
+}
+
+impl Drop for MotLuot {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Chờ lượt đang chạy bao lâu, theo HẠNG của việc đang xin.
+///
+/// 🔴 Đo 2026-09-24: `/shot` của Hà lúc 10:47:56Z và 10:49:59Z nhận ngay *"đang có
+/// một lượt quét cửa sổ khác chưa trả về"* — lượt kia là của vòng NỀN. Bản đầu của
+/// cửa một lượt từ chối mọi người tới sau, tức một ngón tay thua một vòng quét
+/// định kỳ. Có người đang chờ ⟹ CHỜ, tối đa trần hỏi Terminal của chính lượt ấy
+/// (cùng lý do với [`osa_budget`]: thà chờ thêm còn hơn trả về một câu mà chính
+/// người ấy không làm gì được với nó). Vòng nền ⟹ không chờ: nó đọc `Err` thành
+/// *"chưa đo được"*, và vòng sau hỏi lại.
+pub fn cho_luot(lane: crate::exec::Lane, tran: Duration) -> Duration {
+    match lane {
+        crate::exec::Lane::Urgent => tran,
+        crate::exec::Lane::Background => Duration::ZERO,
+    }
+}
+
+/// Nghỉ bao lâu sau một lượt quét BỊ TERMINAL BẮT CHỜ rồi hỏng. Hỏi lại ngay là
+/// xếp thêm vào đúng hàng đang nghẹt; 60 s đủ cho một cơn nghẹt ngắn qua mà vẫn
+/// không để một phiên mới mở phải chờ quá lâu mới có cửa sổ.
+pub const QUET_NGHI_MS: i64 = 60_000;
+
+/// Còn phải nghỉ bao nhiêu ms nữa (`0` = được quét). `hong_luc_ms` là mốc lượt
+/// quét hỏng gần nhất (`0` = chưa hỏng lần nào). Thuần, để kiểm được mà không cần
+/// đồng hồ thật.
+pub fn quet_con_nghi_ms(hong_luc_ms: i64, bay_gio_ms: i64) -> i64 {
+    (hong_luc_ms + QUET_NGHI_MS - bay_gio_ms).max(0)
+}
+
+/// Lượt quét phải chờ Terminal ít nhất chừng này rồi mới hỏng thì mới tính là
+/// Terminal CÂM. Bằng nửa trần hỏi Terminal nhỏ nhất (20 s, vòng nền — xem
+/// [`osa_budget`]).
+pub const QUET_CAM_TU: Duration = Duration::from_secs(10);
+
+/// Lượt quét hỏng này có phải vì TERMINAL không trả lời không — tức có đáng NGHỈ.
+///
+/// 🔴 Đo 2026-09-24 10:42→11:09Z: **11/15** lần `window_scan_paused` là lỗi do
+/// CHÍNH huba sinh ra mà không hề hỏi Terminal — hết ngân sách vòng nền ×10,
+/// nhường lượt gấp ×1 (xem [`probe_verdict`]), trả về trong ~0 ms. Nghỉ theo chúng
+/// là hoãn 60 s mọi lượt quét, kể cả của Hà, vì một câu hỏi chưa từng được đặt ra.
+///
+/// Phân biệt bằng THỜI GIAN ĐÃ CHỜ, không bằng chữ trong câu lỗi: câu lỗi là văn
+/// của người viết và đổi được mà không ai báo, còn "Terminal đã bắt ta chờ bao
+/// lâu" chính là thứ phép nghỉ sinh ra để tránh.
+pub fn quet_hong_la_terminal_cam(da_cho: Duration) -> bool {
+    da_cho >= QUET_CAM_TU
+}
+
+/// Lượt mình vừa XẾP HÀNG chờ có kết thúc bằng Terminal câm không — có thì đừng
+/// hỏi chồng thêm một lượt nữa. `cam_luc_ms` = mốc lượt dò gần nhất hỏng vì Terminal
+/// câm (`0` = chưa lần nào); `bat_dau_cho_ms` = lúc mình bắt đầu xin lượt.
+///
+/// Vì sao: lượt có người chờ nay XẾP HÀNG sau vòng nền ([`cho_luot`]). Không có cửa
+/// này thì lúc Terminal câm, người chờ trả trọn trần của vòng nền (20 s) rồi trả
+/// thêm trần của chính mình (45 s) cho một câu trả lời đã biết trước — tệ hơn cả
+/// lúc hai lượt còn chạy chồng nhau.
+pub fn luot_truoc_da_cam(cam_luc_ms: i64, bat_dau_cho_ms: i64) -> bool {
+    cam_luc_ms > 0 && cam_luc_ms >= bat_dau_cho_ms
+}
+
+/// Cửa một lượt + thời gian nghỉ của phép quét cửa sổ — xem [`MotLuot`],
+/// [`cho_luot`], [`quet_hong_la_terminal_cam`].
+#[cfg(target_os = "macos")]
+struct QuetCuaSo;
+
+#[cfg(target_os = "macos")]
+static QUET_DANG_CHAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Mốc (ms epoch) lượt quét hỏng gần nhất vì Terminal câm.
+#[cfg(target_os = "macos")]
+static QUET_HONG_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+#[cfg(target_os = "macos")]
+impl QuetCuaSo {
+    /// Xin lượt quét. `Err(lý do)` = đang nghỉ, hoặc lượt khác chưa trả về trong
+    /// thời gian được chờ.
+    fn xin() -> std::result::Result<MotLuot, String> {
+        let dang_nghi = || {
+            let con = quet_con_nghi_ms(
+                QUET_HONG_MS.load(std::sync::atomic::Ordering::SeqCst),
+                crate::quota::now_ms(),
+            );
+            (con > 0).then(|| {
+                format!(
+                    "Terminal vừa không trả lời lượt quét cửa sổ — tạm KHÔNG quét lại (còn {} s)",
+                    con / 1000
+                )
+            })
+        };
+        // Hỏi nghỉ TRƯỚC khi chờ (đang nghỉ thì trả lời ngay, khỏi chờ ai), và hỏi
+        // lại SAU khi được lượt — lượt vừa trả có thể chính là lượt vừa hỏng.
+        if let Some(why) = dang_nghi() {
+            return Err(why);
+        }
+        let cho = cho_luot(crate::exec::lane(), osa_timeout());
+        let Some(luot) = MotLuot::xin(&QUET_DANG_CHAY, cho) else {
+            return Err(format!(
+                "đang có một lượt quét cửa sổ khác chưa trả về (đã chờ {} s) — KHÔNG chồng thêm",
+                cho.as_secs()
+            ));
+        };
+        match dang_nghi() {
+            Some(why) => Err(why),
+            None => Ok(luot),
+        }
+    }
+
+    /// Lượt quét hỏng: Terminal bắt chờ ≥ [`QUET_CAM_TU`] thì ghi mốc NGHỈ — và nói
+    /// ra, vì từ lúc này các lượt quét bị hoãn. Hỏng nhanh (huba tự không hỏi, hoặc
+    /// Terminal trả lỗi ngay) thì không nghỉ: chỗ gọi đã tự ghi lỗi ấy.
+    fn hong(da_cho: Duration, err: &str) {
+        if !quet_hong_la_terminal_cam(da_cho) {
+            return;
+        }
+        QUET_HONG_MS.store(crate::quota::now_ms(), std::sync::atomic::Ordering::SeqCst);
+        logging::warn(
+            "window_scan_paused",
+            json!({ "err": err, "da_cho_ms": da_cho.as_millis() as u64, "nghi_ms": QUET_NGHI_MS,
+                    "effect": "Terminal không trả lời lượt quét cửa sổ — hoãn mọi lượt quét trong thời gian nghỉ, dùng id đã nhớ nếu có" }),
+        );
+    }
+}
+
+/// Sổ nhớ `tty → id cửa sổ`. Bé, và cố ý không có hạn dùng: id chỉ đổi khi cửa
+/// sổ đóng, và lúc ấy `do script` hỏng ra lỗi rõ ràng chứ không im.
+#[cfg(target_os = "macos")]
+static WINDOW_CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, i64>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(target_os = "macos")]
+fn remember_window(dev: &str, w: i64) {
+    let m = WINDOW_CACHE.get_or_init(Default::default);
+    if let Ok(mut g) = m.lock() {
+        g.insert(dev.to_string(), w);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn recall_window(dev: &str) -> Option<i64> {
+    let m = WINDOW_CACHE.get_or_init(Default::default);
+    let g = m.lock().ok()?;
+    g.get(dev).copied()
+}
+
+/// Lỗi AppleScript này có nghĩa là CỬA SỔ ẤY KHÔNG CÒN (không phải Terminal bận).
+///
+/// 🔴 Đo 2026-09-24 19:15→19:58Z: 25 lần `window_of_from_cache` mang đúng câu
+/// `Terminal got an error: Can’t get window id 10807. (-1728)` — dấu nháy CONG
+/// (U+2019), trong khi mã so `"Can't get"` bằng dấu nháy THẲNG. Không khớp ⟹ một
+/// cửa sổ ĐÃ ĐÓNG bị đọc thành "Terminal bận" ⟹ dùng lại id chết mãi ⟹ 61 lượt
+/// `so_viec_cho_tra_lai` "chưa tìm ra cửa sổ" rồi 8 việc hòm thư bỏ cuộc sau ~1.000 s.
+/// Nhận theo MÃ LỖI `-1728` (errAENoSuchObject — không đổi theo ngôn ngữ hay kiểu
+/// nháy), và cả hai kiểu nháy cho chắc.
+pub fn cua_so_da_mat(err: &str) -> bool {
+    err.contains("(-1728)") || err.contains("Can't get") || err.contains("Can’t get")
+}
+
+/// Bỏ một id đã ĐO RA là sai (tab đang chọn mang tty khác · cửa sổ đã đóng) — để
+/// các đường lùi "dùng id đã nhớ" của [`window_of`] không rơi về đúng cái xác ấy.
+#[cfg(target_os = "macos")]
+fn forget_window(dev: &str) {
+    let m = WINDOW_CACHE.get_or_init(Default::default);
+    if let Ok(mut g) = m.lock() {
+        g.remove(dev);
+    }
+}
+
+/// MỌI tty mà Terminal.app đang giữ — một lời gọi cho cả danh sách.
+///
+/// Đây là câu trả lời cho "huba gõ vào phiên nào được": `type_into` đi qua
+/// `do script` của Terminal, nên phiên nào Terminal không giữ thì huba không có
+/// tay nào chạm tới — dù `ps` khai nó có tty đàng hoàng. Phiên trong terminal
+/// tích hợp của VS Code (hay iTerm, hay tmux tách rời) rơi đúng vào ca đó.
+///
+/// Vì sao hỏi CẢ danh sách thay vì hỏi từng phiên: một vòng có 5-15 phiên, mà
+/// mỗi `osascript` mất ~50-150ms. Hỏi từng phiên là con đường đã một lần kéo
+/// một vòng từ ~18 giây lên 90 giây (đọc màn cho mọi phiên, 2026-08-10); hỏi
+/// một lần rồi tra trong tập thì thêm đúng một lời gọi cho cả vòng.
+/// Một tab Terminal, như chính Terminal khai ra.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tab {
+    /// `ttys004`, đã bỏ `/dev/`.
+    pub tty: String,
+    /// Terminal tự trả lời "tab này còn chương trình nào đang chạy không".
+    pub busy: bool,
+    /// Tên các tiến trình trong tab, thường là `login`, `-zsh`, rồi CLI.
+    pub procs: Vec<String>,
+    /// CHỮ đang hiện trên màn của chính tab này — và `None` KHÔNG phải màn trống.
+    ///
+    /// Hai kết cục khác nhau, nên hai giá trị khác nhau (cùng luật với `Look`):
+    /// `None` = lượt dò này **không xin** chữ (`terminal_tabs`), `Some("")` =
+    /// xin rồi và màn thật sự trống. Gộp chúng vào một chuỗi rỗng là dựng đúng
+    /// cái bẫy `screen_of → None` đã trả giá ở luật 13.
+    pub screen: Option<String>,
+    /// Nhan đề tab — và với tab đang chạy `claude`, đó là **câu tóm tắt của
+    /// chính CLI về việc nó đang làm**.
+    ///
+    /// Đo 2026-08-19, tám tab trên máy này: `✳ Chốt mockup doc và driver` ·
+    /// `◐ Tiếp tục N7 lát 2 kiểm tra khuôn mặt` · `✳ Tiếp tục DS04 quét mã và
+    /// nhập xuất XML` · `◑ Continue huba improvements and run quality gate`.
+    /// Ba trong số ấy cùng dự án `dwork` — tức đây là thứ phân biệt được đúng
+    /// chỗ mà nhãn dự án bó tay (xem `sessions::label_sessions`).
+    ///
+    /// Nó KHÔNG phải một phép đoán của huba: chính `claude` đặt nhan đề ấy qua
+    /// escape OSC, cùng chữ chủ máy đang thấy trên thanh tab. Cùng hạng bằng
+    /// chứng với `status`/`state` của `claude agents` — huba chỉ chở đi.
+    ///
+    /// Rỗng = tab không có nhan đề riêng, hoặc lượt dò không hỏi tới.
+    pub title: String,
+}
+
+impl Tab {
+    /// Tab này có đang chạy một CLI trợ lý không — hay chỉ là một dấu nhắc?
+    ///
+    /// Đo bằng DANH SÁCH TIẾN TRÌNH chứ không bằng `busy`: `busy` là true cho
+    /// cả một `git log` đang mở pager, và false cho một `claude` vừa trả lời
+    /// xong. Hai câu hỏi khác nhau, và chỉ câu này quyết định tab ấy có phải
+    /// một phiên trợ lý hay không.
+    ///
+    /// Shell thì bỏ qua: `login`, `-zsh`, `zsh`, `bash`, `-bash`, `sh`. Còn lại
+    /// gì thì đó là thứ đang chạy.
+    pub fn cli(&self) -> Option<&str> {
+        // `powershell`/`pwsh`/`cmd`: shell của console Windows (`win_procs`).
+        self.procs
+            .iter()
+            .map(|p| p.trim_start_matches('-'))
+            .find(|p| {
+                !matches!(
+                    *p,
+                    "login"
+                        | "zsh"
+                        | "bash"
+                        | "sh"
+                        | "tcsh"
+                        | "fish"
+                        | "powershell"
+                        | "pwsh"
+                        | "cmd"
+                        | ""
+                )
+            })
+            .map(|p| p.trim())
+    }
+
+    /// Tab này có đang chạy `claude` không — **so KHÔNG phân biệt hoa thường**.
+    ///
+    /// 🔴 Đo 2026-08-19, và nó khép lại một câu hỏi treo từ sáng: cửa sổ
+    /// `ttys001` chạy một tiến trình tên **`Claude`** (chữ C hoa), tên cửa sổ
+    /// `username — Claude — 80×24`. Ổ đĩa macOS không phân biệt hoa thường nên
+    /// `Claude "tiếp social"` gõ tay vẫn phân giải ra đúng binary và chạy thật —
+    /// nhưng mọi phép so `== "claude"` của huba thì trượt, nên vòng nào huba cũng
+    /// ghi `terminal_tab_busy_unmatched` về đúng cái tab ấy và không bao giờ đọc
+    /// tới nó (không nhận ra hộp tin-thư-mục, không đọc được việc đang làm).
+    ///
+    /// huba KHÔNG bao giờ tự phát chữ hoa (`config.rs:489` · `sessions.rs:4245` ·
+    /// `main.rs:245` đều `claude` thường) — nên hình dạng này chỉ tới từ tay
+    /// người gõ, và tay người thì không có lý do gì phải gõ đúng chữ thường.
+    pub fn is_claude(&self) -> bool {
+        self.cli().is_some_and(|c| c.eq_ignore_ascii_case("claude"))
+    }
+
+    /// VIỆC tab này đang làm, bằng chữ của chính `claude` — `None` khi không có.
+    ///
+    /// Ba cửa, và mỗi cửa đóng một ca đã đo được trên máy này (2026-08-19):
+    ///
+    /// 1. **Tab phải đang chạy `claude`.** Nhan đề của một tab khác là nhan đề
+    ///    của thứ khác. Đo: `ttys001` chạy `Claude` (chữ C hoa — macOS phân giải
+    ///    không phân biệt hoa thường nên nó vẫn ra đúng binary), nhan đề vẫn là
+    ///    `Terminal` mặc định, tức phiên ấy chưa từng đặt tên việc.
+    /// 2. **Bỏ dấu quay ở đầu.** `claude` đính chỉ báo đang-chạy vào nhan đề
+    ///    (`✳`, `◐`, `◑`, …) và bộ ký tự ấy đổi theo phiên bản CLI — nên bỏ theo
+    ///    TÍNH CHẤT (mọi thứ không phải chữ/số đứng đầu), không theo một danh
+    ///    sách gõ sẵn sẽ mục.
+    /// 3. **`Terminal` trần thì không tính.** Đó là tên hồ sơ mặc định của
+    ///    Terminal.app, không phải một câu tóm tắt.
+    ///
+    /// Trùng nhau thì sao: hàm này không biết, và không cần biết — chỗ gọi
+    /// (`sessions::label_sessions`) nhìn CẢ TẬP, nên hai tab cùng nhan đề vẫn
+    /// rơi về mã id ngắn. Cùng luật với `label_sessions`: "có trùng ai không" là
+    /// câu hỏi của tập, không hàng nào tự trả lời được.
+    pub fn doing(&self) -> Option<&str> {
+        if !self.is_claude() {
+            return None;
+        }
+        let t = self
+            .title
+            .trim_start_matches(|c: char| !c.is_alphanumeric())
+            .trim();
+        (!t.is_empty() && t != "Terminal").then_some(t)
+    }
+}
+
+/// Mọi tab Terminal đang mở, kèm thứ đang chạy trong đó.
+///
+/// 🔴 Hà 2026-08-13: *"mỗi cửa sổ terminal là một phiên thì sẽ quản lý được
+/// phiên nào đang chạy cli phiên nào không"* · *"vào phiên (terminal) chưa chạy
+/// gì → gõ lệnh bình thường như đang gõ ở terminal là được rồi"*.
+///
+/// Đây là phép đo mà mô hình ấy đứng lên: cho tới nay huba đi từ `claude agents`
+/// rồi mới tìm cửa sổ (`window_of` theo tty), nên một cửa sổ **không chạy CLI**
+/// là thứ huba không có cách nào biết là có tồn tại. Ngồi trước máy thì nó nằm
+/// ngay đó, mở sẵn, gõ được — tức đúng định nghĩa một LỖ HỔNG của cây cầu.
+///
+/// Trả cả tab lẫn tiến trình trong MỘT lượt `osascript`: hỏi hai lần là hai ảnh
+/// chụp lệch nhau, và giữa hai lần ấy một cửa sổ đóng được.
+#[cfg(not(windows))]
+pub fn terminal_tabs() -> Result<Vec<Tab>> {
+    probe_tabs(false)
+}
+/// Windows: mỗi console có cửa sổ là một "tab" — xem `keys_win::terminal_tabs`.
+#[cfg(windows)]
+pub fn terminal_tabs() -> Result<Vec<Tab>> {
+    crate::keys_win::terminal_tabs(false)
+}
+
+/// Như `terminal_tabs`, và kèm CHỮ đang hiện trên màn từng tab — vẫn MỘT lượt dò.
+///
+/// 🔴 Vì sao gộp vào một lượt (đo 2026-08-16, 11 phiên trên máy này). Ảnh chụp
+/// cũ hỏi Terminal **hai lần cho mỗi phiên đang chạy** — `window_of` rồi
+/// `screen_text` bên trong `look` — cộng hai lượt nữa cho cả vòng
+/// (`terminal_tabs` + `terminal_ttys`). Đo tay: mỗi lượt `osascript` 0,6–1,3
+/// giây, nên một ảnh chụp có 7 phiên bận tốn **7–14 giây**, đúng con số Hà đợi
+/// khi bấm một nút. Một lượt duy nhất lấy CẢ danh sách tab lẫn chữ 11 màn:
+/// **1,3 giây**, và nó không phình theo số phiên bận nữa.
+///
+/// Và nó ĐÚNG HƠN, không chỉ nhanh hơn: `screen_text` đọc *"contents of selected
+/// tab of window id N"* — tức tab ĐANG ĐƯỢC CHỌN của cửa sổ ấy, không phải tab
+/// mang tty mình hỏi. Cửa sổ hai tab thì nó đọc nhầm màn, im lặng. Ở đây chữ đi
+/// kèm chính cái tab đã khai tty, nên không còn chỗ cho nhầm lẫn ấy.
+#[cfg(not(windows))]
+pub fn terminal_screens() -> Result<Vec<Tab>> {
+    probe_tabs(true)
+}
+#[cfg(windows)]
+pub fn terminal_screens() -> Result<Vec<Tab>> {
+    crate::keys_win::terminal_tabs(true)
+}
+
+/// Đang có một lượt `probe_tabs` chạy chưa — lượt thứ hai KHÔNG chồng lên.
+///
+/// 🔴 Đo 2026-09-24 10:40Z (sau báo của main dwork, Terminal không nhận Apple
+/// Event): hai lượt `tabs_script` của hubd treo CÙNG LÚC — một của vòng chạy, một
+/// của một lệnh. Lượt thứ hai không đọc thêm được gì mà vòng chạy chưa đọc; nó chỉ
+/// xếp thêm một chuỗi Apple Event đọc chữ mọi tab vào đúng cái hàng đang nghẹt.
+/// Lệnh có người chờ thì XẾP HÀNG sau lượt kia ([`cho_luot`]); vòng nền nhận `Err`
+/// ngay — chỗ gọi đã đọc `Err` của phép dò thành *"CHƯA ĐO ĐƯỢC"*
+/// (`terminal_probe_failed`), không thành "không có cửa sổ nào".
+#[cfg_attr(windows, allow(dead_code))]
+static DO_TAB_DANG_CHAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Mốc (ms epoch) lượt `probe_tabs` gần nhất hỏng vì Terminal câm — xem
+/// [`luot_truoc_da_cam`].
+#[cfg_attr(windows, allow(dead_code))]
+static DO_TAB_CAM_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+#[cfg_attr(windows, allow(dead_code))]
+fn probe_tabs(with_screens: bool) -> Result<Vec<Tab>> {
+    let cho = cho_luot(crate::exec::lane(), osa_timeout());
+    let bat_dau_cho = crate::quota::now_ms();
+    let Some(_mot_luot) = MotLuot::xin(&DO_TAB_DANG_CHAY, cho) else {
+        return Err(anyhow!(
+            "đang có một lượt dò tab Terminal khác chưa trả về (đã chờ {} s) — KHÔNG chồng thêm",
+            cho.as_secs()
+        ));
+    };
+    if luot_truoc_da_cam(
+        DO_TAB_CAM_MS.load(std::sync::atomic::Ordering::SeqCst),
+        bat_dau_cho,
+    ) {
+        return Err(anyhow!(
+            "lượt dò tab ngay trước (đã xếp hàng chờ nó) không được Terminal trả lời — KHÔNG hỏi chồng thêm"
+        ));
+    }
+    let bat_dau = std::time::Instant::now();
+    let out = osascript(&tabs_script(with_screens)).inspect_err(|_| {
+        if quet_hong_la_terminal_cam(bat_dau.elapsed()) {
+            DO_TAB_CAM_MS.store(crate::quota::now_ms(), std::sync::atomic::Ordering::SeqCst);
+        }
+    })?;
+    let (tabs, skipped) = parse_tabs(&out, with_screens);
+    // Bỏ qua một cửa sổ là chuyện thường (bảng cài đặt của Terminal cũng nằm
+    // trong `every window`). Bỏ qua mà KHÔNG đọc được cái nào thì không —
+    // đó đúng hình dạng con bug vừa vá, và nó phải kêu để lần sau khỏi mất
+    // hai ngày.
+    if skipped > 0 {
+        if tabs.is_empty() {
+            logging::error(
+                "terminal_tabs_all_skipped",
+                json!({ "skipped": skipped,
+                        "why": "mọi cửa sổ đều ném lỗi — danh sách rỗng KHÔNG có nghĩa là máy không có cửa sổ nào" }),
+            );
+        } else {
+            logging::info(
+                "terminal_tabs_skipped",
+                json!({ "skipped": skipped, "read": tabs.len() }),
+            );
+        }
+    }
+    Ok(tabs)
+}
+
+/// Đoạn AppleScript hỏi mọi tab — kèm chữ trên màn khi `with_screens`.
+///
+/// Tách thuần để KIỂM ĐƯỢC, cùng lý do với `window_script`.
+#[cfg_attr(windows, allow(dead_code))]
+fn tabs_script(with_screens: bool) -> String {
+    // 🔴 BA LỖI TRONG BỐN DÒNG APPLESCRIPT, và cả ba đều CÂM.
+    // 08-15. Hà: *"lệnh terminal chưa đúng … đang có 2 cửa sổ không chạy gì"*.
+    // Đo bằng tay đúng lúc ấy: 6 tab, 2 trần (`ttys000`, `ttys002`) — còn hàm
+    // này trả về **danh sách RỖNG**, `Ok(vec![])`, không một tiếng nào.
+    //
+    // 1. **`tab` bên trong `tell application "Terminal"` KHÔNG phải ký tự tab.**
+    //    Terminal có hẳn một lớp tên `tab`, và tên lớp thắng hằng số của
+    //    AppleScript. Nên `… & tab & …` là nối một *class specifier* vào chuỗi
+    //    ⟹ ném lỗi. Nay `ASCII character 9`, đặt vào biến, không còn chỗ cho
+    //    cái tên ấy va nhau.
+    // 2. **`(p as string)` trên một phần tử `processes` cũng ném lỗi**
+    //    (`Can't make item 1 of «class prcs» … into type string`). Đúng cách là
+    //    coerce CẢ DANH SÁCH kèm `text item delimiters` — và nó vá luôn cái bẫy
+    //    mà chú thích cũ đã cảnh báo: `processes of t as string` dán liền tên
+    //    tiến trình (`login-zshclaude`), đọc ra một tên không có thật.
+    //
+    // 3. **`contents of t` KHÔNG đọc ra chữ trên màn** (đo 2026-08-16, cả 11
+    //    tab cùng ném *"Can't make «class ttab» 1 of window id … into type
+    //    text"*). Vì `t` là một THAM CHIẾU, mà `contents of <tham chiếu>` là
+    //    toán tử giải-tham-chiếu của AppleScript — nó trả về chính cái tab, chứ
+    //    không phải thuộc tính `contents` của lớp tab. Cùng một họ bẫy với mục
+    //    1: ở đó tên lớp thắng hằng số, ở đây toán tử thắng thuộc tính. Đường
+    //    đi được là địa chỉ đầy đủ: `contents of tab k of window id wid`.
+    //
+    // 📌 Bài học đắt hơn cả ba lỗi: **một `try` không có `on error` là một cái
+    // máy nuốt lỗi**. Nó dựng lên đúng lý do — có một "cửa sổ" trong danh sách
+    // không phải cửa sổ thật, và `every tab of` nó ném `-1728` (đo được: item
+    // 4). Nhưng vì lỗi ở mục 1 xảy ra với MỌI cửa sổ, cái `try` ấy nuốt sạch
+    // rồi trả về một danh sách rỗng — và "không có cửa sổ nào" là một câu trả
+    // lời hoàn toàn hợp lý, nên không ai nghi ngờ nó. Cùng họ với
+    // `screen_of → None` gộp ba kết cục (luật 13).
+    //
+    // Nay đếm số cửa sổ bỏ qua và ghi log; bỏ qua HẾT mà vẫn có cửa sổ thì đó
+    // là một sự cố, không phải một cái máy rảnh.
+    //
+    // 🔴 KHUNG BẢN TIN: mỗi tab là một dòng đầu
+    // `tty⇥busy⇥procs⇥số-dòng-màn⇥nhan-đề`, rồi ĐÚNG bấy nhiêu dòng chữ màn.
+    // Đếm dòng chứ không cắt theo dấu phân cách, vì chữ trên màn là chữ của
+    // người khác: bất cứ dấu nào tôi chọn làm ranh giới đều có thể đang nằm sẵn
+    // trên một màn nào đó, và hôm nó nằm đó thì phép đọc lệch mà không ai biết.
+    // Số dòng thì không giả được — đã đối chiếu trên bản chụp thật 11 tab / 304
+    // dòng, mọi dòng đầu rơi đúng chỗ.
+    //
+    // Nhan đề đứng CUỐI vì nó cũng là chữ của người khác (xem `parse_tabs`), và
+    // dấu xuống dòng trong nó bị dập NGAY TẠI ĐÂY: `str::lines()` của Rust cắt
+    // theo `\n`, nên một `\n` lọt vào nhan đề sẽ đẻ ra một hàng tab ma. Escape
+    // OSC vốn không mang được `\n` — dập ở đây là để phép đọc không phụ thuộc
+    // vào việc ấy còn đúng ở bản `claude` sau.
+    let screens = if with_screens {
+        r#"
+        set c to contents of tab k of window id wid
+        set np to (count of paragraphs of c)"#
+    } else {
+        r#"
+        set c to ""
+        set np to 0"#
+    };
+    let body = if with_screens {
+        "\n        set acc to acc & c & linefeed"
+    } else {
+        ""
+    };
+    format!(
+        r##"tell application "Terminal"
+  set TAB9 to ASCII character 9
+  set acc to ""
+  set skipped to 0
+  repeat with w in every window
+    try
+      if visible of w then
+      set wid to id of w
+      repeat with k from 1 to (count of tabs of w)
+        set tb to tab k of window id wid
+        set AppleScript's text item delimiters to "|"
+        set ps to (processes of tb) as text
+        set AppleScript's text item delimiters to ""{screens}
+        set ct to ""
+        try
+          set ct to custom title of tb
+          if ct is missing value then set ct to ""
+        end try
+        set AppleScript's text item delimiters to linefeed
+        set ctl to text items of (ct as text)
+        set AppleScript's text item delimiters to " "
+        set ct to ctl as text
+        set AppleScript's text item delimiters to ""
+        set acc to acc & (tty of tb) & TAB9 & (busy of tb) & TAB9 & ps & TAB9 & np & TAB9 & ct & linefeed{body}
+      end repeat
+      end if
+    on error
+      set skipped to skipped + 1
+    end try
+  end repeat
+  return acc & "#skipped" & TAB9 & skipped & linefeed
+end tell"##
+    )
+}
+
+/// Đọc kết quả AppleScript → `(danh sách tab, số cửa sổ bị bỏ qua)`.
+///
+/// Tách thuần để KIỂM ĐƯỢC: ba lỗi AppleScript ở trên nằm gọn trong một chuỗi
+/// mà không một bài kiểm nào chạm tới — vì cả hàm đòi một Terminal thật. Bản
+/// chép ở `tests/` là kết quả THẬT đo trên máy này.
+///
+/// `with_screens` phải khớp với lượt dò đã sinh ra `out`: nó quyết định
+/// `screen` là `None` (không xin) hay `Some("")` (xin rồi, màn trống).
+pub fn parse_tabs(out: &str, with_screens: bool) -> (Vec<Tab>, usize) {
+    let mut skipped = 0usize;
+    let mut tabs: Vec<Tab> = Vec::new();
+    let mut lines = out.lines();
+    while let Some(l) = lines.next() {
+        let mut f = l.split('\t');
+        let tty = f.next().unwrap_or_default().trim();
+        if tty == "#skipped" {
+            skipped = f.next().unwrap_or("0").trim().parse().unwrap_or(0);
+            continue;
+        }
+        if tty.is_empty() {
+            continue;
+        }
+        let busy = f.next().unwrap_or("false").trim() == "true";
+        let procs = f
+            .next()
+            .unwrap_or_default()
+            .split('|')
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect();
+        // Số dòng màn là KHUNG của bản tin, không phải một trường tuỳ ý: đọc
+        // hỏng nó thì mọi dòng sau đọc lệch. Nên nó không được im — một khung
+        // sai đọc ra một danh sách tab trông vẫn hợp lý.
+        let frame = f.next().unwrap_or_default().trim();
+        let n: usize = match frame.parse() {
+            Ok(n) => n,
+            Err(e) => {
+                logging::warn(
+                    "terminal_tab_frame_unreadable",
+                    json!({ "tty": tty, "frame": frame, "err": e.to_string(),
+                            "effect": "không đọc được số dòng màn — coi như tab không có chữ, các tab sau có thể lệch khung" }),
+                );
+                0
+            }
+        };
+        // Nhan đề đứng SAU khung, và ăn hết phần còn lại của dòng — cố ý.
+        //
+        // Nó là chữ của người khác (chính `claude` đặt), nên nó không được phép
+        // xê dịch một trường nào khác: đứng cuối thì một ký tự TAB lọt vào giữa
+        // nhan đề chỉ cắt chính nó, và nối lại là xong. Đứng trước `np` thì cùng
+        // ký tự ấy đẩy khung đi một cột và mọi tab sau đọc lệch — đúng cái bẫy
+        // mà khung-đếm-dòng sinh ra để tránh. (Dấu xuống dòng thì chặn ở đầu
+        // kia, trong AppleScript: xem `tabs_script`.)
+        let title = f.collect::<Vec<_>>().join("\t").trim().to_string();
+        let mut screen: Vec<&str> = Vec::with_capacity(n);
+        for i in 0..n {
+            match lines.next() {
+                Some(x) => screen.push(x),
+                None => {
+                    logging::warn(
+                        "terminal_tab_screen_truncated",
+                        json!({ "tty": tty, "want": n, "got": i,
+                                "effect": "bản tin cụt — màn của tab này đọc thiếu dòng" }),
+                    );
+                    break;
+                }
+            }
+        }
+        tabs.push(Tab {
+            tty: tty.trim_start_matches("/dev/").to_string(),
+            busy,
+            procs,
+            screen: with_screens.then(|| screen.join("\n")),
+            title,
+        });
+    }
+    (tabs, skipped)
+}
+
+/// Tab ĐANG SỐNG mang tty ấy — `None` nghĩa là huba không có tay nào chạm tới.
+///
+/// Đây là bản tra-trong-tập của `window_script`, và nó phải mang NGUYÊN luật ấy
+/// sang, không phải một phép so tty đơn giản: Terminal giữ lại `tty` của tab đã
+/// chết, còn macOS thì DÙNG LẠI số tty — nên "khớp tty" trả về một cái xác dễ
+/// như trả về tab thật. Lọc theo tab còn tiến trình, và trong đám còn sống thì
+/// ưu tiên tab đang chạy chương trình (`busy`), y hệt bản AppleScript.
+///
+/// 🪦 `terminal_ttys()` — một lượt `osascript` thứ hai chỉ để hỏi lại đúng cái
+/// tập mà `terminal_tabs` vừa trả về (0,6 giây mỗi ảnh chụp, mọi ảnh chụp). Gỡ
+/// 2026-08-16: hai phép đo về cùng một thứ, hỏi hai lần, là hai câu trả lời có
+/// thể lệch nhau — và giữa hai lượt hỏi thì một cửa sổ đóng được.
+pub fn alive_tab<'a>(tabs: &'a [Tab], tty: &str) -> Option<&'a Tab> {
+    let dev = tty.trim_start_matches("/dev/");
+    let mut alive = None;
+    for t in tabs.iter().filter(|t| t.tty == dev && !t.procs.is_empty()) {
+        if t.busy {
+            return Some(t);
+        }
+        if alive.is_none() {
+            alive = Some(t);
+        }
+    }
+    alive
+}
+
+/// Tab của cửa sổ này còn chương trình nào đang chạy không — **và cửa sổ ấy còn
+/// không**. Ba câu trả lời, vì đó là ba sự thật khác nhau về thế giới.
+///
+/// Đây là câu hỏi PHÂN BIỆT "thoát CLI xong" với "vẫn đang thoát": `ps` biến
+/// mất trước khi shell kịp in dấu nhắc, còn `busy` là chính Terminal trả lời về
+/// tab của nó. Dùng nó để CHỜ, chứ đừng đoán bằng `sleep`.
+///
+/// 🔴 Bản cũ là `tab_busy -> Result<bool>`, và nó gộp **"cửa sổ không còn"** vào
+/// nhánh `Err` — cùng một họ lỗi với `keys::look` gộp ba kết cục vào `None`, và
+/// lần này cái giá đo được nằm nguyên trong log: **190 dòng
+/// `close_check_failed` trong 5 tiếng** (`~/Library/Logs/hubd.err`,
+/// 08:44:50Z → 13:47:06Z), tất cả về đúng một cửa sổ 2131 của phiên
+/// `win-ttys002`, tất cả cùng một câu:
+/// *"Can't make «class busy» of «class tcnt» of window id 2131 … into type
+/// text. (-1700)"*. Cửa sổ ấy đã đóng từ lâu; `selected tab` của một cửa sổ
+/// không còn tab trả về `missing value`, ép sang chữ thì -1700, và
+/// `close_pending_tick` đọc `Err` đúng như luật của nó — *"hỏi không được là huba
+/// mù, không phải cửa sổ đã đóng"* — nên giữ nguyên mục trong sổ, hỏi lại sau 30
+/// giây, mãi mãi. Luật ấy KHÔNG sai; cái sai là bắt nó phán trên một phép đo
+/// không biết nói "không còn".
+///
+/// Nên câu hỏi "còn tab nào không" phải đứng TRƯỚC, trong cùng một lượt hỏi
+/// (hai lượt là hai câu trả lời có thể lệch nhau — bài học của `terminal_ttys`).
+/// `on error` ở đây chỉ bắt được lỗi PHÂN GIẢI ĐỐI TƯỢNG của Terminal, tức
+/// "không có cửa sổ ấy"; còn `osascript` chết, Terminal câm, quyền bị rút thì
+/// vẫn về `Err` như cũ — huba vẫn mù đúng chỗ đáng mù.
+///
+/// Đo thật trước khi tin, 2026-08-17 (`osascript` gọi tay, bốn hình dạng cửa sổ):
+/// 2221 cửa sổ đang chạy `claude` → `true` · 2131 cửa sổ trong sổ chờ đóng →
+/// `gone` · 2158 cửa sổ đã ẩn còn tab chết → `false` · 2122 cửa sổ 0 tab →
+/// `gone` · 99999 id không tồn tại → `gone`.
+#[cfg(target_os = "macos")]
+pub fn tab_state(window: i64) -> Result<TabState> {
+    let out = osascript(&format!(
+        r#"tell application "Terminal"
+  try
+    if (count of tabs of window id {window}) is 0 then return "gone"
+    return (busy of (selected tab of window id {window})) as text
+  on error
+    return "gone"
+  end try
+end tell"#
+    ))?;
+    match out.trim() {
+        "true" => Ok(TabState::Busy),
+        "false" => Ok(TabState::Idle),
+        "gone" => Ok(TabState::Gone),
+        // Không đoán. Một câu trả lời lạ là huba mù, và mù thì phải nói là mù —
+        // đoán bừa "rảnh" ở đây là đóng nhầm một cửa sổ đang chạy dở.
+        other => anyhow::bail!(
+            "Terminal trả lời lạ cho câu hỏi tab của cửa sổ {window} còn bận không: {:?}",
+            crate::exec::truncate(other, 80)
+        ),
+    }
+}
+
+/// Ba kết cục của một lượt hỏi [`tab_state`] — xem chú thích của hàm ấy để biết
+/// vì sao kết cục thứ ba phải là một GIÁ TRỊ chứ không phải một lỗi.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabState {
+    /// Tab còn chương trình đang chạy: chưa thoát xong.
+    Busy,
+    /// Tab đứng ở dấu nhắc: đóng được.
+    Idle,
+    /// Không còn cửa sổ ấy (hoặc nó không còn tab nào) — việc đã XONG, dù không
+    /// phải huba làm.
+    Gone,
+}
+
+/// Thoát CLI rồi ĐÓNG cửa sổ — định nghĩa "tắt hẳn" của chủ máy.
+///
+/// Hà 2026-08-11: *"tắt hẳn là thoát cli và đóng terminal"*, và trước đó:
+/// *"phải thoát cli trước rồi đóng thì mới không bị hỏi chứ"*. Thứ tự ấy không
+/// phải phép lịch sự: đóng một cửa sổ còn chương trình chạy sẽ bật hộp thoại
+/// *"Do you want to terminate running processes?"* — một modal của Terminal,
+/// và modal thì **khoá luôn mọi lệnh automation sau đó**. Sai thứ tự là tự bịt
+/// mồm mình.
+///
+/// Hai sự thật đo được ngày 2026-08-11, mỗi cái bác một cách làm tắt:
+/// · gõ `/exit` là CLI thoát thật (pid biến mất, `busy` về `false`) — nên không
+///   cần `kill`, và `kill` thì mất phần ghi sổ cuối phiên;
+/// · cửa sổ **không tự đóng** khi shell thoát (hồ sơ Terminal giữ nó lại kèm
+///   dòng `[Process completed]`) — nên bước đóng là bắt buộc, không thừa.
+/// Gõ `/exit` vào cửa sổ, và CHỈ thế — không chờ, không đóng.
+///
+/// 🔴 Hà 2026-08-13: *"30 giây kiểm tra 1 lần nếu chưa xong thì chờ tiếp"*.
+/// `quit_and_close` bên dưới chờ tại chỗ rồi **bỏ cuộc sau 30 giây**, và bỏ
+/// cuộc là câu trả lời sai cho câu hỏi thật: một lượt `claude` chạy hai mươi
+/// phút thì cửa sổ ấy vẫn phải đóng, chỉ là muộn hơn. Nhưng chờ tại chỗ lâu
+/// hơn thì hỏng kiểu khác — `execute_commands` giữ `CMD_LOCK`, nên một lượt
+/// chờ dài **khoá cả vòng chạy**: không tin báo, không lệnh nào khác đi được.
+///
+/// Nên tách đôi: gõ `/exit` xong thì ghi sổ và trả lời ngay; việc canh chừng
+/// giao cho vòng chạy (`pipeline::close_pending_tick`), đúng cùng cỗ máy "so
+/// hai lượt" mà `watch.rs` đã dùng. Chờ bao lâu cũng được vì không ai phải ngồi
+/// giữ chỗ.
+/// 🔴 `/exit` phải đi bằng ĐÚNG đường mọi chữ khác đi — Hà 2026-08-15:
+/// *"ở phiên tfl5 có thấy lệnh exit nào đâu"*.
+///
+/// Anh nhìn nhầm cửa sổ (huba nhắm `ttys004`, không phải phiên tfl5), nhưng câu
+/// hỏi ấy lôi ra một lỗi thật, và nó là **luật 13 bị bỏ sót đúng một chỗ**: bản
+/// cũ ở đây gọi thẳng `osascript(do_script(w, "/exit"))`. `do script` đẩy chữ
+/// và dấu xuống dòng trong CÙNG một lượt ghi ⟹ TUI của `claude` đọc cả cụm như
+/// một cú DÁN và **nuốt dấu xuống dòng** ⟹ `/exit` nằm lại trong ô nhập, chưa
+/// bao giờ được gửi. Đó đúng là con bug đã trả giá cả tối 12/08 cho `/type`,
+/// đã có sẵn thuốc (`type_and_send`: cú Enter RỜI), mà đường đóng phiên thì
+/// không ai nối vào.
+///
+/// Và cái làm nó sống lâu: đường này **không ghi một dòng log nào**, nên trong
+/// sổ không có gì để đối chứng — chỗ gọi cứ thế viết *"đã gõ /exit"* như một sự
+/// thật đã quan sát, trong khi tất cả những gì nó biết là `osascript` trả 0.
+/// `osascript` trả 0 chỉ chứng minh **bytes đã tới tab** (CLAUDE.md, luật 13).
+pub fn send_exit(window: i64) -> Result<()> {
+    let how = type_and_send(window, "/exit")?;
+    crate::logging::info(
+        "keys_exit_sent",
+        serde_json::json!({ "window": window, "landed": format!("{how:?}"),
+                            "why": "đã đẩy `/exit` + Enter rời; osascript trả 0 chỉ nói bytes tới tab, KHÔNG nói phiên đã nhận" }),
+    );
+    Ok(())
+}
+
+/// Đưa cửa sổ của phiên ra TRƯỚC rồi chụp ảnh màn hình thật ra `path`.
+///
+/// 🔴 Hà 2026-08-17: *"Thêm lệnh chụp ảnh màn hình để tôi xem thực sự đang có gì
+/// trên màn hình"*, rồi ngay sau đó: *"Focus tới phiên thật"*. Câu thứ hai là cả
+/// thiết kế của hàm này — một tấm ảnh chụp bừa cả màn hình chỉ nói được "máy
+/// đang mở gì đó", còn thứ anh hỏi là *phiên ẤY* đang hiện gì.
+///
+/// Đưa ra trước rồi chụp CẢ màn (không cắt riêng cửa sổ): thứ đè lên cửa sổ —
+/// hộp thoại của macOS, một cửa sổ khác, thanh thông báo — chính là cái mà chữ
+/// đọc từ tab không bao giờ thấy, và cũng chính là thứ hay làm phiên đứng im.
+///
+/// ⚠ `screencapture` đòi quyền **Screen Recording**, và trên máy này nó đang bị
+/// từ chối (đo 2026-08-17: *"could not create image from display"*, exit 1).
+/// Nên hàm này KHÔNG được nuốt lỗi: nó nói đúng cái thiếu và chỗ cấp.
+/// Bao nhiêu tin đang nằm trong HÀNG CHỜ của TUI — đọc từ chính màn hình.
+///
+/// 🔴 Hà 2026-08-18: *"Thêm lệnh clean xóa hết ở chờ"* (và chốt sau đó: hàng chờ
+/// của PHIÊN, không phải tin Telegram). Đo trên màn thật cùng ngày, gõ hai dòng
+/// vào một phiên đang bận:
+///
+/// ```text
+///   ❯ (bo qua - dong do hang cho cua huba A)
+///   ❯ (bo qua - dong do hang cho cua huba B)
+/// ──────────────────────────────────────────
+/// ❯ Press up to edit queued messages
+/// ──────────────────────────────────────────
+///   ⏵⏵ auto mode on · 2 shells · esc to interrupt · ↓ to manage
+/// ```
+///
+/// Hai hình dạng, và phải dùng CẢ HAI: dòng quảng cáo `queued message` nói
+/// *có hay không*, còn các dòng `❯` **thụt lề** nói *bao nhiêu*. Dấu nhắc của ô
+/// nhập cũng bắt đầu bằng `❯` nhưng KHÔNG thụt lề — nhầm hai cái là đếm luôn cả
+/// ô nhập, tức một hàng chờ rỗng đọc ra "còn 1" và `/clean` quay mãi.
+pub fn queued_count(screen: &str) -> usize {
+    // 🔴 HỎI Ở ĐÁY MÀN, KHÔNG QUÉT CẢ MÀN. Dòng quảng cáo `Press up to edit
+    // queued messages` là thứ TUI vẽ TRONG khung ô nhập — nhưng chính chữ ấy
+    // cũng nằm rải rác trong phần hội thoại của một phiên đang BÀN về cơ chế
+    // hàng chờ (phiên `[huba]` nói về nó cả ngày, và đoạn văn ấy cuộn trên màn
+    // hàng giờ sau đó).
+    //
+    // Quét cả màn thì `/clean` đọc ra "có hàng chờ" ở một phiên chẳng có gì để
+    // dọn, rồi gửi `↑` — và `↑` khi hàng chờ rỗng KHÔNG phải là không làm gì:
+    // nó kéo câu CŨ trong lịch sử vào ô nhập, tức huba tự chèn chữ vào chỗ chủ
+    // máy đang gõ.
+    if !box_region(screen).contains("queued message") {
+        return 0;
+    }
+    screen
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            l.starts_with(' ') && t.starts_with('❯') && t.len() > 1
+        })
+        .count()
+}
+
+/// Màn hình có ĐANG KHOÁ không — `Some(true)` = đang ở màn hình đăng nhập.
+///
+/// 🔴 Hà 2026-08-18, ngay sau khi tôi khai ảnh đen là "gần như luôn là thiếu
+/// quyền": *"Máy đang ở màn hình chờ đăng nhập không chụp được ảnh?"* — và câu
+/// ấy đúng. Đo cùng lúc: `ioreg -n Root -d1` trả
+/// `"CGSSessionScreenIsLocked"=Yes` kèm `CGSSessionScreenLockedTime`. Hai
+/// nguyên nhân cho CÙNG một tấm ảnh đen (màn khoá · chưa cấp Screen Recording),
+/// nên một câu trả lời đoán bừa một trong hai là bắt chủ máy đi kiểm hộ.
+///
+/// `None` = không đo được (không có `ioreg`, hoặc nó đổi định dạng). Không đo
+/// được phải khác "đã đo, không khoá" — đúng luật 3.
+#[cfg(target_os = "macos")]
+pub fn screen_locked() -> Option<bool> {
+    let out = crate::exec::run(
+        "ioreg",
+        &["-n", "Root", "-d1"],
+        crate::exec::RunOpts {
+            timeout: Some(std::time::Duration::from_secs(10)),
+            ..Default::default()
+        },
+    )
+    .ok()?;
+    if out.code != Some(0) {
+        logging::warn(
+            "screen_lock_probe_failed",
+            json!({ "code": out.code, "why": "không hỏi được ioreg — KHÔNG kết luận là màn đang mở" }),
+        );
+        return None;
+    }
+    lock_verdict(&out.stdout)
+}
+
+/// Phần THUẦN của [`screen_locked`]: đọc verdict ra khỏi chữ `ioreg` in.
+///
+/// Tách ra để bài kiểm chạm được — chuỗi thật nằm trong `IOConsoleUsers`, một
+/// dòng dài chứa cả chục khoá, và `CGSSessionScreenIsLocked` chỉ CÓ MẶT khi
+/// phiên đã từng khoá. Vắng mặt = chưa khoá lần nào, tức đang mở.
+pub fn lock_verdict(ioreg_out: &str) -> Option<bool> {
+    if !ioreg_out.contains("IOConsoleUsers") {
+        return None;
+    }
+    Some(ioreg_out.contains("\"CGSSessionScreenIsLocked\"=Yes"))
+}
+
+/// Ảnh ra đen thì NÓI ĐÚNG VÌ SAO — hàm thuần, kiểm được cả ba ngả.
+///
+/// Ba câu khác nhau cho ba trạng thái, vì việc chủ máy phải làm khác nhau: mở
+/// khoá máy · cấp một quyền · hoặc đi kiểm hộ vì huba không đo được. Gộp cả ba
+/// thành "gần như luôn là quyền" là đúng cái tôi vừa làm sai sáng nay.
+pub fn blank_frame_reason(locked: Option<bool>) -> String {
+    match locked {
+        Some(true) => "ảnh ra ĐEN vì máy đang ở **màn hình đăng nhập** (đo: \
+             `CGSSessionScreenIsLocked=Yes`). macOS không cho chụp gì ngoài khung trống khi màn \
+             đã khoá — không phải chuyện quyền. Mở khoá máy rồi `/anh` lại. Cần biết phiên đang \
+             hiện gì ngay bây giờ thì `/shot`: chữ trên màn đọc qua Terminal, khoá màn không cản."
+            .to_string(),
+        Some(false) => "chụp được nhưng KHUNG HÌNH RỖNG — ảnh toàn đen (đo: co còn 1 điểm ảnh ⟹ \
+             #000000), mà màn **không** khoá (`CGSSessionScreenIsLocked` vắng mặt). \
+             `screencapture` vẫn trả exit 0, nên đây là cách macOS từ chối im lặng khi thiếu \
+             quyền **Screen Recording**: System Settings → Privacy & Security → Screen & System \
+             Audio Recording → `+` → ⌘⇧G → dán `~/Library/Application Support/hub/bin/hubd`, bật \
+             công tắc, rồi chạy `install_update.sh` (macOS chỉ cấp quyền mới cho tiến trình khởi \
+             động lại)."
+            .to_string(),
+        None => "ảnh ra ĐEN, và huba **không đo được** máy có đang khoá màn không (`ioreg` không \
+             trả lời). Hai khả năng, kiểm theo thứ tự: máy đang ở màn hình đăng nhập (mở khoá rồi \
+             `/anh` lại), hoặc thiếu quyền Screen Recording cho \
+             `~/Library/Application Support/hub/bin/hubd`."
+            .to_string(),
+    }
+}
+
+/// Khung hình ấy có RỖNG không — `Some(true)` = toàn một màu đen.
+///
+/// 🔴 Hà 2026-08-18: *"Chụp ảnh ra den xì"* · *"Phiên đang mở"*. Đo trên máy
+/// cùng lúc: `screencapture -x` **exit 0**, ghi ra một tệp 112 KB, ảnh
+/// 3024×1964 — và mọi điểm ảnh lấy mẫu đều bằng nhau, luma 0,0. Tức macOS
+/// KHÔNG từ chối nữa (hôm 17/08 nó còn trả *"could not create image from
+/// display"*); nó trả một khung trống. Đó là hình dạng của một lời từ chối IM
+/// LẶNG: thiếu quyền Screen Recording thì khung hình không có cửa sổ nào.
+///
+/// Không đo được thì trả `None` và GHI LOG — "không kiểm được" phải khác
+/// "kiểm rồi, ảnh ổn", nếu không thì một hôm `sips` biến mất là huba lại lặng lẽ
+/// gửi ảnh đen đi.
+///
+/// Phép đo: `sips` co ảnh còn **1 điểm** rồi ghi ra BMP (không nén, byte điểm
+/// ảnh nằm thẳng trong tệp) — không cần thư viện giải mã ảnh nào. Nó ĐỎ ĐƯỢC:
+/// cùng lệnh ấy trên `DefaultDesktop.heic` trả `93 7a 43`, còn trên tấm ảnh đen
+/// vừa chụp trả `00 00 00`.
+#[cfg(target_os = "macos")]
+pub fn frame_is_blank(path: &std::path::Path) -> Option<bool> {
+    let bmp = path.with_extension("probe.bmp");
+    let out = crate::exec::run(
+        "sips",
+        &[
+            "-s",
+            "format",
+            "bmp",
+            "--resampleHeightWidth",
+            "1",
+            "1",
+            &path.display().to_string(),
+            "--out",
+            &bmp.display().to_string(),
+        ],
+        crate::exec::RunOpts {
+            timeout: Some(std::time::Duration::from_secs(10)),
+            ..Default::default()
+        },
+    )
+    .ok()?;
+    let bytes = std::fs::read(&bmp).ok();
+    let _ = std::fs::remove_file(&bmp);
+    let bytes = match (out.code, bytes) {
+        (Some(0), Some(b)) if b.len() >= 4 => b,
+        (code, _) => {
+            logging::warn(
+                "screenshot_blank_check_failed",
+                json!({ "code": code, "why": "không đo được ảnh — KHÔNG kết luận là ảnh ổn" }),
+            );
+            return None;
+        }
+    };
+    // BMP xuôi từ dưới lên, một điểm ảnh: ba byte màu nằm ở cuối tệp (byte thứ
+    // tư là alpha hoặc chèn cho chẵn 4 — bỏ qua).
+    let tail = &bytes[bytes.len() - 4..];
+    let sum: u32 = tail[..3].iter().map(|b| u32::from(*b)).sum();
+    Some(sum == 0)
+}
+
+/// Đưa cửa sổ ấy ra TRƯỚC MẶT — trước cả trong Terminal lẫn trước các ứng dụng
+/// khác.
+///
+/// 🔴 Khác [`focus_window`], và khác ở chỗ quyết định: `focus_window` chỉ đặt
+/// `frontmost` của MỘT CỬA SỔ, tức nó trả lời câu *"phím sắp gửi rơi vào cửa sổ
+/// nào"*. Hàm này trả lời câu KHÁC — *"con người có nhìn thấy cửa sổ ấy không"*
+/// — nên nó phải `activate` chính Terminal: sắp đúng thứ tự trong Terminal mà
+/// Terminal vẫn nằm sau Chrome thì trên màn hình **không có gì xảy ra cả**.
+///
+/// Công thức lấy nguyên từ [`photograph_window`], nơi nó đã chạy thật từ 17/08
+/// (ảnh gửi về Telegram đúng cửa sổ phiên). Không viết lại bằng cách khác:
+/// hôm nay đã trả giá một lần cho việc có hai bản chép của cùng một phép
+/// (`runtime::SIGNING_CN`), nên chỗ này là MỘT hàm, hai người gọi.
+#[cfg(target_os = "macos")]
+pub fn bring_to_front(window: i64) -> Result<()> {
+    osascript(&format!(
+        r#"tell application "Terminal"
+  set index of window id {window} to 1
+  activate
+end tell"#
+    ))?;
+    Ok(())
+}
+
+/// Cửa sổ nào của Terminal đang đứng trước — để KIỂM, không để đoán.
+///
+/// `osascript` trả 0 chỉ chứng minh câu lệnh chạy xong, không chứng minh cửa sổ
+/// đã ra trước (điều 4 của charter: đừng đọc mã thoát của thứ chỉ khởi chạy).
+/// Nên [`bring_to_front`] phải có người chấm bài, và người ấy hỏi lại chính
+/// Terminal.
+///
+/// `None` = Terminal không có cửa sổ nào — một câu trả lời thật, khác hẳn
+/// `Err` (không hỏi được).
+#[cfg(target_os = "macos")]
+pub fn front_window() -> Result<Option<i64>> {
+    let out = osascript(
+        r#"tell application "Terminal"
+  if (count of windows) is 0 then return ""
+  return id of front window as text
+end tell"#,
+    )?;
+    Ok(out.trim().parse::<i64>().ok())
+}
+
+#[cfg(target_os = "macos")]
+pub fn photograph_window(window: i64, path: &std::path::Path) -> Result<()> {
+    // Không đưa ra trước được thì vẫn chụp — một tấm ảnh cả màn hình còn hơn
+    // không có gì, và câu trả lời sẽ nói rõ là chưa focus được.
+    let focused = bring_to_front(window).is_ok();
+    if focused {
+        std::thread::sleep(std::time::Duration::from_millis(700));
+    }
+    let out = crate::exec::run(
+        "screencapture",
+        &["-x", &path.display().to_string()],
+        crate::exec::RunOpts {
+            timeout: Some(std::time::Duration::from_secs(20)),
+            ..Default::default()
+        },
+    )?;
+    if out.code != Some(0) || !path.exists() {
+        anyhow::bail!(
+            "screencapture không chụp được ({}). Gần như luôn là quyền **Screen Recording**: \
+             System Settings → Privacy & Security → Screen Recording → bật cho `hubad` \
+             (~/Library/Application Support/hub/bin/hubd), rồi `/anh` lại. \
+             Đo 2026-08-17: chưa cấp thì nó trả đúng câu 'could not create image from display'.",
+            crate::exec::truncate(out.stderr.trim(), 160)
+        );
+    }
+    // 🔴 Chụp được ≠ chụp thấy. Xem `frame_is_blank`: thiếu quyền thì macOS trả
+    // một khung TRỐNG với exit 0, nên không đo là gửi đi một tấm ảnh đen kèm
+    // câu "đây, màn hình của phiên".
+    let blank = frame_is_blank(path);
+    if blank == Some(true) {
+        let locked = screen_locked();
+        let _ = std::fs::remove_file(path);
+        logging::warn(
+            "screenshot_blank",
+            json!({ "window": window, "screen_locked": locked }),
+        );
+        anyhow::bail!("{}", blank_frame_reason(locked));
+    }
+    logging::info(
+        "screenshot_taken",
+        json!({ "window": window, "focused": focused,
+                "blank_checked": blank.is_some(),
+                "bytes": std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) }),
+    );
+    Ok(())
+}
+
+/// Cửa sổ ấy ĐÃ ĐÓNG chưa — và phép đo phải trỏ đúng chỗ.
+///
+/// 🔴 `id of every window` KHÔNG trả lời được câu này, dù nó là chỗ đầu tiên ai
+/// cũng nhìn: một cửa sổ đã đóng vẫn nằm trong danh sách ấy. Đo 2026-08-17, hai
+/// cửa sổ vừa đóng xong: `2169 tabs=0 visible=false` · `2170 tabs=0
+/// visible=false` — id còn nguyên, cửa sổ thì đã biến mất khỏi màn hình.
+///
+/// Tôi đã tin cái danh sách ấy đúng một lượt, và nó dẫn tôi tới một kết luận
+/// SAI ("máy khoá màn hình nên `close` không chạy") mà tôi đã nói ra với chủ
+/// máy trước khi kiểm lại. Thứ nói đúng chuyện là **số tab** và **`visible`**.
+#[cfg(target_os = "macos")]
+pub fn window_gone(window: i64) -> Result<bool> {
+    let out = osascript(&format!(
+        r#"tell application "Terminal"
+  try
+    return ((count of tabs of window id {window}) as text) & "/" & ((visible of window id {window}) as text)
+  on error
+    return "0/false"
+  end try
+end tell"#
+    ))?;
+    let t = out.trim();
+    Ok(t.starts_with("0/") || t.ends_with("false"))
+}
+
+/// Đóng cửa sổ, **rồi hỏi lại xem nó đã đi chưa**. Gọi khi ĐÃ biết tab không
+/// còn bận — xem `tab_state`.
+///
+/// 🔴 `osascript` TRẢ 0 CHO MỘT LỆNH KHÔNG LÀM GÌ — đo 2026-08-17, và đây là lần
+/// thứ hai cùng một cái bẫy trong tệp này (lần trước: `do script` trả 0 chỉ nói
+/// bytes tới tab, xem `send_exit`). Bản cũ trả `Ok(())` ngay sau lời gọi, nên
+/// nút ◻ *"đóng nó"* của route `/terminal` báo xong trong khi cửa sổ còn y
+/// nguyên. Hà, đúng lúc ấy: *"Nút tắt nhanh đâu"* — anh bấm, không có gì xảy ra.
+///
+/// Đo được (cửa sổ nháp, cùng ngày), và nó KHÔNG phải chuyện khoá màn hình —
+/// giả thuyết ấy tôi nói ra rồi phải rút lại sau khi đo đúng chỗ:
+/// · cửa sổ vừa mở, shell còn sống ⟹ `close` ĐÓNG được;
+/// · cửa sổ vừa `exit`, tab `[Process completed]`, 0 tiến trình ⟹ ĐÓNG được;
+/// · **năm cửa sổ có `claude` bị `kill`** rồi shell thoát ⟹ `close` chạy êm,
+///   trả 0, và cửa sổ đứng nguyên (`tabs=1 visible=true`), thử đủ bốn cách viết
+///   (`close window id`, `close (first window whose id is …)`,
+///   `tell window id … to close`, `close … saving no`) và cả khi Terminal đang
+///   là app trước. Cùng lúc ấy `set custom title` trên CHÍNH cửa sổ đó lại ăn
+///   ngay — tức đường Apple Event vẫn thông, chỉ riêng động từ `close` không có
+///   hiệu lực với những cửa sổ ấy.
+///
+/// Vì sao thì chưa biết (Accessibility không cho đọc cửa sổ của Terminal, và
+/// chụp màn hình cũng bị chặn, nên không nhìn được có hộp thoại nào đang treo
+/// trên chúng không). Chưa biết thì KHÔNG đoán trong câu báo lỗi — chỉ kể thứ
+/// đo được và chỉ đường ⌘W.
+/// Cửa sổ SHELL trần: gõ `exit`, chờ tiến trình chết, rồi mới đóng.
+///
+/// 🔴 Vì sao không gọi thẳng [`close_window`]: đóng một cửa sổ còn tiến trình
+/// sống bật hộp thoại *"Do you want to terminate running processes?"* của
+/// Terminal, và một modal thì **khoá mọi lệnh automation sau nó** — huba câm
+/// cho tới khi có người ngồi xuống bấm. Đây là luật đã đóng khung trong
+/// [`quit_and_close`], chỉ khác một chữ: shell thoát bằng `exit`, TUI của
+/// `claude` thoát bằng `/exit` — gõ nhầm `/exit` vào dấu nhắc zsh chỉ ra
+/// `zsh: no such file or directory` rồi cửa sổ nằm nguyên đó.
+///
+/// Khác `sessions::close_session` ở chỗ CHỜ: hàm này CHẶN cho tới khi xong,
+/// nên chỉ gọi từ một luồng có quyền chờ (`watch_terminal_job`). Đường lệnh thì
+/// vẫn phải đi qua sổ chờ đóng (`close_pending_tick`), vì nó giữ `CMD_LOCK` và
+/// một cú thoát có thể tốn hàng chục phút.
+pub fn exit_and_close_shell(window: i64, cho: std::time::Duration) -> Result<Closed> {
+    // Tab đã chết thì không có gì để thoát — gõ `exit` vào `[Process completed]`
+    // là gõ vào chỗ không ai đọc.
+    if tab_proc_count(window).unwrap_or(1) > 0 {
+        type_into(window, "exit")?;
+        let han = std::time::Instant::now();
+        while han.elapsed() < cho {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            if tab_proc_count(window).unwrap_or(1) == 0 {
+                break;
+            }
+        }
+    }
+    close_window(window)
+}
+
+#[cfg(target_os = "macos")]
+pub fn close_window(window: i64) -> Result<Closed> {
+    osascript(&format!(
+        r#"tell application "Terminal" to close (first window whose id is {window})"#
+    ))?;
+    for _ in 0..6 {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        match window_gone(window) {
+            Ok(true) => return Ok(Closed::Gone),
+            Ok(false) => {}
+            Err(e) => return Err(e.context(
+                "đã gửi lệnh đóng nhưng không hỏi lại được cửa sổ — KHÔNG biết nó đã đóng hay chưa",
+            )),
+        }
+    }
+    // 🔴 ĐÓNG KHÔNG ĐƯỢC THÌ ẨN, và nói đúng là ĐÃ ẨN — Hà bấm ⏹ bốn lượt liền
+    // rồi nhận bốn câu *"chưa đóng được"* (17/08). Câu ấy thật thà, nhưng thật
+    // thà xong thì cửa sổ rác vẫn nằm đó và danh sách vẫn dài ra.
+    //
+    // Đo cùng lúc trên CHÍNH những cửa sổ ấy: `close` không ăn, mà
+    // `set visible to false` ăn ngay. Nên huba làm được đúng một nửa việc — và
+    // một nửa nói ra được vẫn hơn không nửa nào.
+    //
+    // Ẩn KHÔNG phải đóng: cửa sổ vẫn còn trong menu Window của Terminal (⌘W khi
+    // ngồi máy), nhưng nó rời khỏi mắt và rời khỏi mọi danh sách của huba
+    // (`tabs_script` bỏ cửa sổ đã ẩn) — nên câu trả lời phải nói cả hai điều ấy.
+    let hidden = osascript(&format!(
+        r#"tell application "Terminal"
+  try
+    set visible of window id {window} to false
+    return "an"
+  on error errm
+    return "hong: " & errm
+  end try
+end tell"#
+    ))
+    .map(|s| s.trim() == "an")
+    .unwrap_or(false);
+    if hidden {
+        logging::info(
+            "window_hidden_not_closed",
+            json!({ "window": window,
+                    "why": "close chạy êm mà cửa sổ không đóng — ẩn được thì ẩn, và NÓI là ẩn" }),
+        );
+        return Ok(Closed::Hidden);
+    }
+    anyhow::bail!(
+        "Terminal nhận lệnh đóng (osascript trả 0) mà cửa sổ vẫn còn tab và vẫn hiện sau ~2 giây, \
+         ẩn nó đi cũng không xong. Đo 2026-08-17: phần lớn cửa sổ đóng được bình thường, nhưng có \
+         những cửa sổ — đo được trên năm cái từng chạy một CLI bị `kill` — thì `close` chạy êm mà \
+         không đóng, đủ mọi cách viết. Chưa rõ vì sao. Đóng tay bằng ⌘W thì được."
+    )
+}
+
+/// Tab của cửa sổ này còn TIẾN TRÌNH nào không — `None` là không còn cửa sổ.
+///
+/// Khác `tab_state`: `busy` trả lời *"có chương trình nào đang chạy"* và một
+/// shell trống thì `false`, nên `Idle` KHÔNG phân biệt được "cửa sổ chết, chỉ
+/// còn dòng `[Process completed]`" với "cửa sổ mới mở, đang ở dấu nhắc". Đúng
+/// cái phân biệt ấy là cổng an toàn cho mọi lượt đóng LẠI: id cửa sổ của
+/// Terminal đánh lại từ số nhỏ sau khi Terminal khởi động lại (đo được ngay
+/// trên máy này: id `156` nằm cạnh đám `21xx`), nên một mục cũ trong sổ có thể
+/// trỏ vào một cửa sổ MỚI — cùng họ với bài học "tty là con số ĐƯỢC DÙNG LẠI".
+///
+/// Đo 2026-08-17: cửa sổ chết `2150` → `0` · hai cửa sổ phiên đang sống →
+/// `6` (`login-zsh claude project-agent node caffeinate`). Một phiên thật luôn
+/// có ít nhất cái shell, nên `Some(0)` là "không còn gì để mất".
+#[cfg(target_os = "macos")]
+pub fn tab_process_count(window: i64) -> Result<Option<usize>> {
+    let out = osascript(&format!(
+        r#"tell application "Terminal"
+  try
+    return (count of processes of (selected tab of window id {window})) as text
+  on error
+    return "gone"
+  end try
+end tell"#
+    ))?;
+    let t = out.trim();
+    if t == "gone" {
+        return Ok(None);
+    }
+    match t.parse::<usize>() {
+        Ok(n) => Ok(Some(n)),
+        Err(_) => anyhow::bail!("Terminal trả lời lạ cho số tiến trình của cửa sổ {window}: {t:?}"),
+    }
+}
+
+/// Thử ĐÓNG LẠI một cửa sổ đã ẩn, và đo bằng thứ đo đúng chuyện.
+///
+/// 🔴 KHÔNG dùng `window_gone` ở đây, dù tên nó nghe đúng việc: nó coi
+/// `visible = false` **là đã đi** (có chủ ý — cửa sổ ẩn rời khỏi mọi danh sách
+/// của huba). Với một cửa sổ vốn ĐANG ẩn thì phép đo ấy trả `true` ngay lượt
+/// đầu, tức huba sẽ báo *"đã thoát — cửa sổ đã đóng"* cho một cửa sổ còn nguyên. Cùng một cái
+/// bẫy "phép đo trỏ nhầm chỗ" đã trả giá hai lần trong tệp này; câu hỏi ở đây
+/// là *"cửa sổ ấy còn tồn tại không"*, và `tab_state` là chỗ trả lời nó.
+///
+/// Vì sao có hàm này: 17/08 lúc 10:20Z, năm cửa sổ từ chối `close` (chạy êm,
+/// trả 0, cửa sổ đứng nguyên) nên huba ẩn chúng đi. Bốn tiếng sau, ĐÚNG những
+/// cửa sổ ấy, ĐÚNG lệnh ấy, gọi tay: cả ba cái thử đều đóng ngay lượt đầu
+/// (`1/false` → `0/false`). Nên lời từ chối kia là NHẤT THỜI, không phải thuộc
+/// tính của mấy cửa sổ đó — và thứ chữa một lời từ chối nhất thời là thử lại,
+/// chứ không phải bỏ nó nằm đó khuất mắt mãi mãi.
+#[cfg(target_os = "macos")]
+pub fn close_hidden_again(window: i64) -> Result<bool> {
+    osascript(&format!(
+        r#"tell application "Terminal" to close (first window whose id is {window})"#
+    ))?;
+    for _ in 0..6 {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        if matches!(tab_state(window)?, TabState::Gone) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Hai kết cục KHÁC NHAU của một lượt đóng, nên hai giá trị.
+pub enum Closed {
+    /// Cửa sổ đã biến mất — đo bằng số tab + `visible` (xem [`window_gone`]).
+    Gone,
+    /// `close` không ăn nhưng ẩn được: khuất mắt và khuất khỏi danh sách của
+    /// huba, mà vẫn còn trong menu Window của Terminal cho tới khi ⌘W.
+    Hidden,
+}
+
+/// Chờ tab nhả — `Ok(true)` là đã rảnh, `Ok(false)` là hết giờ mà vẫn bận.
+///
+/// 30 giây (60 × 500ms). Rộng hơn "vừa đủ cho một phiên rảnh" là có chủ ý:
+/// `claude` XẾP HÀNG chữ khi đang giữa lượt, nên `/exit` chỉ có hiệu lực sau khi
+/// lượt ấy chạy xong. Bỏ cuộc sau 10 giây thì biến một việc chỉ cần chờ thành
+/// một lời báo hỏng.
+fn cho_tab_ranh(window: i64) -> Result<ChoTab> {
+    for _ in 0..60 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        match tab_state(window) {
+            Ok(TabState::Idle) => return Ok(ChoTab::Ranh),
+            Ok(TabState::Busy) => {}
+            // Cửa sổ biến mất trong lúc chờ là việc ĐÃ XONG, không phải huba mù:
+            // Terminal tự dọn cửa sổ khi shell thoát (tuỳ hồ sơ), và chủ máy
+            // ngồi ngay đấy bấm ⌘W cũng ra đúng kết cục này.
+            Ok(TabState::Gone) => {
+                logging::info(
+                    "close_window_gone_while_waiting",
+                    json!({ "window": window,
+                            "why": "cửa sổ không còn trong lúc chờ /exit — đã đóng, không phải hỏi không được" }),
+                );
+                return Ok(ChoTab::CuaSoDaDi);
+            }
+            // Không hỏi được thì DỪNG, đừng đóng liều: đóng khi chưa chắc đã
+            // thoát là đúng cái bật hộp thoại.
+            Err(e) => return Err(e.context("không hỏi được tab còn bận không")),
+        }
+    }
+    Ok(ChoTab::VanBan)
+}
+
+/// Ba kết cục của một lượt chờ tab — ba giá trị, vì chúng dẫn tới ba việc khác
+/// nhau và gộp bất kỳ hai cái nào cũng là một `bool` mang hai nghĩa.
+enum ChoTab {
+    /// Tab đã về dấu nhắc — đóng được.
+    Ranh,
+    /// Hết giờ chờ mà tab vẫn có tiến trình chạy.
+    VanBan,
+    /// Cửa sổ biến mất trong lúc chờ — việc đã xong bằng đường khác.
+    CuaSoDaDi,
+}
+
+pub fn quit_and_close(window: i64) -> Result<Closed> {
+    // Một đường gõ `/exit` duy nhất — xem `send_exit`. Trước 2026-08-15 đây là
+    // bản chép tay THỨ HAI của cùng một dòng `do script`, và nó là bản thiếu cú
+    // Enter rời.
+    send_exit(window)?;
+    let mut still_busy = match cho_tab_ranh(window)? {
+        ChoTab::CuaSoDaDi => return Ok(Closed::Gone),
+        ChoTab::Ranh => false,
+        ChoTab::VanBan => true,
+    };
+
+    // 🔴 `/exit` BỊ XẾP HÀNG THÌ CHỜ BAO LÂU CŨNG KHÔNG XONG — vá 2026-08-30.
+    //
+    // Hà: *"chuyển xong cửa sổ cũ không đóng được"*. Đo trên nhật ký thật, phiên
+    // `a56224e8` cửa sổ `18224`, HAI lượt liền trong ngày 30/08:
+    //
+    // ```text
+    // 07:27:59  session_close_window
+    // 07:28:00  keys_exit_sent  landed="Gone"      ← chữ ĐÃ rời ô nhập
+    // 07:28:04 → 07:38:50  close_still_busy ×7
+    // 07:38:51  close_gave_up  waited_sec=650
+    // 07:40:50  (lượt hai, y hệt) … close_gave_up  waited_sec=697
+    // ```
+    //
+    // `Delivered::Gone` chỉ nói **chữ đã rời ô nhập**, mà một tin XẾP HÀNG cũng
+    // rời ô nhập — nó chuyển xuống danh sách `❯ (…)` phía dưới. Nên hai chuyện
+    // rất khác nhau (*đã gửi* và *đang nằm chờ*) đọc ra cùng một giá trị, và
+    // huba đứng đợi 11 phút một thứ về bản chất sẽ không tới.
+    //
+    // Người ngồi trước máy làm gì lúc ấy? Bấm **Esc** cắt lượt đang chạy rồi gõ
+    // lại — chính câu lời-từ-chối cũ đã bảo chủ máy làm thế (*"Cắt lượt đang
+    // chạy bằng /key esc rồi /close"*). Tức huba biết cách chữa, biết từ lâu, và
+    // bắt anh tự đi làm — đúng cái phép thử CẦU NỐI trong CLAUDE.md gạt bỏ.
+    //
+    // Nên: đo hàng chờ (`queued_count` — huba đã có sẵn từ 18/08), cắt lượt, gõ
+    // lại. Một vòng, không phải một vòng lặp: cắt xong mà vẫn bận thì đó là một
+    // sự thật khác, và câu báo bên dưới nói ra sự thật ấy chứ không thử mãi.
+    if still_busy {
+        let hang_cho = screen_text(window).map(|s| queued_count(&s)).unwrap_or(0);
+        logging::warn(
+            "close_exit_queued",
+            json!({ "window": window, "queued": hang_cho,
+                    "why": "30 giây vẫn Busy — `/exit` nhiều khả năng đang nằm trong hàng chờ \
+                            sau một lượt đang chạy",
+                    "next": "cắt lượt bằng Esc rồi gõ lại /exit" }),
+        );
+        // Esc cắt lượt đang chạy. Đây là thao tác PHÁ (lượt đang chạy mất), và
+        // nó chỉ hợp lệ vì cả hai chỗ gọi hàm này đều đã có nghĩa "đóng phiên
+        // này lại": `/close` và bước dọn sau một lượt bàn giao đã xong.
+        //
+        // 🔴 PHÍM RỜI, KHÔNG PHẢI `do script` — Hà hỏi thẳng 2026-08-30: *"Nó có
+        // phải là bấm phím thực sự như tôi ngồi máy bấm ở bàn phím không"*.
+        //
+        // Bản đầu của tôi gọi `press(window, "esc")`, tức GHI byte `0x1B` vào
+        // tab qua `do script`. Với cái tty thì byte ấy đúng là thứ phím Esc thật
+        // đẩy vào — nhưng `do script` **kèm một CR không tắt được**
+        // (`do_script`), và một cú Esc thật thì không. Trên một màn đang mở hộp
+        // chọn, CR ấy là một cú CHỐT: đúng cái giá đã trả 19/08 khi một Enter
+        // lạc chốt `☐ RPC pool` → `☒` trên bảng hỏi của phiên amm.
+        //
+        // `send_bare` → `cgkeys::post` → `CGEventPostToPid` là phím RỜI thật,
+        // không kèm gì. Nó đắt hơn hai thứ, và cả hai đều phải khai:
+        // ① đòi quyền Trợ năng cấp cho đúng bản `hubad` đã ký — thiếu quyền thì
+        //    sự kiện rơi vào hư không **trong im lặng** (`cgkeys.rs` luật 2);
+        // ② `send_bare` đưa cửa sổ ấy lên trước (`focus_window`), vì phím rời đi
+        //    tới cả TIẾN TRÌNH chứ không tới một cửa sổ.
+        //
+        // Đường lùi có ĐIỀU KIỆN, không lùi bừa: hụt phím rời thì chỉ được ghi
+        // byte qua `do script` khi màn KHÔNG có hộp chọn. Có hộp chọn mà vẫn
+        // ghi là đổi một lượt đóng cửa sổ lấy một câu trả lời sai trong việc của
+        // chủ máy — thà để `/exit` nằm trong hàng chờ và báo thật.
+        // Luật "Esc phải là phím RỜI" nay sống ở MỘT chỗ: `press_escape`. Bản
+        // chép nằm ở đây từ 30/08 chính là bản không ai mang sang `/key`, và
+        // hôm 01/09 đúng cái bug ấy quay lại ở cửa bên cạnh.
+        match press_escape(window) {
+            EscHow::Bare => logging::info(
+                "close_interrupt_sent",
+                json!({ "window": window, "duong": "cgkeys (phím rời, không kèm CR)" }),
+            ),
+            EscHow::WrittenByte => logging::warn(
+                "close_interrupt_written_byte",
+                json!({ "window": window,
+                        "effect": "hụt phím rời ⟹ ghi byte 0x1B qua do script; màn không có hộp chọn nên CR đi kèm không chốt gì" }),
+            ),
+            EscHow::Skipped(why) => logging::warn(
+                "close_interrupt_skipped",
+                json!({ "window": window, "why": why,
+                        "effect": "bỏ lượt cắt — vẫn thử gõ lại /exit" }),
+            ),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        send_exit(window)?;
+        still_busy = match cho_tab_ranh(window)? {
+            ChoTab::CuaSoDaDi => return Ok(Closed::Gone),
+            ChoTab::Ranh => false,
+            ChoTab::VanBan => true,
+        };
+        logging::info(
+            "close_retried_after_interrupt",
+            json!({ "window": window, "queued_truoc": hang_cho, "con_ban": still_busy }),
+        );
+    }
+    if still_busy {
+        // 🔴 Câu này phải kể thứ ĐO ĐƯỢC, không phải thứ giả định.
+        //
+        // Bản cũ mở đầu bằng *"đã gõ /exit"* — một mệnh đề về hành động, phát ra
+        // từ chỗ chỉ biết `osascript` trả 0. Hà đọc lại câu ấy rồi đi mở cửa sổ
+        // ra soi và không thấy `/exit` đâu (2026-08-15), tức nó tiêu đúng thứ
+        // đắt nhất một dòng log có: lòng tin. Thứ hàm này THẬT SỰ đo được chỉ là
+        // `tab_state` — nên nó chỉ được nói chừng ấy, và chỉ đường tới dòng log
+        // `keys_exit_sent` cho phần còn lại.
+        anyhow::bail!(
+            "đã gửi `/exit`, chờ 30 giây, CẮT lượt bằng Esc rồi gửi lại và chờ thêm 30 giây — `tab_state` vẫn `Busy`, tức **CLI chưa thoát** (`busy` chỉ về `false` khi tiến trình trong tab kết thúc). Còn lại hai khả năng: tab đang chạy một tiến trình KHÔNG phải `claude` (một lệnh nền dài), hoặc màn đang treo một hộp thoại nuốt phím. Cửa sổ giữ nguyên (đóng lúc này sẽ bật hộp thoại 'terminate running processes'). Mở `/shot` xem màn đang có gì. Lệnh thoát có được đẩy đi hay không: xem log `keys_exit_sent` và `close_exit_queued`"
+        );
+    }
+    // Một đường đóng duy nhất — và nó tự KIỂM. Bản trước chép tay lại dòng
+    // `close` ở đây, nên khi `close_window` học được phép kiểm thì nhánh này vẫn
+    // mù: cùng hình dạng "bản chép tay thứ hai là bản thiếu" đã trả giá ở
+    // `send_exit`.
+    close_window(window)
+}
+
+/// Gõ `text` vào cửa sổ của phiên, rồi Enter.
+///
+/// `enter = false` cho các lựa chọn cần phím riêng (mũi tên, Esc) — xem
+/// [`press`].
+/// Đẩy chữ vào ô nhập. **Chỉ gõ** — không đảm bảo nó được GỬI.
+///
+/// 🔴 Hàm này từng mang một tham số `enter: bool` mà dòng đầu thân hàm là
+/// `let _ = enter;` — tức một lời hứa trong chữ ký, bỏ qua trong mã. Gỡ
+/// 2026-08-15, sau khi chính tôi đọc `type_into(w, task, true)` ở một chỗ gọi
+/// MỚI và tin là nó đã bấm Enter hộ. Một tham số nói dối nguy hơn một tham số
+/// thiếu: cái thiếu thì trình dịch kêu, cái nói dối thì không.
+#[cfg(target_os = "macos")]
+pub fn type_into(window: i64, text: &str) -> Result<()> {
+    osascript(&do_script(window, &as_string(text)))?;
+    Ok(())
+}
+
+/// XOÁ SẠCH ô nhập của một cửa sổ — bằng đúng số phím xoá, như người ngồi máy.
+///
+/// 🔴 Hà 2026-08-16: *"chèn 2 nút 1 nút enter 1 nút xóa"* · *"còn lăn tăn nó là
+/// text mờ hay tỏ thì thêm 1 nút xóa bên cạnh nữa để tự thao tác"*.
+///
+/// Bốn phép đo trên TUI thật (cửa sổ nháp, 2026-08-16) dẫn tới đúng cách này —
+/// ba cách "hiển nhiên" hơn đều KHÔNG ăn, và đó là phần đáng nhớ:
+/// · `Ctrl+C` (ETX): chữ y nguyên, không xoá cũng không gửi;
+/// · `Ctrl+U` (kill-line) và `Ctrl+A`+`Ctrl+K`: y nguyên;
+///   ⟹ qua `do script`, ký tự điều khiển KHÔNG hành xử như phím — cả lượt ghi
+///   vào TUI như một cú DÁN, nên chúng chỉ là byte trong nội dung.
+/// · `DEL` (127) lặp đúng số ký tự đang có: **ô sạch**.
+///
+/// Và cái chốt làm nó an toàn: **`ESC` ở CUỐI payload chặn được cái CR** mà
+/// `do script` luôn kèm (đo: `"chữ" & ESC` ⟹ chữ nằm lại trong ô, không gửi).
+/// Không có nó thì mọi lượt xoá kết thúc bằng một cú Enter — tức nút "xoá" hoá
+/// thành nút "gửi", đúng thứ không lùi lại được.
+///
+/// Trả [`Cleared`] — ba kết cục, KHÔNG tự khen: chỗ gọi phải nói đúng thứ đã
+/// xảy ra.
+#[cfg(target_os = "macos")]
+pub fn clear_box(window: i64) -> Result<Cleared> {
+    // 🔴 NHIỀU VÒNG, vì phép đếm chỉ thấy phần HIỆN RA — Hà 2026-08-19, bấm ⊠
+    // hai lần liền trên `[dwork]` và cả hai lần `keys_clear_incomplete`.
+    //
+    // Trong ô lúc ấy là khối kết quả `▶️` bốn dòng, dài hơn phần màn còn trống,
+    // nên `input_box_text` đọc ra ~70 ký tự trong khi nội dung thật vài trăm.
+    // Bản cũ bắn đúng-bấy-nhiêu-cộng-tám DEL rồi hỏi lại **một lần** — tức nó
+    // luôn xoá thiếu, và luôn kết luận đúng ("chưa sạch") về một việc nó chưa
+    // làm xong.
+    //
+    // Và không đo được TIẾN ĐỘ bằng phần nhìn thấy: DEL xoá lùi từ CON TRỎ, mà
+    // con trỏ nằm ở CUỐI khối — tức ở phần khuất dưới mép màn. Xoá thật vẫn
+    // không làm dòng nhìn thấy đổi một chữ nào, nên "không đổi ⟹ dừng" là một
+    // phép đo mù. Đường đúng là bắn từng lô rồi hỏi lại **ô đã trống chưa**,
+    // đúng khuôn `clear_queue`: không tin cú bấm, tin lượt đọc sau nó.
+    // 🔴 XOÁ HẾT, không xoá cho có — Hà 2026-08-19: *"Sửa lại lệnh clear thành
+    // xóa hết text ở ô chat"*. Trần đặt theo thứ DÀI NHẤT huba có thể tự dán vào
+    // đó: khối kết quả `▶️` mang tối đa `CMD_OUT_MAX` = 3000 ký tự cộng phần
+    // bọc. 16 lô × 400 phủ 6400 — hơn gấp đôi, và vòng lặp dừng NGAY khi ô đọc
+    // ra trống, nên ô một dòng vẫn xong sau đúng một lô.
+    const ROUNDS: usize = 16;
+    const BATCH: usize = 400;
+    for _ in 0..ROUNDS {
+        let n = match box_state(&screen_text(window)?) {
+            BoxState::Empty => return Ok(Cleared::Clean),
+            BoxState::NoBox => return Ok(Cleared::NoBox),
+            BoxState::Text(n) => n,
+        };
+        // Thừa vài phím: con trỏ có thể không ở cuối, và một ô nhiều dòng đếm ra
+        // ngắn hơn thực tế. DEL thừa vào ô trống thì không làm gì.
+        let dels: String = std::iter::repeat_n('\u{7f}', (n + 8).max(BATCH)).collect();
+        osascript(&do_script(
+            window,
+            &format!("({} & (ASCII character 27))", as_string(&dels)),
+        ))?;
+        std::thread::sleep(std::time::Duration::from_millis(600));
+    }
+    match box_state(&screen_text(window)?) {
+        BoxState::Empty => Ok(Cleared::Clean),
+        BoxState::NoBox => Ok(Cleared::NoBox),
+        BoxState::Text(left) => {
+            logging::warn(
+                "keys_clear_gave_up",
+                json!({ "window": window, "rounds": ROUNDS, "batch": BATCH,
+                        "left_seen": left,
+                        "effect": "xoá hết ngần ấy lô mà ô nhập vẫn còn chữ — chỗ gọi phải nói là CHƯA sạch" }),
+            );
+            Ok(Cleared::TextLeft)
+        }
+    }
+}
+
+/// Ô nhập trên MỘT màn chụp — ba ca, không gộp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoxState {
+    /// Màn không có ô nhập nào: hộp chọn/hộp quyền đang che, hoặc phiên đã
+    /// thoát về shell.
+    NoBox,
+    /// Có ô, trống.
+    Empty,
+    /// Có ô, đang giữ chừng ấy ký tự (phần NHÌN THẤY).
+    Text(usize),
+}
+
+/// Đọc [`BoxState`] của một màn. THUẦN.
+///
+/// 🔴 [`input_box_text`] trả `None` cho CẢ "ô trống" LẪN "không có ô" — hỏi
+/// [`box_start`] trước thì hai ca ấy mới tách ra được. Gộp chúng là đúng lỗi đo
+/// được 2026-10-01 ở vòng tự gỡ kẹt (`pipeline::o_sau_cu_bam`): phiên đã thoát
+/// về shell được đọc thành "ô trống ⟹ đã gửi". Ở [`clear_box`] cùng lỗi ấy trả
+/// `Ok(true)` ⟹ `/clear` báo *"🧽 Đã xoá ô nhập"* cho một lượt KHÔNG bấm phím nào.
+pub fn box_state(screen: &str) -> BoxState {
+    if box_start(screen).is_none() {
+        return BoxState::NoBox;
+    }
+    match input_box_text(screen) {
+        Some(t) => BoxState::Text(t.chars().count()),
+        None => BoxState::Empty,
+    }
+}
+
+/// Kết cục một lượt [`clear_box`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cleared {
+    /// Đọc lại: ô trống.
+    Clean,
+    /// Đọc lại: ô vẫn còn chữ.
+    TextLeft,
+    /// Màn không có ô nhập — không có gì để xoá, và KHÔNG được khai là đã xoá.
+    NoBox,
+}
+
+/// Trần số vòng của [`clear_queue`] — hàng chờ dài hơn thế thì nói ra, đừng quay mãi.
+#[cfg(target_os = "macos")]
+const CLEAN_MAX_ROUNDS: usize = 25;
+
+/// Xoá SẠCH hàng chờ của một phiên: `(đã xoá, còn lại)`.
+///
+/// 🔴 Hà 2026-08-18: *"Thêm lệnh clean xóa hết ở chờ"*. Đường đi là cái mà chính
+/// TUI quảng cáo trên màn — *"Press up to edit queued messages"*: `↑` lấy tin
+/// cuối RA KHỎI hàng và đặt vào ô nhập, rồi xoá ô ấy đi là tin biến mất.
+///
+/// Ba điều hàm này KHÔNG làm, mỗi điều vá một cách hỏng đã trả giá ở chỗ khác:
+///
+/// - **Không tin cú bấm.** Mỗi vòng ĐỌC LẠI màn và đếm ([`queued_count`]); hàng
+///   chờ không giảm thì dừng ngay và nói ra, chứ không quay đủ 25 vòng rồi báo
+///   một câu chung chung. Cùng luật với `close_step`: phán đoán dựa trên phép
+///   đo sau mỗi bước, không dựa trên mã trả về của thứ vừa gửi đi.
+/// - **Không để cái CR của `do script` gửi tin đi lại.** Terminal kèm một CR vào
+///   cuối MỌI lượt ghi (xem `press_writes`), mà lúc ấy ô nhập vừa NHẬN nội dung
+///   tin vừa lấy ra — một CR ở đó là gửi lại đúng cái mình định xoá. Nên `↑`,
+///   dãy DEL và `ESC` đi trong **CÙNG một lượt ghi**: `ESC` cuối payload chặn
+///   được CR ở ô nhập (đo trong `clear_box`).
+/// - **Không đụng vào lượt đang chạy.** Chỉ hàng chờ; phiên vẫn chạy tiếp việc
+///   nó đang làm. Muốn cắt lượt ấy thì đó là `/key esc`, một lệnh khác.
+#[cfg(target_os = "macos")]
+pub fn clear_queue(window: i64) -> Result<(usize, usize)> {
+    let mut left = queued_count(&screen_text(window)?);
+    let start = left;
+    if left == 0 {
+        return Ok((0, 0));
+    }
+    for _ in 0..CLEAN_MAX_ROUNDS {
+        // Nhiều DEL hơn hẳn một tin dài: DEL thừa vào ô trống không làm gì
+        // (cùng lý do `clear_box` bắn dư 8 cái).
+        let dels: String = std::iter::repeat_n('\u{7f}', 600).collect();
+        let payload = format!(
+            "((ASCII character 27) & \"[A\" & {} & (ASCII character 27))",
+            as_string(&dels)
+        );
+        osascript(&do_script(window, &payload))?;
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let now = queued_count(&screen_text(window)?);
+        if now >= left {
+            // Không giảm ⟹ `↑` không lấy được tin ra. Nói ra chỗ đứng thật.
+            logging::warn(
+                "clean_queue_stuck",
+                json!({ "window": window, "left": now, "removed": start - now,
+                        "why": "hàng chờ không giảm sau một vòng ↑+xoá ô" }),
+            );
+            return Ok((start - now, now));
+        }
+        left = now;
+        if left == 0 {
+            break;
+        }
+    }
+    logging::info(
+        "clean_queue_done",
+        json!({ "window": window, "removed": start - left, "left": left }),
+    );
+    Ok((start - left, left))
+}
+
+/// Gõ chữ **và gửi đi** — một chỗ duy nhất giữ cú Enter rời.
+///
+/// 🔴 Luật 13, trả giá cả tối 2026-08-12: `do script` đẩy chữ + dấu xuống dòng
+/// trong CÙNG một lượt ghi, và TUI của `claude` đọc lượt ấy như một cú **DÁN** —
+/// dấu xuống dòng rơi vào NỘI DUNG thay vì kết thúc nó. Chữ ký của lỗi là câu
+/// Hà tả: *"gửi xong im lặng mãi, gửi lần nữa lại gộp thành 1 tin rồi enter"*.
+///
+/// Nên phải là hai lượt ghi RỜI, giãn nhau (400ms rồi 1000ms): pty giữ đúng thứ
+/// tự, và cú thứ hai tới như một phím thật.
+///
+/// 🔴 NHÌN RỒI MỚI BẤM — 2026-08-16. Bản trước bắn hai Enter **vô điều kiện**,
+/// dựa trên câu "Enter thừa vào ô TRỐNG thì `claude` không làm gì, nên lặp lại
+/// an toàn theo đúng nghĩa idempotent". Câu ấy sai ở chính chỗ nó tự tin nhất:
+/// Enter khi ấy là LF (xem `key_payload`), và LF vào ô trống **không phải là
+/// không làm gì** — nó chèn một dòng trống, ô nhập thành nhiều dòng, gợi ý mờ
+/// biến mất. Hai cú vô điều kiện ⟹ hai dòng rác sau MỖI lần gõ, và Hà đọc ra
+/// chúng trong ảnh chụp trước khi tôi đọc ra chúng trong mã.
+///
+/// Và cái cớ để bắn vô điều kiện cũng không còn: đo lại hôm nay trên TUI thật,
+/// `do script "chữ"` **tự gửi** (CR nằm sẵn trong dấu mà `do script` kèm) — cả
+/// chữ ngắn lẫn câu 45 ký tự. Nên cú Enter rời không phải luật, nó là THUỐC cho
+/// đúng ca chữ nằm lại: hỏi `still_in_box` rồi mới bấm, đúng như CLAUDE.md §13
+/// đã tả mà mã thì chưa làm.
+///
+/// Ba cửa, cả ba đều đo được chứ không đoán: chữ còn nằm trong ô · màn không có
+/// hộp chọn (ở đó Enter là CHỐT, và chốt hộ chủ máy là thứ không lùi lại được) ·
+/// đọc được màn (đọc không được thì KHÔNG bấm — mù mà vẫn ra tay là đúng cái
+/// bẫy `Look::Blind` sinh ra để chặn).
+///
+/// 📌 Route `/type` giữ vòng lặp riêng của nó (`pipeline.rs`, nhánh `!is_key`)
+/// vì nó còn ghi log từng lượt bấm; hai chỗ phải kể CÙNG một câu chuyện — sửa
+/// một bên thì sang bên kia đọc lại.
+pub fn type_and_send(window: i64, text: &str) -> Result<Delivered> {
+    type_into(window, text)?;
+    for wait_ms in [400u64, 1000] {
+        std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+        let screen = match screen_text(window) {
+            Ok(s) => s,
+            Err(e) => {
+                // Không đọc được màn thì không bấm, và nói ra: một Enter bắn mù
+                // không lùi lại được.
+                logging::warn(
+                    "keys_send_check_blind",
+                    json!({ "window": window, "err": e.to_string(),
+                            "effect": "không kiểm được chữ đã đi chưa — KHÔNG bấm Enter lượt này" }),
+                );
+                return Ok(Delivered::Unverified(format!("không đọc được màn: {e}")));
+            }
+        };
+        if !still_in_box(&screen, text) {
+            // Chữ đã rời ô nhập — `do script` gửi được ngay, đường thường.
+            return Ok(Delivered::Gone);
+        }
+        if !parse_choices(&screen).is_empty() {
+            logging::warn(
+                "keys_send_held_dialog",
+                json!({ "window": window,
+                        "effect": "chữ còn trong ô nhập nhưng màn đang có hộp chọn — Enter ở đó là CHỐT, nên không bấm" }),
+            );
+            return Ok(Delivered::StillInBox);
+        }
+        press(window, "enter")?;
+    }
+    // Bấm hết cả hai cú Enter mà lượt đọc cuối vẫn thấy chữ nằm đó ⟹ ĐỌC LẠI
+    // một lần nữa rồi mới phán. Cú Enter thứ hai cần thời gian của nó, và một
+    // câu "chưa gửi được" nói ra vì không thèm nhìn lại thì cũng sai y như câu
+    // "đã gửi" nói ra vì không thèm nhìn.
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    match screen_text(window) {
+        Ok(s) if !still_in_box(&s, text) => Ok(Delivered::Gone),
+        Ok(_) => {
+            logging::warn(
+                "keys_send_left_in_box",
+                json!({ "window": window,
+                        "effect": "gõ xong, bấm đủ hai cú Enter, chữ VẪN nằm trong ô nhập — chỗ gọi phải nói đúng như vậy" }),
+            );
+            Ok(Delivered::StillInBox)
+        }
+        Err(e) => Ok(Delivered::Unverified(format!("không đọc được màn: {e}"))),
+    }
+}
+
+/// Chữ huba vừa gõ ĐÃ ĐI CHƯA — ba kết cục, không gộp.
+///
+/// 🔴 Hà 2026-08-19, ảnh chụp ô nhập `[dwork]` mang nguyên khối kết quả `▶️`:
+/// *"nội dung sao bị chèn lung tung ở đâu vào ô chat"*. Log cùng lúc:
+/// `runin_ran code=0` rồi huba trả lời *"✅ Đã chạy trên máy rồi dán kết quả
+/// vào…"* — trong khi khối ấy nằm nguyên trong ô, chưa gửi, và vẫn còn ở đó
+/// **một tiếng sau**.
+///
+/// `type_and_send` trả `Ok(())` cho cả BA đường ra của nó — gửi được, không
+/// bấm vì có hộp chọn, và mù vì không đọc được màn — nên chỗ gọi không có cách
+/// nào nói khác đi. Cùng một hình dạng với `Look` và `TabState`: một hàm biết
+/// ba chuyện mà chỉ kể được một.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delivered {
+    /// Chữ đã rời ô nhập — đo bằng chính màn, không phải bằng mã trả về.
+    Gone,
+    /// Chữ VẪN nằm trong ô nhập. Nó ở đó, người ta nhìn thấy nó, và nó chưa chạy.
+    StillInBox,
+    /// huba không kiểm được (không đọc được màn) — KHÔNG được đọc thành "xong".
+    Unverified(String),
+}
+
+/// Gửi chữ vào cửa sổ bằng `do script` — API CỦA CHÍNH Terminal.
+///
+/// Đường cũ đi qua `System Events keystroke`, và macOS chặn thẳng:
+/// *"osascript is not allowed to send keystrokes (1002)"*. Cấp Accessibility
+/// cho `hubad` không gỡ được, vì thứ gọi AXAPI là `/usr/bin/osascript` —
+/// một binary hệ thống, không gán quyền cho nó qua đường daemon được (đo
+/// 2026-08-10: cấp quyền rồi khởi động lại daemon, vẫn 1002).
+///
+/// `do script` thì khác hẳn: nó là scripting API của Terminal, chỉ cần quyền
+/// **Automation** — thứ huba đã có, bằng chứng là nó đang đọc được `contents of
+/// selected tab`. Nó đẩy chữ vào đúng tab như người gõ, kể cả khi có chương
+/// trình đang chạy phía trước.
+///
+/// ⚠ `do script` LUÔN kèm một dấu xuống dòng — không tắt được. Với ô nhập của
+/// `claude` thì đó đúng là điều ta muốn (gõ xong là gửi), nhưng nó cũng có
+/// nghĩa: không có cách "gõ mà chưa gửi" qua đường này.
+#[cfg(target_os = "macos")]
+fn do_script(window: i64, applescript_string: &str) -> String {
+    format!(
+        r#"tell application "Terminal"
+  do script {applescript_string} in selected tab of window id {window}
+end tell"#
+    )
+}
+
+/// Nhãn này có phải mục "gõ chữ tự do" của `AskUserQuestion` không.
+///
+/// 🔴 Hà 2026-08-31: *"Lựa chọn type something nhưng bấm vào đó lại không nhập
+/// được nội dung mà nó lại bị bỏ qua luôn"*.
+///
+/// Vì sao phải nhận riêng nó, và vì sao nó KHÔNG giống mọi mục khác: bấm một mục
+/// thường là chốt xong một câu; bấm mục này thì `claude` mở một ô nhập chữ, mà
+/// **mọi lượt ghi của `do script` đều kèm một CR không tắt được** (xem
+/// [`do_script`]). Cái CR ấy rơi thẳng vào ô vừa mở và gửi một chuỗi RỖNG.
+///
+/// Đo được trên bảng thật của phiên `[dwork]`, 2026-08-31 15:58: Hà bấm `3`
+/// (`Type something.`) rồi không gõ gì, và thanh tab đọc lại ra
+/// `←  ☒ Q2 chọn mốc  ☐ Q3 hai lượt  ✔ Submit  →` — Q2 **đã bị đánh dấu trả
+/// lời** bằng chuỗi rỗng, bảng nhảy sang Q3. Không một tiếng nào báo.
+///
+/// Nên chỗ gọi phải TỪ CHỐI bấm trần mục này và đi hỏi nội dung trước — xem
+/// `pipeline::FREETEXT_KEY`.
+///
+/// Nhận bằng HÌNH DẠNG chứ không bằng một danh sách chép tay: bỏ ô `[ ]`/`☐`
+/// dẫn đầu, bỏ dấu câu cuối, rồi so **không phân biệt hoa thường** với đúng cụm
+/// `claude` in ra. `Type something else` là biến thể có thật khi bảng đã có sẵn
+/// một câu trả lời tự do.
+/// ⚠ Nhận cả DÒNG THÔ (`  3. Type something.  `), không chỉ nhãn đã bóc.
+///
+/// Chỗ gọi hôm nay đưa vào nhãn từ [`parse_choices`], tức số thứ tự đã được bóc
+/// sẵn — nên vế ấy là phòng xa. Nhưng hai chiều hỏng ở đây KHÔNG cân nhau: nhận
+/// THỪA thì cùng lắm huba đi đường phím rời cho một mục thường (vẫn chọn đúng
+/// mục ấy, chỉ là không kèm Enter); nhận HỤT thì nó bấm trần một ô chữ tự do và
+/// **ăn mất câu trả lời**. Nên nghiêng về phía nhận.
+pub fn free_text_choice(label: &str) -> bool {
+    let bo_dau = |s: &str| {
+        s.trim()
+            .trim_start_matches(|c: char| {
+                matches!(c, '[' | ']' | '☐' | '☒' | '☑' | '✔' | '❯' | '•' | '*' | '-')
+                    || c.is_whitespace()
+            })
+            .trim()
+            .to_string()
+    };
+    let mut l = bo_dau(label);
+    // `1. ` · `12. ` — số thứ tự do TUI in ra, không thuộc về nhãn. Cùng phép
+    // bóc với `pipeline::choice_anchor`; giữ trần 2 chữ số vì hộp chọn của
+    // `claude` không bao giờ dài hơn thế.
+    if let Some(i) = l.find(". ") {
+        if i > 0 && i <= 2 && l[..i].chars().all(|c| c.is_ascii_digit()) {
+            l = bo_dau(&l[i + 2..]);
+        }
+    }
+    let l = l.trim_end_matches(['.', '…', ' ']).to_ascii_lowercase();
+    l == "type something" || l == "type something else"
+}
+
+/// Cú Esc ấy đi bằng đường nào — hoặc vì sao KHÔNG đi.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EscHow {
+    /// Phím RỜI qua `cgkeys` — đúng một cú Escape, không kèm gì.
+    Bare,
+    /// Rơi về ghi byte `0x1B` qua `do_script`. Chỉ được phép khi màn KHÔNG có
+    /// hộp chọn, vì lượt ghi ấy kèm một CR và CR trên hộp chọn là một cú CHỐT.
+    WrittenByte,
+    /// KHÔNG gửi gì: hụt phím rời mà màn đang có hộp chọn (hoặc không đọc được
+    /// màn để mà biết). Trạng thái riêng, không được đọc thành "đã bấm".
+    Skipped(String),
+}
+
+/// Bấm Esc như người ngồi ở bàn phím bấm — phím RỜI, không kèm dấu xuống dòng.
+///
+/// 🔴 Hà 2026-09-01: `/key esc` vào phiên `projects-f8`, huba đáp *"đã bấm 'esc'
+/// nhưng màn KHÔNG đổi"*. Phím đã rời khỏi huba thật, mà màn `/usage` đứng
+/// nguyên.
+///
+/// Gốc: `do_script` **kèm một CR không tắt được**. Một Escape đứng MỘT MÌNH là
+/// phím Escape; `ESC` rồi tới ngay một byte khác thì terminal đọc thành một
+/// CHUỖI THOÁT (đúng cách `ESC[A` mang nghĩa mũi tên lên) — nên `ESC`+`CR` bị
+/// nuốt như một chuỗi lạ và **không có cú Escape nào tới nơi**.
+///
+/// Đo trên cửa sổ thật (`tests/bare_esc_live.rs`, 2026-09-01, cửa sổ 1131):
+/// màn `/usage` 2333 ký tự có `Esc to cancel` ⟹ bắn Esc RỜI ⟹ 1368 ký tự, dấu ấy
+/// biến mất. Khác đúng một thứ: đường gửi.
+///
+/// ⚠ **VÌ SAO LÀ MỘT HÀM, KHÔNG PHẢI HAI BẢN CHÉP.** Luật này đã được viết ra
+/// một lần rồi — ngày 2026-08-30, cho đường `/close`, đúng lúc Hà hỏi *"Nó có
+/// phải là bấm phím thực sự như tôi ngồi máy bấm ở bàn phím không"*. Nó nằm
+/// nguyên trong thân `close_window` và **không ai mang nó sang `/key`**, nên
+/// hôm nay đúng cái bug ấy quay lại ở cửa bên cạnh. Hai bản chép của một luật là
+/// hai bản sẽ lệch; chỗ duy nhất là đây.
+///
+/// Đường lùi có ĐIỀU KIỆN, không lùi bừa: hụt phím rời thì chỉ được ghi byte khi
+/// màn KHÔNG có hộp chọn. Có hộp chọn mà vẫn ghi là đổi một cú Esc lấy một câu
+/// trả lời sai trong việc của chủ máy — và "không đọc được màn" tính là CÓ.
+pub fn press_escape(window: i64) -> EscHow {
+    match send_bare(window, &["esc".to_string()]) {
+        Ok(()) => EscHow::Bare,
+        Err(e) => {
+            let co_hop_chon = screen_text(window)
+                .map(|s| !parse_choices(&s).is_empty())
+                .unwrap_or(true);
+            if co_hop_chon {
+                return EscHow::Skipped(format!(
+                    "hụt phím rời ({e}) và màn đang có hộp chọn (hoặc không đọc được) \
+                     ⟹ KHÔNG ghi byte qua do script, vì CR đi kèm sẽ chốt hộ một lựa chọn"
+                ));
+            }
+            match press(window, "esc") {
+                Ok(()) => EscHow::WrittenByte,
+                Err(e2) => EscHow::Skipped(format!("hụt cả hai đường: {e} · {e2}")),
+            }
+        }
+    }
+}
+
+/// Cú Enter ấy đi bằng đường nào — phím RỜI trước, byte sau.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnterHow {
+    /// Phím rời qua [`crate::cgkeys`] — thứ TUI đọc như người ngồi bấm.
+    Bare,
+    /// Byte CR qua `do script`. TUI đọc một lượt ghi trọn gói như một lượt
+    /// **DÁN**, nên CR có thể thành NỘI DUNG thay vì thành cú gửi.
+    WrittenByte,
+    /// Không cú Enter nào tới nơi — và đây là một KẾT CỤC, không phải `Ok(())`.
+    Failed(String),
+}
+
+/// Phần THUẦN của [`press_enter`]: hai lượt gửi ra kết cục nào. Tách ra để bài
+/// kiểm với tới được mà không cần cửa sổ thật, và để cái mapping ấy chỉ có MỘT
+/// bản.
+pub fn enter_verdict(bare_err: Option<&str>, byte_err: Option<&str>) -> EnterHow {
+    match (bare_err, byte_err) {
+        (None, _) => EnterHow::Bare,
+        (Some(_), None) => EnterHow::WrittenByte,
+        (Some(a), Some(b)) => EnterHow::Failed(format!("hụt cả hai đường: {a} · {b}")),
+    }
+}
+
+/// Bấm Enter vào một cửa sổ — **phím rời trước**, byte chỉ là đường lùi.
+///
+/// 🔴 Cùng MỘT luật với [`press_escape`], ở cái cửa thứ ba. Chú thích của hàm
+/// ấy đã cảnh báo đúng chuyện này: luật "phím rời trước" viết cho `/close`
+/// 2026-08-30, không ai mang sang `/key`, nên bug quay lại ở cửa bên cạnh. Đây
+/// là lần thứ ba, và lần này có số:
+///
+/// Đo trên máy thật (log `hubd.err`, 08–10/09): `auto_unstick_box` bấm Enter
+/// bằng đường BYTE **31 lượt, 30 lượt đọc lại thấy chữ vẫn nằm nguyên trong ô**
+/// — trong đó 4 lượt cuối rơi vào ba phiên `limited = None`, tức không phải do
+/// hạn mức. Một trong ba (`projects-ef`, `ttys000`) mang đúng một câu 55 ký tự
+/// trong ô nhập **từ 08/09 tới 10/09**, không cú Enter nào đẩy nổi. Cùng khoảng
+/// ấy, đường phím RỜI có 31 lượt ĂN THẬT ở hai cửa khác (`trust_dialog_answered`
+/// 24 · `free_text_opened_by_bare_key` 7).
+///
+/// Vì sao byte hụt: `do_script` ghi cả gói một lần, TUI đọc thành một lượt DÁN,
+/// và trong lượt dán thì CR là một ký tự xuống dòng của nội dung — đúng thứ
+/// `CLAUDE.md` §13 đã ghi cho lượt gõ chữ, chỉ chưa ai đọc nó cho lượt Enter
+/// trần.
+///
+/// Đường lùi có ĐIỀU KIỆN, chép đúng của `press_escape`: hụt phím rời thì chỉ
+/// được ghi byte khi màn KHÔNG có hộp chọn — ở đó Enter là CHỐT một lựa chọn,
+/// thứ không lùi lại được. "Không đọc được màn" tính là CÓ hộp chọn.
+///
+/// Tiêu điểm: [`send_bare`] phải đưa cửa sổ ra trước mới gửi được phím, nên hàm
+/// này **trả lại cửa sổ đang đứng trước** sau khi gửi. Không trả là mỗi lượt
+/// huba tự chữa một ô nhập lại giật màn hình của chủ máy một cái.
+pub fn press_enter(window: i64) -> EnterHow {
+    let truoc = front_window().ok().flatten();
+    let bare_err = send_bare(window, &["enter".to_string()])
+        .err()
+        .map(|e| e.to_string());
+    let byte_err = match &bare_err {
+        None => None,
+        Some(e) => {
+            let co_hop_chon = screen_text(window)
+                .map(|s| !parse_choices(&s).is_empty())
+                .unwrap_or(true);
+            if co_hop_chon {
+                Some(format!(
+                    "màn đang có hộp chọn (hoặc không đọc được) ⟹ KHÔNG ghi byte, \
+                     vì CR đi kèm sẽ chốt hộ một lựa chọn (hụt phím rời: {e})"
+                ))
+            } else {
+                press(window, "enter").err().map(|e2| e2.to_string())
+            }
+        }
+    };
+    let how = enter_verdict(bare_err.as_deref(), byte_err.as_deref());
+    if let Some(w) = truoc {
+        if w != window {
+            if let Err(e) = focus_window(w) {
+                crate::logging::warn(
+                    "focus_restore_failed",
+                    serde_json::json!({ "window": w, "err": e.to_string(),
+                            "effect": "cửa sổ đang đứng trước không được trả lại chỗ cũ" }),
+                );
+            }
+        }
+    }
+    how
+}
+
+/// Một phím điều khiển: `up` `down` `enter` `esc` `tab` `space`, hoặc `1`–`9`.
+///
+/// Hộp chọn của `claude` đi bằng mũi tên + Enter, và gửi chữ "xuống" vào đó thì
+/// nó gõ ra chữ chứ không di chuyển.
+///
+/// ⚠ Đây là đường BYTE (`do script`), không phải phím rời. Cần một cú Enter
+/// THẬT thì gọi [`press_enter`] — xem chú thích ở đó cho số đo 30/31 lượt hụt.
+pub fn press(window: i64, keyname: &str) -> Result<()> {
+    press_writes(window, &[vec![keyname.to_string()]])
+}
+
+/// Chữ này có phải TÊN MỘT PHÍM không — hỏi chính bảng phím, không chép lại.
+///
+/// Dùng cho `/type <nút> [id phiên]` (Hà 2026-08-16). Một bản danh sách thứ hai
+/// ở chỗ khác là một bản sẽ lệch: thêm phím mới ở `key_payload` mà quên bên kia
+/// thì `/type <phím mới>` lặng lẽ đi làm một dòng chữ gõ vào phiên.
+pub fn is_key_name(s: &str) -> bool {
+    // `clear` không có trong bảng phím vì nó KHÔNG phải một phím (nó đọc màn
+    // rồi bắn đúng bấy nhiêu DEL — xem `clear_box`), nhưng với người gõ
+    // `/type clear` thì nó là một cái nút như mọi cái khác.
+    s == "clear" || key_payload(s).is_ok()
+}
+
+/// Payload AppleScript cho một phím — dùng chung cho [`press`] và [`press_seq`].
+fn key_payload(keyname: &str) -> Result<String> {
+    // Ký tự điều khiển gửi qua `do script` như mọi chuỗi khác. Mũi tên là dãy
+    // thoát ANSI: ESC [ A/B/C/D — đúng thứ terminal nhận khi người ta bấm.
+    Ok(match keyname {
+        // 🔴 CHÚ THÍCH ĐÃ ĐÚNG, MÃ THÌ SAI — suốt từ 08-14 tới 08-16. Ba dòng
+        // ngay dưới đây vẫn nói "CR (ASCII 13) là thứ terminal thật gửi khi
+        // người ta bấm Return, nên gửi đúng ký tự ấy", mà thứ đứng sau dấu `=>`
+        // lại là **ASCII 10 (LF)**. Không trình dịch nào kêu, không bài kiểm nào
+        // chạm — payload là một chuỗi AppleScript, với Rust nó chỉ là chữ.
+        //
+        // Hà 2026-08-16, kèm ảnh chụp buồng chat: *"Nút enter này vẫn chưa có
+        // tác dụng"* · *"Làm mất luôn gợi ý mờ"*. Hai câu ấy là hai nửa của
+        // đúng một byte sai, và cả hai đo lại được:
+        //
+        // · `do script` tự kèm **CR**, không phải LF (đo bằng một cửa sổ nháp
+        //   chạy `stty raw -echo; cat -vet`: payload rỗng ⟹ đúng một `^M`;
+        //   `"abc" & CR` ⟹ `abc^M^M`). Nên CLAUDE.md §13 nói "always appends a
+        //   newline" là đúng ý mà sai byte.
+        // · Vậy `(ASCII character 10)` bắn ra **LF rồi CR**. Đo trên TUI thật:
+        //   LF **chèn một dòng trống vào ô nhập** — ô nhập thành nhiều dòng, góc
+        //   phải hiện `ctrl+g to edit in Vim`, và **gợi ý mờ biến mất** vì ô
+        //   không còn rỗng. Sau đó CR gặp một nội dung chỉ toàn khoảng trắng nên
+        //   `claude` không gửi gì. Đúng cả hai câu Hà nói, theo đúng thứ tự.
+        //
+        // CR (ASCII 13) là thứ terminal thật gửi khi người ta bấm Return, nên
+        // gửi đúng ký tự ấy thay vì trông chờ vào cái xuống dòng `do script`
+        // tự thêm.
+        "enter" => "(ASCII character 13)".to_string(),
+        "esc" => "(ASCII character 27)".to_string(),
+        "up" => "((ASCII character 27) & \"[A\")".to_string(),
+        "down" => "((ASCII character 27) & \"[B\")".to_string(),
+        "right" => "((ASCII character 27) & \"[C\")".to_string(),
+        "left" => "((ASCII character 27) & \"[D\")".to_string(),
+        "tab" => "(ASCII character 9)".to_string(),
+        // 🔴 Ctrl+C = **byte ETX (ASCII 3)**, đúng thứ bàn phím thật đẩy vào tty
+        // khi người ta giữ Ctrl rồi bấm C. Không cần phím bổ trợ, không cần
+        // `cgkeys` (thứ chưa dịch được modifier): cái tty nhận đúng một byte ấy
+        // rồi tự làm phần còn lại.
+        //
+        // Hà 2026-08-27: *"Cách bạn xử lý màn bị treo không được, cứ để nó là
+        // lệnh ctrl+c cho tôi"* — sau khi đường nới cửa sổ không cứu được màn
+        // của anh. Đây là thứ anh vẫn làm khi ngồi trước máy, tức đúng phép thử
+        // cầu nối; cái giá thì có thật và phải nói ra ở chỗ dựng nút:
+        // **Ctrl+C NGẮT lượt đang chạy dở.**
+        //
+        // ⚠ `do script` kèm một CR không tắt được (xem `do_script`). Sau một cú
+        // ngắt thì ô nhập rỗng, nên CR ấy không gửi gì đi — nhưng đừng đọc câu
+        // này thành "CR vô hại ở mọi chỗ": trên hộp chọn nó là một cú bật/tắt.
+        "ctrl-c" | "ctrlc" | "^c" => "(ASCII character 3)".to_string(),
+        "space" => as_string(" "),
+        d if d.len() == 1 && d.chars().all(|c| c.is_ascii_digit()) => as_string(d),
+        other => return Err(anyhow!("không biết phím '{other}'")),
+    })
+}
+
+/// Nhịp nghỉ giữa hai LƯỢT GHI.
+///
+/// Đủ để TUI vẽ xong lượt trước (đo trên máy: một bước điều hướng của `claude`
+/// mất chừng 30–60 ms), và đủ ngắn để ba lượt không thành một lượt chờ dài.
+#[cfg(target_os = "macos")]
+const SEQ_GAP_MS: u64 = 120;
+
+/// Gửi từng LƯỢT GHI một — mỗi lượt là đúng một `do script`.
+///
+/// 🔴 ĐƠN VỊ Ở ĐÂY LÀ **LƯỢT GHI, KHÔNG PHẢI PHÍM**, và đó là cả bài học của
+/// 2026-08-17. Terminal kèm một **CR** vào cuối MỌI `do script`, không tắt được
+/// (xem `do_script`) — nên "mỗi phím một lượt ghi" nghĩa là **mỗi phím kéo theo
+/// một cú Enter**, và trên hộp chọn nhiều, Enter là một cú BẬT/TẮT.
+///
+/// Hà đọc ra hậu quả trước khi tôi đọc ra nó trong mã: *"Bấm cái nọ mất cái kia
+/// ảo lắm"*. Nhật ký 12:39–12:40 khớp từng cú, không phải cảm giác: bấm mục 1 ⟹
+/// mục 2 mất dấu; bấm mục 2 ⟹ mục 1 mất dấu; bấm mục 3 ⟹ mục 2 mất dấu. Cùng
+/// một hình dạng cả ba lần — cái ô bị mất luôn là ô con trỏ **vừa rời khỏi**.
+///
+/// Đo lại trên hộp thật (cửa sổ nháp riêng, 3 vòng, 18 lượt ghi, cùng ngày):
+/// · một lượt ghi = **đúng một** cú bật/tắt, rơi vào **dòng con trỏ ĐANG ĐỨNG**;
+/// · payload có mũi tên thì lượt ấy **vừa bật/tắt dòng đang đứng, vừa dời đi** —
+///   `↓` đứng ở mục 1 ⟹ mục 1 đổi dấu, con trỏ sang mục 2;
+/// · k mũi tên trong CÙNG một lượt ghi dời đủ k bước (3 `↓`: mục 1 → mục 4) mà
+///   vẫn chỉ một cú bật/tắt — nên đi xa không đắt hơn đi gần;
+/// · hai CR trong cùng một lượt ghi chỉ ra MỘT cú bật/tắt (chúng gộp làm một);
+/// · **không chặn được cái CR ấy**: `ESC` cuối payload không chặn (nó chặn được
+///   ở Ô NHẬP — xem `clear_box` — mà không chặn ở hộp chọn), CSI cụt (`ESC[`)
+///   cũng không, và phím số thì hộp chọn nhiều không nhận (đo lại: gửi `"4"`
+///   trong khi đứng ở mục 1 ⟹ mục 4 không nhúc nhích, chỉ mục 1 đổi dấu).
+///
+/// Cả năm phép đo ấy hợp thành một luật dùng được: **một lượt ghi là một cú
+/// Enter, cộng thêm quãng đường mà mũi tên trong lượt ấy đi được**. Xem
+/// [`nav_plan`] để biết cách xếp ba lượt sao cho chỉ đúng một ô đổi dấu.
+///
+/// Hàm này KHÔNG tự quyết được dãy ấy có an toàn không — chỗ gọi phải tự chịu
+/// trách nhiệm, cùng luật với `arrow_verdict`.
+#[cfg(target_os = "macos")]
+pub fn press_writes(window: i64, writes: &[Vec<String>]) -> Result<()> {
+    if writes.is_empty() {
+        return Err(anyhow!("không có lượt ghi nào để gửi"));
+    }
+    for keys in writes {
+        osascript(&do_script(window, &write_payload(keys)?))?;
+        std::thread::sleep(std::time::Duration::from_millis(SEQ_GAP_MS));
+    }
+    Ok(())
+}
+
+/// Payload AppleScript của MỘT lượt ghi: nối payload từng phím lại.
+///
+/// Dãy RỖNG là một lượt hợp lệ và có nghĩa — chuỗi rỗng, tức lượt ấy chỉ mang
+/// đúng cái CR mà `do script` kèm sẵn.
+#[cfg(target_os = "macos")]
+fn write_payload(keys: &[String]) -> Result<String> {
+    let mut out = String::from("\"\"");
+    for k in keys {
+        out.push_str(" & ");
+        out.push_str(&key_payload(k)?);
+    }
+    Ok(format!("({out})"))
+}
+
+// 🔴 ĐÃ XOÁ: cả nhánh CHỤP ẢNH MÀN HÌNH (`capture` → PNG, `capture_base64` →
+// base64, và bộ mã hoá `b64` đi kèm), 2026-08-14.
+//
+// Nó từng là "đường DUY NHẤT huba nhìn thấy câu hỏi đang chờ", cho tới khi Hà
+// hỏi *"sao lại đẩy ảnh, dựng lại đúng option chứ?"* (08-10) và hoá ra Terminal
+// cho đọc thẳng `contents of selected tab` — chữ thuần, không OCR, không vài
+// trăm KB base64, và chữ thì đi qua được cổng quét rò rỉ còn ảnh thì không.
+// Từ hôm ấy `screen_text` làm hết việc, còn ba hàm kia nằm lại **không một chỗ
+// gọi nào** suốt bốn ngày.
+//
+// Chúng ra đi vì đúng câu Hà hỏi hôm nay: *"Tức là bạn đang chụp ảnh thay vì
+// lấy text thuần à"*. Mã chết mang tên `capture` thì câu trả lời "huba không
+// chụp ảnh" luôn có một dấu hỏi treo phía sau, kể cả khi nó đúng. Nó cũng là
+// thứ duy nhất còn đòi quyền **Screen Recording** — bỏ đi là bớt luôn một quyền
+// hệ thống huba không dùng tới.
+
+/// CHỮ đang hiện trên màn của cửa sổ ấy.
+///
+/// Hà 2026-08-10: *"sao lại đẩy ảnh, dựng lại đúng option chứ? thì mới có nhiều
+/// lựa chọn thao tác hơn, ví dụ dùng chuột để chọn"*. Đúng — ảnh chỉ NHÌN được,
+/// còn cái người ta cần là BẤM được.
+///
+/// Và hoá ra không cần ảnh: Terminal cho đọc thẳng `contents of selected tab`,
+/// tức đúng chữ đang hiện. Không OCR, không vài trăm KB base64, và chữ thì đi
+/// qua được `redaction::leak_scan` — ảnh thì không.
+#[cfg(target_os = "macos")]
+pub fn screen_text(window: i64) -> Result<String> {
+    let script = format!(
+        r#"tell application "Terminal"
+  return contents of selected tab of window id {window}
+end tell"#
+    );
+    osascript(&script)
+}
+
+/// Cỡ xin khi DỰNG một cửa sổ mới — Terminal tự kẹp lại cho vừa màn hình.
+///
+/// 🔴 Đo 2026-08-20 trên chính máy này: xin `999` ⟹ Terminal trả về **61×206**,
+/// không một lỗi nào. Nó KẸP giùm, nên "hết cỡ" là một con số đúng ở mọi màn
+/// hình, còn một con số đo được thì chỉ đúng ở cái màn đã đo (số cũ gõ cứng
+/// `60` vừa hụt một dòng ở đây vừa hụt bao nhiêu tuỳ máy ở nơi khác).
+///
+/// ⚠ Từ 2026-08-30 con số này chỉ còn ĐÚNG MỘT chỗ dùng: [`open_window`], lúc
+/// cửa sổ vừa sinh ra. Xem tấm bia ngay dưới để biết vì sao không còn chỗ nào
+/// nới một cửa sổ ĐANG SỐNG.
+pub const FULL_SCREEN_ASK: usize = 999;
+
+// 🪦 `GROW_ASK` + `screen_text_tall` — nới cửa sổ đang sống rồi trả lại chiều
+// cũ. Sống từ 19/08, chết 2026-08-30.
+//
+// Hà: *"đừng thay đổi kích thước của cửa sổ terminal nữa, bỏ hết các chỗ đi, để
+// nó luôn full màn hình nếu là cửa sổ mới, còn là tab thì không động đến kích
+// thước"*.
+//
+// Nó giải đúng một bài toán thật (màn `24×80` cắt mất hộp chọn và lời phiên
+// nói), và giải bằng cách phóng to rồi thu nhỏ cửa sổ của chủ máy ngay trước
+// mắt anh — mỗi cú `/shot`, mỗi cú `/pick`, mỗi cú bấm phím nguy hiểm. Tính cả
+// `delay 1.2` cứng bên trong, một lượt `/pick` đi qua tới ba lần co giãn.
+//
+// Cách chữa mới đứng ở chỗ RẺ HƠN HẲN: cửa sổ do huba mở thì sinh ra đã hết cỡ
+// ([`open_window`]), nên không còn gì để nới về sau. Còn cửa sổ (hay tab) của
+// chủ máy thì **không phải của huba** — huba đọc được tới đâu thì nói tới đó,
+// và nói ra chỗ đọc hụt, chứ không đụng vào tay người khác.
+//
+// Cái mất, ghi thẳng ra để đừng ai tưởng là hoà: một tab hẹp của chủ máy vẫn
+// cắt chữ như cũ, và huba không còn cách nào lấy thêm. Nó phải KHAI ra
+// (`shot_screen_narrow`), không được im.
+//
+// ⚠ Đừng dựng lại nó ở một cái tên khác. Đường "đọc `history of tab` cho đủ" là
+// ngõ cụt đã đo hai lần (bộ đệm cuộn của Terminal rỗng vì TUI vẽ đè tại chỗ) —
+// xem CLAUDE.md điều 13.
+
+/// Trần độ dài một dòng lệnh đáng dựng nút.
+///
+/// Nguồn của hàm này là chữ phiên VIẾT RA, đọc thẳng từ nhật ký `.jsonl` —
+/// nguyên văn, không đi qua bề ngang cửa sổ nào — nên ở đây một dòng dài là
+/// một dòng dài THẬT, không phải một mẩu cụt. Vẫn có trần, không bỏ hẳn: bài
+/// học 2026-08-14 (*"Cả 1 khối lệnh dài này thì không được tạo nút"*) là về
+/// một khối 380 ký tự. 200 nhận trọn một lệnh triển khai có đường dẫn tuyệt
+/// đối, và vẫn chặn cả khối.
+pub const BTN_CMD_REPORT_MAX: usize = 200;
+
+/// Những DÒNG LỆNH nằm trong chữ phiên viết ra — thứ bấm một cái là chạy được.
+///
+/// Hà 2026-08-12: *"phiên hiện ra rõ ràng có lệnh để chạy trên terminal … nếu có
+/// lệnh như vậy thì hiển thị luôn lệnh gửi nhanh"*. Phiên `claude` thường kết
+/// một lượt bằng đúng một câu lệnh cho chủ máy gõ; đọc được nó trên điện thoại
+/// mà vẫn phải gõ tay lại từng ký tự thì cây cầu mới đi được một chiều.
+///
+/// Nhận diện theo HÌNH DẠNG, không theo ngữ nghĩa: bỏ dấu nhắc ở đầu (`$`, `❯`,
+/// `>`), rồi đòi từ đầu tiên là một lệnh quen hoặc một đường dẫn `./…`. Cố ý
+/// hẹp — đoán rộng ở đây nghĩa là đưa lên màn một cái nút chạy nhầm thứ.
+///
+/// Giữ tối đa `max` dòng CUỐI (mới nhất), bỏ trùng.
+///
+/// 🔴 **Nguồn MÀN đã đi hẳn, 2026-08-15.** Hàm này từng có một người anh em
+/// (`commands_on_screen`) đọc `contents of selected tab`, và một nửa tệp này
+/// từng là bộ máy vá cho đúng một sự thật: **chữ trên màn là chữ đã đi qua một
+/// cửa sổ** — bẻ theo bề ngang, cắt bằng `…`, trộn với khung vẽ của TUI. Nó
+/// gồm một trần ngắn (60), một phép đo bề ngang, một phép đoán "dòng sau có bị
+/// đẩy xuống không", và một hàm nối đuôi. Mỗi ca sai vá thêm một luật, nên luật
+/// càng nhiều thì ca sai càng nhiều — và những cái nút chạy SAI đều đến từ đó:
+/// `bash …/deploy.sh` thiếu tham số (mẩu cụt lọt trần 60), `git for-each-ref …
+/// | xargs` (mẩu của một khối 380 ký tự). Nay lệnh lấy từ SỔ
+/// (`sessions::commands_of`), màn chỉ còn để nhìn.
+/// `curl`/`wget` mà KHÔNG có đích thì không phải một lệnh chạy được.
+///
+/// 🔴 Hà 2026-08-16, ảnh chụp một tin [tfl5] có hai icon liền nhau: *"Chỗ này là
+/// 1 lệnh hay 2, tại sao bóc tách lệnh lại khó khăn thế"*. Đọc sổ nút ra ngay:
+/// cùng một phiên có `curl -s --max-time 15 "https://cpanel.example.com/healthz…"`
+/// (lệnh thật) **và** `curl /healthz` — mẩu thứ hai là cách phiên NÓI TẮT trong
+/// câu văn, không phải lệnh: `curl` không có host thì chỉ trả `URL using
+/// bad/illegal format`. Nên đứng cạnh nhau chúng trông như hai việc, mà chỉ có
+/// một, và cái thứ hai bấm vào thì chạy hỏng.
+///
+/// Hàng rào chung (`KNOWN` + "phải có tham số") không bắt được ca này vì
+/// `curl /healthz` thoả cả hai. Câu hỏi đúng cho một lệnh MẠNG là câu cụ thể
+/// hơn: *nó có nói đi đâu không*. Cố ý chỉ soi `curl`/`wget` — đó là ca đo
+/// được; `ssh`/`scp` luôn mang host trong chính cú pháp của chúng.
+fn network_without_target(verb: &str, line: &str) -> bool {
+    if !matches!(verb, "curl" | "wget") {
+        return false;
+    }
+    !line.split_whitespace().skip(1).any(|t| {
+        let t = t.trim_matches(['"', '\'']);
+        t.contains("://")
+            || t.starts_with("localhost")
+            || t.starts_with("127.0.0.1")
+            // `cpanel.example.com/healthz` — có tên miền, không phải cờ, không
+            // phải một đường dẫn trần.
+            || (!t.starts_with('-') && !t.starts_with('/') && t.contains('.'))
+    })
+}
+
+/// Dấu phiên đặt để nói *"dòng dưới là lệnh, chạy hộ tôi"*.
+///
+/// 🔴 Hà 2026-08-24: *"có quy tắc nào để bảo claude đánh dấu vào output kết quả
+/// là lệnh để bắt tôi chạy không"* — rồi chọn **chỉ dùng dấu, bỏ danh sách cho
+/// phép**.
+///
+/// Vì sao hình dạng này, ba lý do và cả ba đo được:
+/// ① `#` là dấu chú thích của shell ⟹ chủ máy copy cả khối dán vào Terminal thì
+///    dòng dấu tự bị bỏ qua, lệnh vẫn chạy đúng;
+/// ② dấu nằm ở DÒNG RIÊNG nên dòng lệnh không bị bẩn — nút bấm, chữ hiện ra, và
+///    thứ copy được đều y hệt nhau;
+/// ③ ghép được với [`join_continuations`]: lệnh nối `\` nhiều dòng vẫn đi nguyên
+///    khối.
+pub const RUN_MARK: &str = "#huba-run";
+
+/// Những lệnh phiên ĐÃ ĐÁNH DẤU — không đoán theo hình dạng.
+///
+/// Khác [`commands_in_report`] ở đúng một điểm, và điểm ấy là cả thiết kế:
+/// hàm kia hỏi *"dòng này TRÔNG giống lệnh không"* để bày một cái nút cho người
+/// bấm; hàm này hỏi *"phiên có CỐ Ý bảo chạy không"* để chạy khi không ai nhìn.
+/// Hai câu hỏi khác nhau thì không dùng chung một câu trả lời — đó là bài học
+/// đã trả giá bằng một lỗ RCE trong bản `autorun_allows` hôm qua.
+///
+/// 🔴 DẤU PHẢI CHIẾM TRỌN MỘT DÒNG. `echo "#huba-run"` hay một câu văn nhắc tới
+/// cái dấu đều KHÔNG kích hoạt được. Nới chỗ này là mở lại đúng cửa vừa đóng:
+/// chữ trong `last_text` đến từ web, từ diff, từ tệp phiên vừa đọc.
+///
+/// ⚠ Cái dấu nói *"mô hình cố ý bảo chạy"*, KHÔNG nói *"chủ máy cho phép"*. Hà
+/// biết và chọn mức này (2026-08-24); đừng lặng lẽ thêm một cổng nữa vào đây mà
+/// không hỏi, cũng đừng lặng lẽ nới nó ra.
+pub fn marked_commands(text: &str, max: usize) -> Vec<String> {
+    let rows = join_continuations(text);
+    let mut out: Vec<String> = Vec::new();
+    let mut armed = false;
+    for (raw, joined) in rows.iter() {
+        let line = raw.trim();
+        if line == RUN_MARK {
+            armed = true;
+            continue;
+        }
+        if !armed {
+            continue;
+        }
+        // Dòng trống ngay sau dấu: bỏ qua, đừng tắt dấu — TUI hay chèn một
+        // dòng trống giữa hai khối.
+        if line.is_empty() {
+            continue;
+        }
+        armed = false;
+        // Bóc dấu nhắc/trang trí của TUI, cùng bộ với `commands_in_report` —
+        // hai chỗ đọc cùng một màn thì phải bóc cùng một thứ.
+        let mut cmd = line;
+        for p in ["$ ", "❯ ", "> ", "⏵ ", "% ", "• ", "- ", "! ", "!"] {
+            if let Some(rest) = cmd.strip_prefix(p) {
+                cmd = rest.trim();
+            }
+        }
+        let cap = if *joined {
+            BTN_CMD_BLOCK_MAX
+        } else {
+            BTN_CMD_REPORT_MAX
+        };
+        if cmd.len() < 2 || cmd.len() > cap {
+            logging::warn(
+                "run_mark_line_rejected",
+                json!({ "len": cmd.len(), "cap": cap,
+                        "why": "dòng sau dấu quá ngắn hoặc quá dài" }),
+            );
+            continue;
+        }
+        out.push(cmd.to_string());
+        if out.len() >= max {
+            break;
+        }
+    }
+    out
+}
+
+/// Trần cho một lệnh do NGƯỜI VIẾT nối bằng `\` — rộng hơn hẳn dòng thường.
+///
+/// Trần 200 của dòng thường trả lời câu *"một KHỐI không phải một lệnh"*. Câu ấy
+/// vẫn đúng cho những dòng nằm cạnh nhau tình cờ. Nhưng một chuỗi nối bằng `\`
+/// thì tác giả đã nói thẳng nó là MỘT lệnh — không còn gì để đoán, nên trần ở
+/// đây đo cái khác: dài tới mức này thì dán vào điện thoại đã thành bức tường.
+const BTN_CMD_BLOCK_MAX: usize = 700;
+
+/// Nối những dòng mà người viết đã nối bằng `\` ở cuối dòng.
+///
+/// 🔴 Hà 2026-08-23, ảnh chụp buồng `[dwork · A-CHUNG]`: *"Khối lệnh chạy gom
+/// bị thiếu hẳn `cd` dẫn đến chạy không đúng thư mục"*.
+///
+/// Nguyên văn khối trên màn:
+///
+/// ```text
+/// cd ~/projects/dwork/dev-chung && \
+/// git merge --no-edit origin/main && \
+/// bash ~/projects/scripts/dci-cong-tat-ca.sh dev-chung && \
+/// …
+/// ```
+///
+/// huba gắn `▶️` vào **đúng dòng thứ hai**, vì nó mở đầu bằng `git` ∈ `KNOWN`.
+/// Dòng `cd …` ở trên bị bỏ lại: `after_cd` chỉ nhận `cd X && <lệnh>` khi cả
+/// hai vế nằm trên CÙNG một dòng, mà ở đây vế sau `&&` chỉ là dấu `\`. Bấm cái
+/// nút ấy là `git merge` **trong thư mục khác** — và trên một cây git thật thì
+/// đó không phải một lỗi hiển thị.
+///
+/// ⚠ ĐÂY KHÔNG PHẢI BỘ NỐI DÒNG ĐÃ GỠ 2026-08-15. Cái ấy đi đoán xem cửa sổ
+/// terminal có bẻ dòng hay không — một phép đoán trên chữ đã mất thông tin, và
+/// nó đã tạo ra một nút chạy lệnh triển khai THIẾU tham số. Cái này không đoán
+/// gì: `\` cuối dòng là **dấu tác giả tự đặt** để nói "câu chưa hết". Nối theo
+/// dấu ấy là đọc đúng thứ người ta viết, không phải dựng lại thứ đã mất.
+///
+/// Trả `(dòng, có_nối_không)`; cờ thứ hai để chỗ gọi nới trần đúng cho những
+/// dòng đã được tác giả khai là một lệnh — xem [`BTN_CMD_BLOCK_MAX`].
+fn join_continuations(screen: &str) -> Vec<(String, bool)> {
+    let mut out: Vec<(String, bool)> = Vec::new();
+    let mut acc: Option<String> = None;
+    let push_part = |acc: &mut Option<String>, part: &str| match acc.as_mut() {
+        Some(a) => {
+            a.push(' ');
+            a.push_str(part.trim());
+        }
+        None => *acc = Some(part.trim().to_string()),
+    };
+    for raw in screen.lines() {
+        match raw.trim_end().strip_suffix('\\') {
+            Some(head) => push_part(&mut acc, head),
+            None => match acc.take() {
+                // Dòng cuối của một chuỗi nối: gộp nốt rồi đóng khối.
+                Some(mut a) => {
+                    a.push(' ');
+                    a.push_str(raw.trim());
+                    out.push((a, true));
+                }
+                None => out.push((raw.to_string(), false)),
+            },
+        }
+    }
+    // Khối kết thúc bằng `\` treo lơ lửng (màn bị cắt, hoặc tác giả gõ thừa):
+    // vẫn trả về, để nó đi qua đúng những hàng rào như mọi dòng khác thay vì
+    // biến mất không dấu vết.
+    if let Some(a) = acc {
+        out.push((a, true));
+    }
+    out
+}
+
+pub fn commands_in_report(text: &str, max: usize) -> Vec<String> {
+    let max_len = BTN_CMD_REPORT_MAX;
+    let screen = text;
+    // `gh` vào danh sách 2026-08-13, vì đó là cái tên trong câu Hà hỏi: màn nói
+    // *"Next action is yours: merge PR #54"* và không có nút nào. `gh` là công
+    // cụ merge trên máy này — cùng loại với `git`, đã nằm sẵn ở đây từ đầu.
+    /// `cd <thư mục> && <lệnh>` — dạng phổ biến nhất, và nó KHÔNG bắt đầu bằng một
+    /// động từ trong danh sách.
+    ///
+    /// 🔴 Hà 2026-08-13, ảnh chụp một tin báo có nguyên dòng
+    /// `cd ~/projects/AI/codetrail && git push` mà không cái nút nào. Danh sách
+    /// `KNOWN` cố tình hẹp — nó là hàng rào, không phải bảng tra — nên `cd` không
+    /// nằm trong đó, và từ đầu tiên của dòng là `cd` ⟹ 0 nút.
+    ///
+    /// Không nới hàng rào bằng cách nhét `cd` vào `KNOWN`: `cd` một mình chẳng chạy
+    /// gì, mà thêm nó là mở cửa cho mọi dòng bắt đầu bằng `cd`. Thay vào đó, nhận
+    /// đúng HÌNH DẠNG: `cd <gì đó> &&|; <phần còn lại>` thì đem **phần còn lại** đi
+    /// hỏi cùng cái hàng rào ấy. Hàng rào không đổi, chỉ hỏi đúng chỗ.
+    fn after_cd(line: &str) -> Option<&str> {
+        let rest = line.strip_prefix("cd ")?;
+        let (_dir, tail) = rest.split_once("&&").or_else(|| rest.split_once(';'))?;
+        let tail = tail.trim();
+        (!tail.is_empty()).then_some(tail)
+    }
+
+    const KNOWN: &[&str] = &[
+        "git",
+        "gh",
+        // 🔴 `printf` vào danh sách 2026-08-17, ảnh Hà gửi: *"Trong nội dung có
+        // lệnh nhưng ko có nút"*. Hai dòng ấy là
+        // `printf '@update-be …\n' > ~/projects/dwork/scripts/.cmd-queue/…cmd`
+        // — tức đúng cách xếp việc vào file-queue daemon mà CLAUDE.md của
+        // workspace dựng ra, và là dòng phiên BẢO CHỦ MÁY chạy. Không có nút thì
+        // cây cầu hụt đúng nhịp cuối: anh phải tự gõ lại một dòng dài trên điện
+        // thoại.
+        //
+        // Hàng rào vẫn là hàng rào: `printf` là lệnh có thật, chạy được, và
+        // không phải một động từ tiếng Anh lọt vào giữa câu văn như `echo`.
+        "printf",
+        "npm",
+        "npx",
+        "node",
+        "cargo",
+        "bash",
+        "sh",
+        "zsh",
+        "python3",
+        "pip3",
+        "docker",
+        "make",
+        "curl",
+        "rsync",
+        "scp",
+        "ssh",
+        "sqlite3",
+        "pnpm",
+        "yarn",
+        "deno",
+        "go",
+        "rustup",
+        "brew",
+        "launchctl",
+        "osascript",
+        "open",
+        "code",
+        "tail",
+        "grep",
+        "rg",
+        "find",
+        "ls",
+        // 🔴 CẢ HỌ LỆNH ĐỘNG TAY VÀO TỆP — thêm 2026-08-18, và lý do là một cái
+        // chặn đã bị gỡ mà cái này thì không.
+        //
+        // Hà, ảnh chụp `/shot` của `[AI/tfl5]`: *"Có lệnh nhưng lại không có nút
+        // chạy"*. Dòng ấy là dòng cuối cùng để đóng sổ một phiên:
+        // `rm ~/projects/AI/tfl5/ide/src/__tests__/deploy_domains_by_role.test.jsx`
+        // — không ▶️, không 🖥, mà đường dẫn trong nó lại mọc một nút 📎 mời TẢI
+        // VỀ đúng cái tệp dòng ấy bảo xoá.
+        //
+        // Ngày 16/08 cổng `destructive` bị gỡ hẳn (xem bia mộ ở cuối tệp) đúng
+        // vì câu này: *"tôi ở tele là phải gọi lệnh thao tác như ngồi máy thì
+        // chặn khác gì chặt tay"*. Nhưng `rm` chưa bao giờ có trong danh sách
+        // này, và danh sách này được hỏi TRƯỚC cái cổng ấy. Nên cái chặn không
+        // biến mất, nó chỉ lùi lên một tầng — và tầng này im lặng hơn hẳn tầng
+        // cũ, vì nó không có tên, không có dòng log, chỉ có một `continue`.
+        // Cùng hình dạng với ca `.docx` cùng ngày: **gỡ một luật mà quên gỡ
+        // những thứ dựng lên để phục vụ nó.**
+        //
+        // 📐 Đo trước khi chọn, không kê theo trí nhớ: quét toàn bộ `huba.log` từ
+        // 14/08, lấy mọi đoạn trong dấu nháy ngược qua được `looks_like_prose`
+        // rồi đếm động từ KHÔNG có trong danh sách — `cat` 3 · `cp` 3 · `ps` 2 ·
+        // `rm` · `lsof` · `psql`. Phần còn lại của danh sách dưới đây là cùng họ
+        // với chúng (đụng tệp, đụng tiến trình), thêm một lượt để lần sau không
+        // phải vá từng chữ một.
+        //
+        // Hàng rào vẫn giữ đúng việc của nó — chống VĂN XUÔI đội lốt lệnh, chứ
+        // không phải chống lệnh nguy hiểm. Ba cửa dưới nó không đổi:
+        // `looks_like_prose`, `forbids` (câu đang CẤM thì không mời chạy), và
+        // "phải có ít nhất một tham số". `sudo` cố ý ĐỨNG NGOÀI: nút ▶️ chạy
+        // bằng `zsh -lc` không có tty, nên một dòng `sudo` sẽ treo tới trần thời
+        // gian rồi chết câm — xem [[feedback_no_tty_password_prompts]].
+        "rm",
+        "mv",
+        "cp",
+        "mkdir",
+        "rmdir",
+        "touch",
+        "ln",
+        "chmod",
+        "chown",
+        "cat",
+        "head",
+        "wc",
+        "sed",
+        "awk",
+        "sort",
+        "diff",
+        "du",
+        "df",
+        "ps",
+        "lsof",
+        "kill",
+        "pkill",
+        "killall",
+        "xargs",
+        "jq",
+        "tar",
+        "unzip",
+        "zip",
+        "psql",
+        "defaults",
+        "which",
+    ];
+    let mut out: Vec<String> = Vec::new();
+    let rows = join_continuations(screen);
+    for (raw, joined) in rows.iter() {
+        let (raw, joined) = (raw.as_str(), *joined);
+        // Câu đang CẤM một lệnh thì không phải câu mời chạy nó.
+        if forbids(raw) {
+            continue;
+        }
+        // 🔴 Ở ĐÂY TỪNG CÓ BỘ MÁY NỐI DÒNG BỊ BẺ — gỡ 2026-08-15.
+        //
+        // Nó dựng lên vì một sự thật đo được trên màn thật của `[tfl5]`
+        // (08-14): ba dòng liền nhau `git … push origin main` / `bash
+        // …/scripts/deploy.sh` / `static-cache-refresh-0814`, tức dòng giữa là
+        // NỬA ĐẦU của một lệnh bị cửa sổ bẻ. Bấm vào nửa ấy là chạy một lệnh
+        // triển khai THIẾU tham số, trên một dự án thật.
+        //
+        // Bộ máy ấy ĐÚNG, và vẫn là câu trả lời sai: nó đi chữa hậu quả của
+        // việc đọc nhầm nguồn. Chữ trên màn là chữ đã đi qua một cửa sổ; không
+        // phép đo nào dựng lại được thứ cửa sổ đã cắt. Nay nguồn đổi — lệnh lấy
+        // nguyên văn từ nhật ký (`sessions::commands_of`) — nên cả cái bệnh lẫn
+        // thuốc cùng đi: trần 60, phép đo bề ngang, phép đoán "dòng sau có bị
+        // đẩy xuống không", và hàm nối đuôi.
+        let mut line = raw.trim();
+        // Dấu nhắc và dấu trang trí của TUI đứng trước lệnh.
+        //
+        // 🔴 `!` vào danh sách 2026-08-13, và nó là chỗ mỉa mai nhất trong tệp
+        // này: `!<lệnh>` là **quy ước của chính huba** — nút `▶` gõ đúng hình
+        // dạng ấy vào phiên để lệnh chạy TRONG phiên. Phiên học theo, viết
+        // `! git -C … push origin main` trong báo cáo, và huba **không nhận ra
+        // quy ước của chính mình**: `!` không có trong danh sách bóc nên từ đầu
+        // tiên là `!`, không phải `git` ⟹ 0 nút. Hà bắt được bằng ảnh chụp:
+        // *"rõ ràng có lệnh chạy trong nội dung nhưng lại không có nút để chạy
+        // nó"*.
+        //
+        // Bóc cả hai dạng: `! git …` và `!git …`.
+        for p in ["$ ", "❯ ", "> ", "⏵ ", "% ", "• ", "- ", "! ", "!"] {
+            if let Some(rest) = line.strip_prefix(p) {
+                line = rest.trim();
+            }
+        }
+        // 🔴 Lệnh NẰM TRONG câu văn: đo được ngay lượt `/shot` thật đầu tiên
+        // (2026-08-12 21:15) — màn có dòng
+        // "`git push origin main` (a plain push to main) executed from a
+        // nested-repo", và bản đầu bóc dấu nháy đầu rồi nuốt luôn cả câu phía
+        // sau, ra một cái nút chạy nhầm thứ. Trong dấu nháy ngược thì CHỈ lấy
+        // phần trong dấu nháy.
+        let owned;
+        let line = if let Some(after_tick) = line.strip_prefix('`') {
+            match after_tick.split_once('`') {
+                Some((inner, _)) => {
+                    owned = inner.trim().to_string();
+                    owned.as_str()
+                }
+                None => line.trim_start_matches('`').trim(),
+            }
+        } else {
+            line
+        };
+        let line = line.trim();
+        // Dòng do tác giả nối bằng `\` được nới trần — xem [`BTN_CMD_BLOCK_MAX`].
+        let hard_max = if joined { BTN_CMD_BLOCK_MAX } else { 300 };
+        if line.len() < 4 || line.len() > hard_max {
+            continue;
+        }
+        // 🔴 Hà 2026-08-14: *"Cả 1 khối lệnh dài này thì không được tạo nút"* —
+        // sau khi một cái nút chạy `git for-each-ref … | xargs -n1 git`, tức
+        // KHÔNG phải lệnh in trong tin: nó là mẩu cụt của một khối 380 ký tự,
+        // cắt đúng chỗ terminal bẻ dòng (~80 cột trừ thụt lề). Mẩu ấy cân bằng
+        // nháy và mở đầu bằng một lệnh quen, nên mọi hàng rào phía dưới đều
+        // thấy nó hợp lệ. Nó chạy thật, và lần ấy vô hại chỉ vì `refs/original`
+        // chưa tồn tại.
+        //
+        // Từ 08-15 nguồn không còn bị bẻ, nên trần này thôi làm cái việc "sợ
+        // mẩu cụt" và chỉ còn làm đúng một việc: một KHỐI không phải một lệnh.
+        // 200 nhận trọn lệnh triển khai có đường dẫn tuyệt đối, chặn cả khối.
+        if line.len() > if joined { BTN_CMD_BLOCK_MAX } else { max_len } {
+            continue;
+        }
+        // MỘT bộ luật cho cả hai lượt quét — xem `looks_like_prose`.
+        if looks_like_prose(line) {
+            continue;
+        }
+        let Some(first) = line.split_whitespace().next() else {
+            continue;
+        };
+        // `cd X && <lệnh>`: hỏi cùng hàng rào, nhưng hỏi phần sau `&&`.
+        let verb = after_cd(line)
+            .and_then(|t| t.split_whitespace().next())
+            .unwrap_or(first);
+        // 🔴 BÓC LỚP BỌC RỒI MỚI HỎI HÀNG RÀO — Hà 2026-08-24, ảnh `/shot` của
+        // `[tfl5]`: *"Sao ko có chạy đc lệnh"*. Dòng ấy là
+        // `cd ~/projects/AI/tfl5 && nohup bash -c '…' & echo started` — 180 ký
+        // tự, dưới trần 200, không dấu hiệu văn xuôi nào. Chạy thẳng
+        // `commands_in_report` trên nó trả về **rỗng**.
+        //
+        // Vì `after_cd` giao lại `nohup bash -c '…'`, và động từ đầu là `nohup`
+        // — không có trong `KNOWN`. Hàng rào cố ý HẸP nên nó đúng khi từ chối
+        // `nohup`; cái sai là hỏi nó về từ SAI. `nohup` không chạy gì cả, nó
+        // chỉ bọc quanh lệnh thật, y hệt `cd X &&` ở dòng trên.
+        //
+        // Nên đi đúng đường `after_cd` đã mở: **không nới hàng rào, chỉ hỏi
+        // đúng chỗ**. Nhét `nohup` vào `KNOWN` thì mọi dòng mở đầu bằng nó lọt
+        // qua mà lệnh thật bên trong chưa ai nhìn.
+        //
+        // ⚠ `sudo` KHÔNG nằm ở đây, và đó là chủ ý cũ giữ nguyên (xem chú thích
+        // của nó bên trên): nó đổi QUYỀN chứ không chỉ đổi cách chạy.
+        //
+        // Hậu quả thứ hai của cùng cái lỗi, cũng thấy trong ảnh: `upgrade.sh`
+        // trong dòng ấy mọc một nút 📎 mời TẢI VỀ. `paths_not_in_commands` chỉ
+        // chừa đường dẫn nào NẰM TRONG một lệnh đã nhận ra — lệnh không được
+        // nhận thì đường dẫn của nó thành tệp rời. Vá chỗ này là vá cả hai.
+        const WRAPPERS: &[&str] = &["nohup", "env", "time", "stdbuf", "caffeinate", "nice"];
+        let verb = if WRAPPERS.contains(&verb) {
+            let rest = after_cd(line).unwrap_or(line);
+            rest.split_whitespace()
+                .skip(1)
+                // Bỏ qua thứ thuộc về CHÍNH lớp bọc, ba dạng đã gặp:
+                // cờ (`env -i`), GIÁ TRỊ của cờ (`nice -n 10` — `10` không mở
+                // đầu bằng `-` nên vòng lọc đầu tiên dừng lại ở nó, đo được
+                // bằng bài kiểm), và gán biến môi trường (`env FOO=bar cmd`).
+                .find(|w| {
+                    !w.starts_with('-')
+                        && !w.contains('=')
+                        && !w.chars().all(|c| c.is_ascii_digit())
+                })
+                .unwrap_or(verb)
+        } else {
+            verb
+        };
+        let looks_like = KNOWN.contains(&verb) || verb.starts_with("./");
+        if !looks_like {
+            continue;
+        }
+        // Phải có ít nhất một tham số: `git` trần không phải một lệnh để chạy.
+        if line.split_whitespace().count() < 2 {
+            continue;
+        }
+        if network_without_target(verb, line) {
+            continue;
+        }
+        // 🪦 CỔNG `destructive` GỠ 2026-08-16 — Hà: *"đã qua huba thì đừng có
+        // chặn gì cả, các chỗ chặn bỏ hết cho tôi"* · *"tôi ở tele là phải gọi
+        // lệnh thao tác như ngồi máy thì chặn khác gì chặt tay, cần kênh tele
+        // để làm gì?"*.
+        //
+        // Nó từng bỏ mọi dòng `rm`, `git reset --hard`, `kill`… nên chúng hiện
+        // ra trên điện thoại mà không có đường bấm, IM LẶNG. Hôm nay tôi vá cái
+        // im lặng ấy bằng một dòng giải thích, và anh hỏi đúng câu phải hỏi:
+        // *"thằng nào chặn thế, tôi có yêu cầu vậy à"*. Không ai yêu cầu.
+        //
+        // Cái rào thật của dự án này vẫn nguyên và nó nằm ở chỗ khác:
+        // `sessions::DENIED_TOOLS` gác thứ một PHIÊN TỰ CHẠY được phép làm —
+        // đó là gác một cỗ máy, không phải gác bàn tay chủ máy.
+        if !out.iter().any(|x| x == line) {
+            out.push(line.to_string());
+        }
+    }
+    // …và lệnh nằm TRONG DẤU NHÁY giữa câu văn.
+    //
+    // 🔴 Hà 2026-08-12: *"nội dung của phiên có lệnh script cần chạy đã có tính
+    // năng bấm chạy luôn chưa"*. Có, nhưng luật trên đòi lệnh **đứng đầu dòng**
+    // — đúng cho một màn terminal, sai cho một BÁO CÁO. Đo trên tin báo thật
+    // (`username-8e`, 33 phút chạy): nó nhắc `git fetch` và `cargo test
+    // --all-targets` mà cả hai nằm giữa câu, nên ra **0 nút**.
+    //
+    // Dấu nháy ngược là một ranh giới CHÍNH XÁC, và chính nó vá luôn cái bẫy đã
+    // trả giá hôm 08-12 tối: bản đầu bóc dấu nháy mở rồi nuốt cả câu phía sau
+    // (`git push origin main` (a plain push to main) executed from…) ⟹ một nút
+    // chạy nhầm thứ. Cắt đúng trong cặp nháy thì không còn chỗ cho câu văn lọt.
+    let segs: Vec<&str> = text.split('`').collect();
+    for i in (1..segs.len()).step_by(2) {
+        let span = segs[i];
+        // Chữ đứng NGAY TRƯỚC dấu nháy, trong cùng dòng ấy — chỗ câu cấm nằm.
+        let before = segs[i - 1];
+        let prefix = before.rsplit('\n').next().unwrap_or(before);
+        if forbids(prefix) {
+            continue;
+        }
+        let Some(cmd) = unwrap_terminal_wrap(span) else {
+            continue;
+        };
+        let cmd = cmd.as_str();
+        if cmd.len() < 4 || cmd.len() > 300 {
+            continue;
+        }
+        // CÙNG bộ luật với lượt quét theo dòng — xem `looks_like_prose`. Thiếu
+        // đúng cửa này là chỗ dòng trang trí của huba lọt ra shell.
+        if looks_like_prose(cmd) || forbids(cmd) {
+            continue;
+        }
+        let Some(first) = cmd.split_whitespace().next() else {
+            continue;
+        };
+        let verb = after_cd(cmd)
+            .and_then(|t| t.split_whitespace().next())
+            .unwrap_or(first);
+        if !(KNOWN.contains(&verb) || verb.starts_with("./")) {
+            continue;
+        }
+        if cmd.split_whitespace().count() < 2 {
+            continue;
+        }
+        // 🪦 `destructive` gỡ 2026-08-16 — xem chỗ gọi trên và `usable_command`.
+        if !out.iter().any(|x| x == cmd) {
+            out.push(cmd.to_string());
+        }
+    }
+    dedupe_same_script(&mut out);
+    if out.len() > max {
+        out.drain(..out.len() - max);
+    }
+    out
+}
+
+/// Hai cách VIẾT của cùng một lệnh thì chỉ giữ một — bản cụ thể hơn.
+///
+/// 🔴 Hà 2026-08-14, ảnh chụp một tin báo mang ba nút: *"sao lắm nút lệnh
+/// thế"*. Hai trong ba là `bash ./deploy.sh` và `bash scripts/deploy.sh` — cùng
+/// một việc, viết hai kiểu ở hai chỗ khác nhau trong cùng một báo cáo. Trên màn
+/// 390px, hai cái nút gần giống nhau không cho thêm lựa chọn nào; chúng bắt
+/// người đọc dừng lại đoán xem cái nào mới đúng.
+///
+/// ⚠ Hẹp có chủ ý, và bản đầu đã quá rộng: nó gộp theo TÊN TỆP, nên ba dòng
+/// `bash ./dci-deploy-be.sh module/` · `… dci/leave-quota/` · `… dci/config/…`
+/// (ba việc khác nhau, chỉ trùng script) rút còn một — có test cũ bắt được
+/// ngay. Luật đúng là so CẢ DÒNG sau khi rút đường dẫn script về tên tệp: chỉ
+/// gộp khi hai dòng khác nhau đúng ở chỗ viết đường dẫn, còn tham số thì y hệt.
+fn dedupe_same_script(out: &mut Vec<String>) {
+    fn shape(cmd: &str) -> String {
+        cmd.split_whitespace()
+            .map(|w| {
+                if w.ends_with(".sh")
+                    || w.ends_with(".mjs")
+                    || w.ends_with(".py")
+                    || w.ends_with(".js")
+                {
+                    w.rsplit('/').next().unwrap_or(w)
+                } else {
+                    w
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+    let mut keep: Vec<String> = Vec::new();
+    for cmd in out.iter() {
+        let s = shape(cmd);
+        match keep.iter().position(|k| shape(k) == s) {
+            // Cùng một lệnh, hai cách viết: giữ bản nói rõ tệp nằm đâu.
+            Some(i) => {
+                if cmd.len() > keep[i].len() {
+                    keep[i] = cmd.clone();
+                }
+            }
+            None => keep.push(cmd.clone()),
+        }
+    }
+    *out = keep;
+}
+
+/// Đuôi file huba CHẮC CHẮN không gửi — thứ cổng quét rò không đọc nổi.
+///
+/// 🔴 Đây từng là một danh sách TRẮNG, và nó sai ngay trong lần dùng đầu tiên
+/// (2026-08-13): tôi mời Hà bấm thử vào `huba.env.example`, đuôi `.example`
+/// không có trong danh sách ⟹ **không có nút nào hiện ra**. Danh sách trắng
+/// bao giờ cũng thiếu — `.example`, `.gitignore`, `Makefile`, `LICENSE`, một
+/// file không đuôi — trong khi câu hỏi thật chỉ có một: *cổng quét rò đọc được
+/// nội dung này không?*
+///
+/// 🪦 Câu trả lời cũ: *"`send_document` đọc bằng `read_to_string`, file nhị phân
+/// tự rơi ở đó"*. Hết đúng từ 2026-08-18 — cửa ấy dựng để phục vụ luật 5 bản
+/// CŨ (*"thứ gì rời khỏi máy phải soi được"*), mà luật ấy đã đổi từ 16/08: quét
+/// thì GHI, không chặn. Nên nó chỉ còn chặn được đúng bản in của chủ máy.
+///
+/// Danh sách dưới đây vì thế đổi vai: nó không còn nói "đọc được thành chữ",
+/// nó nói **đuôi nào đủ quen để một đường TƯƠNG ĐỐI trên màn được coi là tệp** —
+/// gồm cả `.docx`/`.pdf`. Câu "có thật không" vẫn để ĐĨA trả lời.
+///
+/// Danh sách trắng, cố ý hẹp: đường tương đối không có `/` đầu để phân biệt với
+/// câu văn, nên thứ duy nhất còn phân biệt được là cái đuôi. Rộng tay ở đây thì
+/// mỗi dấu chấm giữa câu thành một cái nút; thiếu một đuôi thì cùng lắm là một
+/// tệp không có nút, và đường tuyệt đối vẫn chạy như cũ.
+pub const TEXT_FILE_EXT: &[&str] = &[
+    "md",
+    "txt",
+    "rs",
+    "toml",
+    "json",
+    "hjson",
+    "yaml",
+    "yml",
+    "sh",
+    "zsh",
+    "bash",
+    "mjs",
+    "cjs",
+    "js",
+    "ts",
+    "tsx",
+    "jsx",
+    "css",
+    "scss",
+    "html",
+    "htm",
+    "py",
+    "rb",
+    "go",
+    "java",
+    "kt",
+    "sql",
+    "plist",
+    "lock",
+    "log",
+    "conf",
+    "ini",
+    "xml",
+    "csv",
+    "env",
+    "gitignore",
+    "service",
+    // 🔴 BẢN IN — thêm 2026-08-18. Hà: *"Có file docx nhưng không có nút tải"*.
+    // Danh sách này sinh ra hồi huba chỉ gửi được tệp chữ, nên nó vô tình đúng
+    // bằng "những gì đọc thành UTF-8 được". Cửa ấy đã bỏ (`telegram::document_body`),
+    // và thứ rơi ra ngoài chính là **bản in** — `.docx` đúng chuẩn văn bản hành
+    // chính, `.xlsx` bảng số, `.pdf` bản gửi đi. Tức mỗi phiên làm xong việc thì
+    // huba gửi được bản nháp mà không gửi được bản thành phẩm.
+    "docx",
+    "xlsx",
+    "pptx",
+    "doc",
+    "xls",
+    "odt",
+    "ods",
+    "pdf",
+];
+
+/// Đuôi KHÔNG dựng nút — không phải "không gửi được".
+///
+/// 🔴 Tên cũ (`UNSENDABLE_EXT`) nói sai từ 2026-08-18: `send_document` nay gửi
+/// được byte thô, nên ảnh và kho nén cũng tới nơi nếu có ai bấm. Cái danh sách
+/// này chỉ còn một việc: **đừng tự mọc nút** cho thứ không ai đọc trên điện
+/// thoại, và đừng biến mọi đường dẫn ảnh trong một báo cáo thành một hàng nút.
+/// Ảnh màn hình đã có đường riêng (`/anh`, `send_photo`).
+pub const NO_BUTTON_EXT: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "heic", "bmp", "ico", "tiff", "zip", "gz", "tgz", "bz2",
+    "xz", "7z", "rar", "dmg", "pkg", "app", "sqlite", "db", "bin", "exe", "dylib", "so", "o", "a",
+    "rlib", "wasm", "mp3", "mp4", "mov", "wav", "m4a", "avi", "webm", "ttf", "otf", "woff",
+    "woff2",
+];
+
+/// Những ĐƯỜNG DẪN FILE hiện trên màn — thứ bấm một cái là nhận được file.
+///
+/// 🔴 Hà 2026-08-13: *"các nội dung có path file thì nên cho click vào nhận
+/// được file để mở trực tiếp trên tele"*. Trước đó cây cầu này một chiều: huba
+/// **nhận** được tệp từ Telegram (`getFile`, từ 79ee269) nhưng không gửi ra
+/// được cái nào — nên một báo cáo nhắc tới `ARCHITECTURE.md` là nhắc tới thứ
+/// người đọc trên điện thoại không mở nổi.
+///
+/// Nhận theo HÌNH DẠNG như `commands_on_screen`: đường TUYỆT ĐỐI (`/…`, `~/…`)
+/// mang tên tệp, **hoặc** đường TƯƠNG ĐỐI có đuôi văn bản đã biết
+/// (`TEXT_FILE_EXT`). Không nhận đuôi nhị phân.
+///
+/// 🔴 Đường tương đối được nhận từ 2026-08-16. Hà, đọc một bản *"Xem đầy đủ"*
+/// có nhắc `docs/flow-boc-tach-lenh.md`: *"nhận được tin có file nhưng chưa có
+/// nút tải hay xem"* · *"Có file .md đấy"*.
+///
+/// Luật cũ bỏ qua chúng vì *"`src/main.rs` trên màn không nói được nó nằm trong
+/// dự án nào, đoán sai là gửi nhầm file của dự án khác"* — lo đúng, chỗ sai:
+/// câu ấy đo bằng HÌNH DẠNG một thứ chỉ trả lời được bằng ĐĨA. Nay huba biết thư
+/// mục của từng phiên (`pipeline::session_root`), nên đường tương đối được giải
+/// theo đúng cây của phiên đã nhắc tới nó, và `sendable_file` vứt bỏ những gì
+/// không phải tệp thật nằm trong cây ấy. Không tồn tại thì không có nút — chứ
+/// không phải đoán rồi gửi nhầm.
+///
+/// Đổi lại, đuôi phải nằm trong danh sách trắng: một câu văn đầy dấu chấm và
+/// dấu gạch chéo (`12/08`, `v.v.`) thì không được thành một cái nút.
+///
+/// Phần "có THẬT không" KHÔNG hỏi ở đây: hàm này thuần, không chạm đĩa. Nó được
+/// hỏi đúng một lần, ở `pipeline::sendable_file`.
+///
+/// 🪦 Và câu *"có đọc được thành chữ không"* thì thôi hỏi hẳn (2026-08-18): nó
+/// từng là cửa thật ở `send_document`, dựng cho một hàng rào đã gỡ từ 16/08.
+/// Bản in `.docx`/`.pdf` nay gửi được — xem `telegram::document_body`.
+pub fn paths_on_screen(text: &str, max: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in text.lines() {
+        if forbids(raw) {
+            continue;
+        }
+        // Cắt theo khoảng trắng và các dấu bao quanh hay gặp trong câu văn.
+        for tok in raw.split(|c: char| c.is_whitespace() || "`\"'()[]{}<>,;".contains(c)) {
+            // 🔴 Đường dẫn BỊ CẮT CỤT không phải một đường dẫn.
+            //
+            // Hà 2026-08-13, ảnh chụp Telegram: ba nút 📎 dưới một tin, trong đó
+            // `Cargo.toml` và `Cargo.toml…` — hai nút, một file. Cái thứ hai
+            // sinh ra từ chính màn hình: TUI cắt dòng lệnh dài rồi dán `…` vào
+            // cuối (`--manifest-path …/rust/Cargo.toml… (46s · 2 lines)`), và
+            // vòng quét này đọc `Cargo.toml…` thành một đường dẫn khác.
+            //
+            // Bỏ hẳn, đừng gọt `…` rồi dùng: gọt xong thì đúng ở ca này mà SAI
+            // ở ca `…/rust/Car…` — cắt cụt giữa tên file thì phần còn lại là
+            // một đường dẫn hợp lệ về hình dạng và trỏ vào hư không. Một cái
+            // nút không bao giờ mở được là một lời hứa suông trên màn hình.
+            if tok.contains('…') || tok.contains("...") {
+                continue;
+            }
+            let t = tok.trim_end_matches(['.', ':', '?', '!', ',']);
+            if t.len() < 4 {
+                continue;
+            }
+            let absolute = t.starts_with('/') || t.starts_with("~/");
+            // Phải có TÊN FILE, không phải một thư mục: đoạn cuối có dấu chấm.
+            let Some(last) = t.rsplit('/').next().filter(|l| l.contains('.')) else {
+                continue;
+            };
+            let ext = last.rsplit('.').next().unwrap_or_default().to_lowercase();
+            if NO_BUTTON_EXT.contains(&ext.as_str()) {
+                continue;
+            }
+            // Đường TƯƠNG ĐỐI (kể cả TÊN TỆP TRẦN) chỉ cần mang đuôi văn bản
+            // đã biết — câu hỏi "có thật không" để ĐĨA trả lời.
+            //
+            // 🔴 Hà 2026-08-17, ảnh `/shot` phiên `[dwork]`: *"Trong nội dung có
+            // file *.md chưa chèn link tải, phải tìm được file ở đĩa"*. Màn ấy
+            // có `TODO.md`, `active-context.md` viết trần, và
+            // `docs/chuyen-doi-thiet-ke-2026-08-16h.md` bị cửa sổ **bẻ đôi** —
+            // `docs/` nằm cuối một dòng, tên tệp nằm ở dòng sau. Đòi token phải
+            // chứa `/` là loại sạch cả ba, mà cả ba đều là tệp có thật.
+            //
+            // Hàng rào không nằm ở hình dạng nữa mà ở `pipeline::sendable_file`:
+            // giải theo cây của đúng phiên, và không thấy thì ĐI TÌM trong cây
+            // ấy — khớp đúng một tệp mới dựng nút, nhiều khớp thì thôi (đoán
+            // giữa hai tệp cùng tên là gửi nhầm). `Node.js` vẫn không thành nút,
+            // chỉ khác là nay nó chết vì không có tệp nào tên vậy, chứ không
+            // phải vì thiếu dấu gạch chéo.
+            if !absolute && !TEXT_FILE_EXT.contains(&ext.as_str()) {
+                continue;
+            }
+            if !out.iter().any(|x| x == t) {
+                out.push(t.to_string());
+            }
+        }
+    }
+    if out.len() > max {
+        out.drain(..out.len() - max);
+    }
+    out
+}
+
+/// Dấu tệp DUY NHẤT huba đọc: MỘT DÒNG RIÊNG dạng `📎 /đường/dẫn/tuyệt/đối`.
+///
+/// 🔴 Hà 2026-10-06: *"ghi thêm quy tắc vào mỗi phiên khi khởi tạo, huba đọc
+/// đúng 1 định dạng đánh dấu duy nhất để bấm vào là lệnh lấy file gửi ngược về
+/// tele"* — chốt *"📎 + bỏ phép đoán"*. Phép đoán cũ (`paths_on_screen` + lùng
+/// cây) đo được trên `logs/huba.log`: **9.736** lần `file_search_capped` ("cây
+/// quá lớn — dừng quét"), **3.906** lần `file_search_ambiguous`, mà chỉ **90**
+/// tệp thật sự đi ra — đúng cái "lúc được lúc không" Hà gặp từ 24/09.
+///
+/// Quy tắc cho phiên nằm ở `~/projects/CLAUDE.md` (CLI tự nạp cho mọi phiên
+/// dưới `~/projects`). Hàm THUẦN, không chạm đĩa: "có thật không / gửi được
+/// không" hỏi ở `pipeline::marked_file`.
+///
+/// Đọc được: thụt đầu dòng, dấu `⏺`/`●` của TUI ở đầu, đường dẫn bọc trong
+/// backtick, và DẤU CÁCH trong đường dẫn (cả phần sau `📎 ` là đường dẫn — vì
+/// thế dòng phải không có chữ nào khác). Không đọc: `📎` giữa câu, đường dẫn
+/// tương đối.
+pub fn file_markers(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in text.lines() {
+        let l = raw.trim_start();
+        let l = l
+            .strip_prefix('⏺')
+            .or_else(|| l.strip_prefix('●'))
+            .map(str::trim_start)
+            .unwrap_or(l);
+        let Some(rest) = l.strip_prefix('📎') else {
+            continue;
+        };
+        if !rest.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let p = rest.trim().trim_matches('`').trim();
+        if !(p.starts_with('/') || p.starts_with("~/")) || p.len() < 2 {
+            continue;
+        }
+        if !out.iter().any(|x| x == p) {
+            out.push(p.to_string());
+        }
+    }
+    out
+}
+
+/// Đây là CÂU VĂN chứ không phải một dòng lệnh?
+///
+/// 🔴 Hà 2026-08-13, ảnh chụp màn phiên codetrail: *"bấm vào nút chạy lệnh thì
+/// bị dính text ngoài như này"*. Thứ huba gõ vào phiên là:
+///
+/// ```text
+/// ! ▶ Lệnh thấy trên màn (bấm nút dưới để gõ `!` vào chính phiên): • git -C … push origin main
+/// (eval):1: no matches found: (bấm nút dưới để gõ  vào chính phiên):
+/// ```
+///
+/// Tức **huba đọc lại chính dòng trang trí của nó** rồi biến thành lệnh. Cú push
+/// không hề chạy, mà nhìn thì như đã bấm.
+///
+/// Hai lỗ cùng lúc, và cái thứ hai mới đáng sợ:
+/// * `/shot` tự đính dòng *"▶ Lệnh thấy trên màn…"* vào bản trả lời, rồi lượt
+///   quét sau đọc luôn cả dòng ấy — **một vòng tự ăn chính mình**.
+/// * Lượt quét trong DẤU NHÁY thiếu sạch các cửa lọc câu văn mà lượt quét theo
+///   DÒNG đã có từ lâu (`" ("`, `", "`, dấu câu cuối). Hai lượt quét, hai bộ
+///   luật khác nhau, và không ai nhìn thấy sự lệch cho tới khi nó gõ ra shell.
+///
+/// Nay một bộ luật, dùng cho cả hai lượt — kể cả một cửa nhận ra CHÍNH chữ huba
+/// in ra màn.
+fn looks_like_prose(s: &str) -> bool {
+    // Câu văn thường mang mệnh đề trong ngoặc hoặc dấu phẩy; dòng lệnh thật thì
+    // hiếm khi có. Thà bỏ sót một nút còn hơn dựng một cái nút chạy nhầm thứ.
+    s.contains(" (")
+        || s.contains(", ")
+        || s.ends_with('.')
+        || s.ends_with(':')
+        || s.ends_with('?')
+        // …và chữ của CHÍNH huba trên màn thì tuyệt đối không phải lệnh.
+        || s.contains("Lệnh thấy trên màn")
+        || s.contains("bấm nút")
+        // 🔴 DẤU CỦA VĂN XUÔI, không bao giờ có trong một dòng shell.
+        //
+        // Hà 2026-08-13, ảnh chụp nút `▶ cargo test 258 · clippy 0 warning`:
+        // *"Thực sự mấy cái nút đọc không dám bấm vì không thể hiểu nó làm
+        // gì"*. Anh đúng, và cái nút ấy là **câu trong báo cáo của chính
+        // tôi** — một dòng tổng kết, không phải lệnh. Bấm vào là chạy
+        // `cargo test 258 · clippy 0 warning`, một thứ vô nghĩa.
+        //
+        // `looks_like_prose` bắt dấu phẩy và dấu ngoặc, nhưng câu ấy dùng
+        // dấu chấm giữa `·` để ngăn vế — thói quen viết của chính tôi, và
+        // nó lọt sạch mọi cửa. Ba ký tự dưới đây là dấu ĐÁNH MÁY của văn
+        // xuôi: `·` `—` `…`. Không dòng lệnh thật nào mang chúng, nên bắt
+        // chúng không bỏ sót cái nút nào có thật.
+        || s.contains('·')
+        || s.contains('—')
+        || s.contains('…')
+        // Kết bằng một con số trần: `cargo test 258` là câu ĐẾM, không phải
+        // lệnh. Cùng họ với luật trên — văn xuôi đội lốt lệnh.
+        || ends_with_bare_number(s)
+}
+
+/// `cargo test 258` · `git push 42` — từ CUỐI là một con số trần.
+///
+/// Tham số của một lệnh thật là tên, cờ, hay đường dẫn; số trần đứng cuối gần
+/// như luôn là một con số đếm trong câu văn. Bỏ sót vài lệnh hiếm có hình dạng
+/// ấy là cái giá rẻ: bỏ sót thì gõ tay, bấm nhầm thì không có nút hoàn tác.
+fn ends_with_bare_number(s: &str) -> bool {
+    s.split_whitespace()
+        .next_back()
+        .is_some_and(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Câu này đang CẤM một lệnh, chứ không mời chạy nó?
+///
+/// 🔴 Trả giá ngay trong ngày đặt tính năng, 2026-08-13: một bộ gác lệnh từ
+/// chối `git filter-branch` và in ra câu giải thích **chứa chính lệnh ấy trong
+/// dấu nháy**. huba đọc màn, thấy hình dạng một lệnh, và gửi cho Hà ba cái nút —
+/// trong đó có `▶ git filter-branch --force`. Tức tính năng "bấm là chạy" vừa
+/// biến một lời cảnh báo thành **một cú bấm là làm đúng cái điều bị cấm**.
+///
+/// Bài học không phải "thêm một cửa nữa" mà là: nhận diện theo hình dạng thì
+/// không đọc được Ý — và ý duy nhất bắt buộc phải đọc là *"đừng chạy cái này"*.
+/// Dấu hiệu lấy hẹp và rõ, chấp nhận bỏ sót vài cái nút đúng, vì cán cân ở đây
+/// lệch hẳn: bỏ sót thì gõ tay, bấm nhầm thì không có nút hoàn tác.
+fn forbids(context: &str) -> bool {
+    const MARKS: &[&str] = &[
+        "block",
+        "⚠",
+        "❌",
+        "🔴",
+        "never",
+        "do not",
+        "don't",
+        "denied",
+        "refus",
+        "dangerous",
+        "đừng",
+        "cấm",
+        "không được",
+        "không nên",
+        "từ chối",
+        "nguy hiểm",
+        "thay vì",
+        // 🔴 Thêm 2026-08-14, sau khi Hà bấm một nút và nhận về một lệnh xoá
+        // trần: *"Nút lệnh chạy ko đúng"*. Chữ ấy huba bắt được từ một THÔNG BÁO
+        // CHẶN của hook — *"the command runs … which permanently deletes tracked
+        // source files … Safer form: …"*. Cả đoạn là lời CẤM một lệnh, và huba
+        // đọc nó thành lời MỜI chạy lệnh ấy.
+        //
+        // Mấy mẫu dưới là chữ ký của loại văn bản đó, không phải của một câu
+        // mời: một lời cảnh báo bao giờ cũng nói hậu quả ("permanently",
+        // "irreversible") hoặc đưa đường thay thế ("safer form"), còn
+        // "pretooluse" thì đúng tên cái cổng đã chặn.
+        "safer form",
+        "permanently",
+        "irreversible",
+        "pretooluse",
+        "hook stopped",
+    ];
+    let c = context.to_lowercase();
+    MARKS.iter().any(|m| c.contains(m))
+}
+
+// 🪦 `destructive(cmd)` — GỠ HẲN 2026-08-16.
+//
+// Nó giữ một danh sách `rm`, `git reset --hard`, `git clean`, `kill`,
+// `drop table`, `launchctl bootout`… và MỌI dòng khớp danh sách ấy đều không
+// được dựng nút. Lý do viết ra hồi 14/08 nghe rất hợp lý: *"một cái nút mời
+// làm việc không lùi lại được là một cái bẫy"*.
+//
+// Hà gỡ nó bằng một câu ngắn hơn cả cái lý do ấy — 2026-08-16:
+//
+//   *"tôi ở tele là phải gọi lệnh thao tác như ngồi máy thì chặn khác gì chặt
+//   tay, cần kênh tele để làm gì?"*
+//
+// Đó chính là phép thử của cả dự án, phát biểu ngược lại. `CLAUDE.md` viết:
+// *"Anything he can do at the terminal but not from the phone is a gap."*
+// Ngồi ở máy anh gõ `rm` không ai hỏi câu nào; huba từ chối dựng nút cho đúng
+// dòng ấy nên nó tự tay tạo ra một khoảng cách — rồi im lặng về việc đó, nên
+// từ điện thoại nhìn ra y hệt "huba không đọc được lệnh".
+//
+// Cái rào THẬT của dự án không nằm ở đây và không đổi:
+// `sessions::DENIED_TOOLS` gác thứ một PHIÊN TỰ CHẠY được phép làm (luật 1).
+// Gác một cỗ máy chạy không người trông là một chuyện; gác bàn tay chủ máy là
+// một chuyện khác, và tệp này đã lẫn hai chuyện ấy suốt hai ngày.
+
+/// Nối lại một lệnh bị MÀN HÌNH bẻ dòng — hoặc từ chối, nếu không chắc.
+///
+/// 🔴 Hà 2026-08-13, ảnh chụp Telegram: *"Không có lệnh merge mà bấm"*. Màn của
+/// phiên tfl5 lúc 11:15 kết bằng đúng một dòng lệnh để gõ, và huba không dựng nổi
+/// một cái nút nào cho nó. Lấy nguyên chữ huba đã gửi ra khỏi nhật ký thì thấy
+/// ngay vì sao — lệnh dài hơn bề ngang cửa sổ nên TUI bẻ nó làm hai:
+///
+/// ```text
+/// deploy with `bash scripts/deploy.sh walk-fixes-0813 --expect-symbol
+///   renderChatPending`. (disable recaps in /config)
+/// ```
+///
+/// …và cổng `contains('\n')` (viết 08-12) vứt thẳng. Cổng ấy đúng ý mà sai
+/// hình: nó định loại KHỐI CHỮ nhiều dòng, nhưng thứ nó loại được nhiều nhất
+/// lại là **lệnh dài** — đúng những lệnh đáng có nút nhất, vì không ai cần một
+/// cái nút để gõ `ls`.
+///
+/// Nối lại thì phải nối cho ĐÚNG, nên chỉ nối khi chỗ bẻ rơi vào **ranh giới
+/// từ**: đo trên chữ thật, TUI của `claude` bẻ sau dấu cách rồi thụt đầu dòng
+/// tiếp (`--expect-symbol ␣\n␣␣renderChatPending`, `git rev-parse ␣\n␣␣␣␣␣
+/// --show-toplevel`). Bẻ GIỮA một từ thì nối lại là bịa ra một lệnh khác — thà
+/// mất một cái nút, nên trường hợp ấy trả `None`.
+fn unwrap_terminal_wrap(span: &str) -> Option<String> {
+    if !span.contains('\n') {
+        return Some(span.trim().to_string());
+    }
+    let parts: Vec<&str> = span.split('\n').collect();
+    // Một lệnh bị bẻ vài lần thì còn là một lệnh; bẻ năm lần thì đây là một khối
+    // chữ, và khối chữ không phải thứ để bấm.
+    if parts.len() > 4 {
+        return None;
+    }
+    for w in parts.windows(2) {
+        // Dòng trống = ngắt đoạn văn, không phải bẻ dòng.
+        if w[0].trim().is_empty() || w[1].trim().is_empty() {
+            return None;
+        }
+        let word_boundary =
+            w[0].ends_with(char::is_whitespace) || w[1].starts_with(char::is_whitespace);
+        if !word_boundary {
+            return None;
+        }
+    }
+    Some(
+        parts
+            .iter()
+            .map(|p| p.trim())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim()
+            .to_string(),
+    )
+}
+
+/// Hộp chọn đang chờ trên màn, nếu có.
+///
+/// `claude` vẽ hộp chọn dạng:
+///
+/// ```text
+///   Câu hỏi ở đây?
+///   ❯ 1. Phương án một
+///     2. Phương án hai
+/// ```
+///
+/// Nhận diện bằng HÌNH DẠNG (`❯` hoặc `N.` đứng đầu dòng), không bằng cách
+/// đoán nội dung: câu hỏi là chữ của người khác viết, hình dạng mới là thứ
+/// `claude` bảo đảm.
+/// Chuỗi phím đưa con trỏ tới dòng **Submit** rồi Enter — cho hộp CHỌN NHIỀU.
+///
+/// 🔴 Hà 2026-08-17, sau khi bấm đủ bốn lựa chọn rồi `/send_…`: *"Ko qua nổi màn
+/// này"*. Đúng, và một dấu Enter trần không bao giờ qua được: trong hộp chọn
+/// nhiều, Enter tác động lên DÒNG CON TRỎ ĐANG ĐỨNG — tức bật/tắt đúng cái ô
+/// vừa chọn — còn thứ gửi bảng đi là một dòng riêng tên `Submit`, không mang số
+/// nên không bấm số tới được.
+///
+/// Ba cửa, và cả ba đều đo trên chính màn ấy chứ không đoán:
+/// · dòng chân phải NÓI `↑/↓ to navigate` — chính TUI khai rằng mũi tên chỉ di
+///   chuyển, nên ở đây nó không phạm luật "mũi tên vừa move vừa confirm";
+/// · phải thấy dòng `Submit`;
+/// · phải thấy con trỏ `❯` để biết đang đứng đâu.
+/// Thiếu một cái ⟹ `None`, và chỗ gọi rơi về Enter trần như cũ.
+/// 🔴 `Submit` KHÔNG nằm trong vòng đi dọc — đo 2026-08-17, và bản trước đó tin
+/// ngược lại nên nó **chốt hụt và lật thêm một ô**.
+///
+/// Phép đo: hộp 4 lựa chọn, con trỏ ở mục 4, gửi đúng kế hoạch cũ (`↓↓` rồi
+/// Enter) để tới dòng `Submit` nằm ngay dưới mục 5. Kết quả: con trỏ **quấn về
+/// mục 1** (4→5→1) và cú Enter cuối lật mất dấu của mục 1. Bảng vẫn mở nguyên.
+/// Vòng đi dọc chỉ gồm những dòng `<số>. [` — dòng `Submit` và dòng không có ô
+/// (`6. Chat about this`) không phải chỗ con trỏ dừng được.
+///
+/// Đường thật là thanh tab NGANG: `←  ☒ Pick  ✔ Submit  →`. Từ câu đang mở, mỗi
+/// `→` sang một tab, và tab cuối là nút gửi. Đo trọn vòng trên hộp thật: tick
+/// mục 2 và 4, rồi `[enter] · [→] · [enter]` ⟹ phiên nhận đúng
+/// `Chon muc nao? → Beta, Delta`, không thừa không thiếu một mục.
+///
+/// `at_question` là câu ĐANG MỞ (0 là câu đầu), đọc từ màn bằng
+/// [`cursor_on`] — không đếm phím đã bấm, vì chủ máy có thể vừa tự bấm.
+pub fn submit_plan(screen: &str, at_question: usize) -> Option<Vec<Vec<String>>> {
+    if !has_submit(screen) {
+        return None;
+    }
+    // Không thấy thanh tab (nó có thể nằm ngoài khung màn đọc được) ⟹ coi như
+    // bảng MỘT câu: một bước `→`. Đó là hình dạng thường gặp, và nếu đoán sai
+    // thì bảng vẫn mở — chỗ gọi đọc lại màn rồi nói đúng thứ đã xảy ra.
+    let questions = ask_table(screen).map(|t| t.answered.len()).unwrap_or(1);
+    let steps = questions.saturating_sub(at_question).max(1);
+    let enter = || vec!["enter".to_string()];
+    let rights: Vec<String> = std::iter::repeat_n("right".to_string(), steps).collect();
+    Some(vec![enter(), rights, enter()])
+}
+
+/// Màn này có nút gửi bấm tới được không — dùng để quyết định có gắn ✅ hay
+/// không, nên nó KHÔNG phụ thuộc con trỏ đang đứng đâu.
+pub fn has_submit(screen: &str) -> bool {
+    is_checkbox_list(screen) && screen.contains("to navigate") && screen.lines().any(is_submit_line)
+}
+
+/// Dòng `Submit` của hộp chọn nhiều — mục duy nhất không mang số.
+fn is_submit_line(l: &str) -> bool {
+    let t = l.trim().trim_start_matches('\u{276f}').trim();
+    t == "Submit" || t.ends_with(" Submit")
+}
+
+/// Một MỤC con trỏ dừng được: dòng mang `<số>.` **và có ô** `[ ]`.
+///
+/// Hai thứ bị loại ra, cả hai đều đo được chứ không suy:
+/// · **Phần mô tả thụt vào** dưới mỗi lựa chọn không phải mục — bản đầu (sáng
+///   17/08) đếm theo DÒNG, nên với hộp mà mỗi lựa chọn kéo hai ba dòng giải
+///   thích, con trỏ dừng giữa đường và cú Enter rơi vào một lựa chọn.
+/// · **Dòng `Submit` và dòng không có ô** (`6. Chat about this`) — chiều 17/08:
+///   con trỏ ở mục 4, hai `↓` để tới `Submit` nằm ngay dưới mục 5, mà con trỏ
+///   **quấn về mục 1** (4→5→1). Vòng đi dọc đóng lại ở mục cuối CÓ Ô; `Submit`
+///   tới bằng `→` trên thanh tab (xem [`submit_plan`]).
+fn is_item_line(l: &str) -> bool {
+    let t = l.trim().trim_start_matches('\u{276f}').trim();
+    t.split_once('.').is_some_and(|(n, rest)| {
+        n.trim()
+            .parse::<usize>()
+            .is_ok_and(|n| (1..=9).contains(&n))
+            && rest.trim_start().starts_with('[')
+    })
+}
+
+/// Đây có phải hộp CHỌN NHIỀU không — nhận bằng ô `[ ]` / `[✓]` trên nhãn.
+///
+/// 🔴 Hà 2026-08-17: *"Mà chèn [] là tương ứng chọn được nhiều à"*. Đúng, và nó
+/// là dấu hiệu ĐO ĐƯỢC cho một khác biệt đắt: hộp chọn MỘT nhận phím số
+/// (`/key <số>`, chạy từ 13/08), còn hộp CHỌN NHIỀU thì KHÔNG — dòng chân của
+/// nó chỉ khai `Enter to select · ↑/↓ to navigate`. Đo thật hôm ấy: huba bấm
+/// `1`, log ghi "đã bấm '1'", màn không đổi một ô nào; rồi `/shot` lại vẫn thấy
+/// `[ ]` trống trơn.
+///
+/// Nên trong hộp này, "chọn mục n" nghĩa là ĐI TỚI mục n rồi Enter.
+pub fn is_checkbox_list(screen: &str) -> bool {
+    screen
+        .lines()
+        .filter(|l| {
+            let t = l.trim().trim_start_matches('\u{276f}').trim();
+            t.split_once('.').is_some_and(|(n, rest)| {
+                n.trim().parse::<usize>().is_ok() && rest.trim_start().starts_with('[')
+            })
+        })
+        .count()
+        >= 2
+}
+
+/// BA LƯỢT GHI đưa con trỏ tới MỤC ở dòng `target_line` rồi Enter — mà chỉ đúng
+/// một ô đổi dấu.
+///
+/// Vì sao ba, chứ không phải "mấy mũi tên rồi Enter": mỗi lượt ghi tự mang một
+/// CR không gỡ được, tức **mỗi lượt là một cú bật/tắt vào dòng đang đứng** (đo:
+/// xem [`press_writes`]). Nên bản cũ — một mũi tên một lượt, rồi một Enter —
+/// bật/tắt đúng bấy nhiêu ô dọc đường: đi từ mục 2 lên mục 1 thì mục 2 mất dấu,
+/// và đó chính là *"bấm cái nọ mất cái kia"*.
+///
+/// Ba lượt, xếp cho các cú bật/tắt tự triệt tiêu nhau:
+/// 1. `enter` tại chỗ ⟹ ô ĐANG ĐỨNG đổi dấu (hỏng có chủ ý, sẽ trả lại ngay);
+/// 2. cả k mũi tên trong MỘT lượt ⟹ ô đang đứng đổi dấu **lần hai** (về đúng
+///    như cũ) và con trỏ đi trọn k bước;
+/// 3. `enter` ⟹ ô ĐÍCH đổi dấu. Một cú, đúng chỗ.
+///
+/// Con trỏ dừng lại ở mục đích — đúng chỗ tay người sẽ để nó lại — nên bấm lại
+/// chính ô ấy chỉ tốn một lượt ghi.
+///
+/// Đích là dòng `Submit` thì lượt 3 là cú CHỐT, và hai lượt đầu đã lo cho bảng
+/// đi đúng bằng những ô chủ máy đã chọn. Bản cũ chốt **sau khi** đã lỡ bật/tắt
+/// từng ô nó đi ngang qua — sai lặng lẽ, và không lùi lại được.
+///
+/// Cửa an toàn giữ nguyên: dòng chân phải khai `↑/↓ to navigate` — chính TUI nói
+/// mũi tên chỉ di chuyển. Không có dòng ấy ⟹ `None`, chỗ gọi giữ đường cũ.
+pub fn nav_plan(screen: &str, target_line: usize) -> Option<Vec<Vec<String>>> {
+    if !screen.contains("to navigate") {
+        return None;
+    }
+    let lines: Vec<&str> = screen.lines().collect();
+    let items: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| is_item_line(l))
+        .map(|(i, _)| i)
+        .collect();
+    // 🔴 CON TRỎ PHẢI LÀ MỘT MỤC, KHÔNG PHẢI DẤU `❯` ĐẦU TIÊN TRÊN MÀN.
+    //
+    // Hà 2026-09-18: *"giờ thì bấm vào lựa chọn nào cũng như bấm vào số 1"*.
+    // Đo trên chính màn ấy (`tests/fixtures/man-hop-chon-hai-con-tro.txt`,
+    // chụp bằng osascript lúc 08:2x): màn có **HAI** dấu `❯` —
+    //     dòng  4:  `❯ Tôi muốn xem workflow chi tiết`   ← ô nhập / lượt trước
+    //     dòng 10:  `❯ 1. [✔] Luồng ①②③ của tiêu chuẩn`  ← con trỏ THẬT
+    // `position` lấy cái ĐẦU TIÊN ⇒ trúng dòng ô nhập ⇒ dòng ấy không nằm trong
+    // `items` ⇒ `?` trả `None` ⇒ `checkbox_plan` trả `None` ⇒ chỗ gọi rơi về
+    // "gõ thẳng con số". Mà hộp chọn-nhiều KHÔNG nhận số (dòng chân của nó chỉ
+    // khai `Enter to select · ↑/↓ to navigate`), nên con số rơi vào hư không và
+    // **dấu CR mà `do script` luôn kèm** chốt ô con trỏ đang đứng — ô 1, mọi lần.
+    // Bằng chứng nó chưa từng chạy: `keys_checkbox_plan` = **0 lượt** trong 60 MB
+    // nhật ký, trong khi `keys_typed kind:"key"` vẫn đều.
+    //
+    // Hỏng ÂM THẦM về phía "không tìm thấy" — `None` ở đây đọc y hệt "màn này
+    // không phải hộp checkbox", nên đường lùi trông hợp lý trong khi nó sai.
+    let cursor_line = lines
+        .iter()
+        .enumerate()
+        .find(|(_, l)| l.trim_start().starts_with('\u{276f}') && is_item_line(l))
+        .map(|(i, _)| i)?;
+    let from = items.iter().position(|i| *i == cursor_line)?;
+    let to = items.iter().position(|i| *i == target_line)?;
+    let delta = to as isize - from as isize;
+    let enter = || vec!["enter".to_string()];
+    // Đã đứng sẵn ở đó thì không có quãng đường nào để đi, nên cũng không có ô
+    // nào phải trả lại: đúng một lượt ghi, đúng một cú bật/tắt.
+    if delta == 0 {
+        return Some(vec![enter()]);
+    }
+    let key = if delta > 0 { "down" } else { "up" };
+    let arrows: Vec<String> = std::iter::repeat_n(key.to_string(), delta.unsigned_abs()).collect();
+    Some(vec![enter(), arrows, enter()])
+}
+
+/// Bao nhiêu ô đã tick / tổng số ô, trên một hộp CHỌN NHIỀU.
+///
+/// Dùng để ack nói KẾT QUẢ chứ không nói hành động: "đã bấm '3'" chỉ khai rằng
+/// phím rời khỏi huba, còn "3/5 ô đã chọn" mới là thứ người ở xa cần biết — và
+/// nó bắt được cả ca phím tới nơi nhưng rơi vào mục khác.
+pub fn ticked(screen: &str) -> (usize, usize) {
+    let marks = tick_marks(screen);
+    (marks.iter().filter(|(_, on)| *on).count(), marks.len())
+}
+
+/// Từng ô một: `(số mục, đang tick hay không)`, theo đúng thứ tự trên màn.
+///
+/// Tách ra khỏi [`ticked`] để có thứ con số tổng không nói được: ô NÀO đổi. Một
+/// cú bấm đúng làm đổi đúng một ô, nên "mấy ô đổi" là phép đo bắt được đúng lỗi
+/// *"bấm cái nọ mất cái kia"* — thứ mà `3/5` vẫn xanh rờn khi hai ô cùng lật.
+pub fn tick_marks(screen: &str) -> Vec<(usize, bool)> {
+    let mut out = Vec::new();
+    for l in screen.lines() {
+        let t = l.trim().trim_start_matches('\u{276f}').trim();
+        let Some((n, rest)) = t.split_once('.') else {
+            continue;
+        };
+        let Ok(n) = n.trim().parse::<usize>() else {
+            continue;
+        };
+        if let Some(inside) = rest
+            .trim_start()
+            .strip_prefix('[')
+            .and_then(|r| r.split(']').next())
+        {
+            out.push((n, !inside.trim().is_empty()));
+        }
+    }
+    out
+}
+
+/// Những mục có dấu tick KHÁC nhau giữa hai màn.
+///
+/// Rỗng = không ô nào đổi (cú bấm rơi vào đâu mất). Một phần tử = đúng một ô
+/// đổi, dạng duy nhất được coi là lành. Từ hai trở lên = huba vừa lật hộ chủ máy
+/// một ô anh không bấm, và chỗ gọi PHẢI nói ra chứ không được nuốt.
+///
+/// So theo SỐ MỤC chứ không theo vị trí trong danh sách: hộp có thể vẽ lại
+/// (mô tả dài ra, dòng gấp khúc), còn số mục thì không đổi giữa hai nhịp.
+pub fn ticks_changed(before: &str, after: &str) -> Vec<usize> {
+    let a = tick_marks(before);
+    let b = tick_marks(after);
+    b.iter()
+        .filter(|(n, on)| a.iter().any(|(m, was)| m == n && was != on))
+        .map(|(n, _)| *n)
+        .collect()
+}
+
+/// Dãy PHÍM RỜI đưa con trỏ tới mục `n` rồi Enter — cho đường `cgkeys`.
+///
+/// 🔴 Hà 2026-09-18: *"gửi vào type something chưa thấy gì"*. Đo trên màn thật
+/// ngay sau đó: mục 5 vẫn `[ ]`, con trỏ vẫn đứng ở mục 4, không ô nhập nào mở.
+/// Gốc: đường mục-tự-do gửi **chữ số** bằng `send_bare(w, [so])` — cùng đúng cái
+/// sai đã vá cho `checkbox_plan` sáng nay. Hộp chọn-nhiều KHÔNG nhận số (dòng
+/// chân của nó chỉ khai `↑/↓ to navigate`), nên con số bay vào hư không; rồi chỗ
+/// gọi khai "đã chọn mục 5" **chỉ vì `send_bare` trả `Ok(())`** — mà `Ok` ở đó
+/// chỉ nói PHÍM ĐÃ ĐƯỢC BẮN ĐI, không nói mục nào được chọn.
+///
+/// Khác [`nav_plan`] ở một điểm cốt lõi: đường kia đi qua `do script`, mỗi lượt
+/// ghi tự kèm một CR nên phải xếp BA lượt cho các cú bật/tắt dọc đường triệt
+/// tiêu nhau. `send_bare` đi thẳng bằng `CGEventPostToPid`, **không kèm gì**,
+/// nên ở đây chỉ cần đúng dãy phím thật: k mũi tên rồi Enter.
+pub fn bare_item_keys(screen: &str, n: usize) -> Option<Vec<String>> {
+    if !screen.contains("to navigate") {
+        return None;
+    }
+    let lines: Vec<&str> = screen.lines().collect();
+    let items: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| is_item_line(l))
+        .map(|(i, _)| i)
+        .collect();
+    // Cùng cái neo đã vá ở `nav_plan`: con trỏ phải VỪA mang `❯` VỪA là một mục
+    // — màn thật có thêm một `❯` ở dòng ô nhập phía trên.
+    let cursor_line = lines
+        .iter()
+        .enumerate()
+        .find(|(_, l)| l.trim_start().starts_with('\u{276f}') && is_item_line(l))
+        .map(|(i, _)| i)?;
+    let target = lines.iter().position(|l| {
+        let t = l.trim().trim_start_matches('\u{276f}').trim();
+        t.split_once('.')
+            .is_some_and(|(num, _)| num.trim().parse::<usize>() == Ok(n))
+    })?;
+    let from = items.iter().position(|i| *i == cursor_line)?;
+    let to = items.iter().position(|i| *i == target)?;
+    let delta = to as isize - from as isize;
+    let mut keys: Vec<String> = std::iter::repeat_n(
+        if delta > 0 { "down" } else { "up" }.to_string(),
+        delta.unsigned_abs(),
+    )
+    .collect();
+    keys.push("enter".to_string());
+    Some(keys)
+}
+
+/// Chuỗi phím để bật/tắt LỰA CHỌN số `n` trong một hộp CHỌN NHIỀU.
+///
+/// `None` khi màn không phải hộp checkbox hoặc không thấy mục ấy — chỗ gọi giữ
+/// đường cũ (gõ thẳng con số), thứ vẫn đúng cho hộp chọn một.
+pub fn checkbox_plan(screen: &str, n: usize) -> Option<Vec<Vec<String>>> {
+    if !is_checkbox_list(screen) {
+        return None;
+    }
+    let target = screen.lines().position(|l| {
+        let t = l.trim().trim_start_matches('\u{276f}').trim();
+        t.split_once('.')
+            .is_some_and(|(num, _)| num.trim().parse::<usize>() == Ok(n))
+    })?;
+    nav_plan(screen, target)
+}
+
+pub fn parse_choices(screen: &str) -> Vec<(usize, String)> {
+    let mut out: Vec<(usize, String, usize)> = Vec::new();
+    // Dòng (chỉ số) của các mục dài hơn `LABEL_MAX` — xem chỗ ghi bên dưới.
+    let mut dai: Vec<usize> = Vec::new();
+    for (idx, line) in screen.lines().enumerate() {
+        let t = line.trim();
+        // Bỏ dấu con trỏ ❯ nếu có, rồi tìm "<số>." ở đầu.
+        let t = t.strip_prefix('❯').map(str::trim_start).unwrap_or(t);
+        let Some((num, rest)) = t.split_once('.') else {
+            continue;
+        };
+        let Ok(n) = num.trim().parse::<usize>() else {
+            continue;
+        };
+        if n == 0 || n > 9 {
+            continue;
+        }
+        let label = rest.trim();
+        // Một dòng "1." trống không phải lựa chọn; một dòng dài lê thê cũng
+        // không — hộp chọn của claude là nhãn ngắn.
+        // 🔴 ĐẾM KÝ TỰ, KHÔNG ĐẾM BYTE — Hà 2026-08-25. `str::len()` trả byte,
+        // mà chữ Việt có dấu tốn 2-3 byte mỗi ký tự: cùng một trần 120, tiếng
+        // Anh được ~120 ký tự còn tiếng Việt chỉ ~50-60. Cái trần này vì thế
+        // cắt đúng thứ tiếng mà phiên của chủ máy viết ra.
+        if label.is_empty() {
+            continue;
+        }
+        // 🔴 DÒNG DÀI: GHI LẠI, CHƯA BỎ — 2026-09-23. Hà, ảnh tin hộp hỏi quyền:
+        // *"Tin có option nhưng không bấm được"*. Lựa chọn 2 của hộp ấy (`Yes,
+        // and always allow access to /Users/…/memory, /Users/…/memory for this
+        // session`) dài hơn 120 ký tự ⟹ bị bỏ ⟹ khối còn `1, 3`, đứt số ⟹ cả
+        // hộp thật về 0. Trần độ dài là hàng rào cho ca KHÔNG có dòng chân (xem
+        // khối "CÓ DÒNG CHÂN" bên dưới: có dòng chân thì neo vào cấu trúc, trần
+        // chỉ là xổ số) — nên chỉ áp nó sau khi biết có dòng chân hay không.
+        if label.chars().count() > LABEL_MAX {
+            dai.push(idx);
+        }
+        out.push((n, label.to_string(), idx));
+    }
+    // Số phải liên tiếp từ 1: "3. xong" trong một đoạn văn không phải hộp chọn.
+    //
+    // 🔴 …trừ khi hộp DÀI HƠN MÀN — Hà 2026-08-19, ảnh `/shot` phiên `[tcc/amm]`:
+    // *"Nội dung màn của phiên như thế này thì làm được gì, đọc không hiểu
+    // luôn"*. Đo trên chính màn ấy: sáu lựa chọn, mỗi cái kèm bốn dòng mô tả ⟹
+    // **dòng số của lựa chọn 1 đã cuộn lên khỏi mép trên**, màn bắt đầu bằng
+    // phần đuôi mô tả của nó rồi mới tới `2.`. Luật "bắt đầu từ 1" vì thế trả về
+    // RỖNG — không một cái nút nào — nên tin ấy chỉ còn là một khối chữ vỡ dòng
+    // mà không bấm được gì. Đúng chữ Hà dùng: *làm được gì*.
+    //
+    // Cửa an toàn không đổi, nó chỉ chuyển vai: có DÒNG CHÂN của hộp thì đây
+    // chắc chắn là hộp (`has_chooser_footer`), và số đọc được là số CLI tự đánh
+    // — bấm `2` vẫn tới đúng lựa chọn 2 dù `1.` không còn trên màn. Không có
+    // dòng chân thì giữ nguyên luật cũ, vì lúc ấy "bắt đầu từ 1" là thứ duy nhất
+    // ngăn một đoạn văn đánh số bị đọc thành hộp chọn.
+    // 🔴 DÒNG CHÂN LÀ CỬA, cho MỌI hộp — sửa 2026-08-21 sau ảnh `/shot` của
+    // `[tfl5]`: huba gắn ☑ vào ba dòng `1.` `2.` `3.` của một ĐOẠN VĂN, rồi khi
+    // Hà bấm thì báo *"đã gửi '2' mà bảng vẫn còn nguyên 2 lựa chọn"* và tự đoán
+    // *"hộp này có thể không nhận phím số"*. Không phải hộp nào không nhận phím
+    // — không có hộp nào cả.
+    //
+    // Luật cũ đòi dòng chân CHỈ khi số không bắt đầu từ 1, nên một đoạn văn
+    // liệt kê ba việc đi thẳng qua cửa. Mà "bắt đầu từ 1" không phân biệt được
+    // hộp chọn với văn xuôi — chỉ dòng chân mới là thứ duy nhất CLI vẽ ra và
+    // văn xuôi không thể có.
+    //
+    // Đánh đổi, nói thẳng: một hộp thật mà dòng chân bị mép màn cắt sẽ mất nút.
+    // Chấp nhận, vì hướng hỏng của hai bên không cân nhau — mất nút thì `/shot`
+    // vẫn đọc được và `/key` vẫn gõ được; còn gắn nút vào văn xuôi thì một con
+    // số rơi vào màn KHÔNG có hộp chọn, và nó có thể đi làm một lượt chat trong
+    // phiên của chủ máy. Vả lại dòng chân nằm ở ĐÁY hộp, tức phần sống sót lâu
+    // nhất khi màn cuộn, và nay còn có cửa nới-hết-cỡ + cuộn đứng sau.
+    // Con trỏ `❯` đứng ngay trước một dòng đánh số: dấu hiệu thứ hai mà CLI vẽ
+    // ra và văn xuôi không có. Cần nó vì dòng chân nằm dưới đáy hộp nên hay bị
+    // mép màn cắt — đo trên log thật: trong 214 màn có dòng đánh số mà THIẾU
+    // dòng chân, **21** vẫn có con trỏ (hộp thật bị cắt) và **193** thì không
+    // (văn xuôi). Đòi mỗi dòng chân là giết 21 hộp thật ấy.
+    let co_tro = screen.lines().any(|l| {
+        let t = l.trim_start();
+        t.strip_prefix('❯')
+            .map(str::trim_start)
+            .and_then(|r| r.split_once('.'))
+            .is_some_and(|(n, rest)| {
+                n.trim()
+                    .parse::<usize>()
+                    .is_ok_and(|n| (1..=9).contains(&n))
+                    && !rest.trim().is_empty()
+            })
+    });
+    let chan = chooser_footer_line(screen);
+    let footer = chan.is_some();
+    // Không có dòng chân ⟹ trần độ dài đứng như cũ: một câu văn đánh số dài lê
+    // thê không phải lựa chọn.
+    if !footer {
+        out.retain(|(_, _, idx)| !dai.contains(idx));
+    }
+    if out.is_empty() || (!footer && (!co_tro || out[0].0 != 1)) {
+        return Vec::new();
+    }
+    // 🔴 CÓ DÒNG CHÂN ⟹ NEO VÀO NÓ, ĐỪNG CHẤM CẢ MÀN — Hà 2026-08-25, ảnh
+    // `/shot` phiên `[dwork]`: *"Có option nhưng không có chọn được"*.
+    //
+    // Màn ấy có hộp 5 lựa chọn + dòng chân đầy đủ, mà hàm này trả về **0**. Đo
+    // bằng byte trên chính màn ấy (lưu ở `tests/fixtures/`): nửa trên màn là
+    // văn xuôi của phiên, có ba dòng đánh số — 153, **115**, 185 byte. Trần 120
+    // loại được cái thứ nhất và thứ ba; cái **115 byte lọt**, nên `out[0]` là
+    // một dòng VĂN XUÔI mang số 2, `first = 2`, và phép kiểm liên tiếp ngay
+    // dưới gãy ở phần tử sau (1 ≠ 3) ⟹ vứt sạch cả hộp thật.
+    //
+    // Tức cái trần độ dài chưa bao giờ là một cái CỔNG — nó là xổ số: hai dòng
+    // văn xuôi bị loại nhờ may, dòng thứ ba sống sót và đầu độc cả danh sách.
+    // Sửa cái trần cũng không cứu được, vì bất kỳ trần nào cũng có dòng lọt.
+    //
+    // Hộp chọn là cụm dòng đánh số NGAY TRÊN dòng chân — chính CLI vẽ ra cả
+    // hai. Nên: bỏ mọi mục nằm dưới dòng chân, rồi lấy ĐUÔI liên tiếp dài nhất
+    // đếm ngược lên. Văn xuôi ở nửa trên màn từ đó không với tới được về mặt
+    // CẤU TRÚC, chứ không phải nhờ đoán theo độ dài.
+    //
+    // Không có dòng chân thì mọi hàng rào cũ giữ nguyên (con trỏ `❯` + bắt đầu
+    // từ 1 + liền dòng) — đó là thứ duy nhất ngăn một đoạn văn đánh số bị đọc
+    // thành hộp chọn, và nó đã trả giá hai lần (11/08 và 21/08).
+    if let Some(chan) = chan {
+        out.retain(|(_, _, idx)| *idx < chan);
+        if out.is_empty() {
+            return Vec::new();
+        }
+        let mut dau = out.len() - 1;
+        while dau > 0 && out[dau - 1].0 + 1 == out[dau].0 {
+            dau -= 1;
+        }
+        out.drain(..dau);
+    }
+    let first = out[0].0;
+    for (i, (n, _, _)) in out.iter().enumerate() {
+        if *n != first + i {
+            return Vec::new();
+        }
+    }
+    // Một lựa chọn duy nhất thì không có gì để chọn.
+    if out.len() < 2 {
+        return Vec::new();
+    }
+    // LIỀN DÒNG NHAU. Đây là chỗ hình dạng thật khác hẳn một đoạn văn có đánh
+    // số, và bỏ nó ra thì cái chuông kêu nhầm — đo thật 2026-08-11: một câu
+    // TRẢ LỜI của phiên có ba gạch đầu dòng "1. / 2. / 3." bị đọc thành hộp
+    // chọn, huba bắn `⚠ dừng lại HỎI — cần bạn chọn` kèm nguyên văn ba dòng ấy
+    // cho một phiên chẳng hỏi gì ai. Chuông kêu nhầm dạy người ta thôi nghe
+    // chuông — đắt ngang một phép đo mù, chỉ hỏng theo chiều ngược lại.
+    //
+    // `claude` vẽ hộp chọn thành các dòng NGẮN nối tiếp nhau; văn xuôi có đánh
+    // số thì giữa hai mục luôn có dòng chữ tràn của mục trước. Cho phép dòng
+    // TRỐNG xen giữa (hộp có thể giãn dòng), không cho phép dòng có chữ.
+    //
+    // 🔴 …TRỪ KHI hộp tự khai nó là hộp — 2026-08-16. Hà, ảnh chụp màn
+    // `[AI/mailler]`: *"Màn có option nhưng không có bảng chọn"*. Màn ấy có 5
+    // lựa chọn rành rành, và hàm này trả về **0**: hộp `AskUserQuestion` viết
+    // mỗi lựa chọn kèm một dòng MÔ TẢ thụt lề bên dưới, nên "liền dòng" không
+    // bao giờ đúng cho nó. Luật chống-kêu-nhầm ở trên loại đúng thứ nó phải
+    // nhận.
+    //
+    // Dấu hiệu phân biệt không phải khoảng cách dòng, mà là dòng CHÂN mà chính
+    // `claude` vẽ: *"Enter to select · ↑/↓ to navigate · Esc to cancel"*. Một
+    // đoạn văn có đánh số không bao giờ mang dòng ấy. Có nó thì mô tả xen giữa
+    // là chuyện thường; không có nó thì giữ nguyên luật cũ.
+    if !footer {
+        let lines: Vec<&str> = screen.lines().collect();
+        for w in out.windows(2) {
+            let (from, to) = (w[0].2, w[1].2);
+            if lines[from + 1..to].iter().any(|l| !l.trim().is_empty()) {
+                return Vec::new();
+            }
+        }
+    }
+    // Nhãn dài (chỉ còn sống tới đây khi có dòng chân) được CẮT để hiện — cái
+    // nút gửi con số, không gửi nhãn, nên cắt nhãn không đổi lựa chọn nào.
+    out.into_iter()
+        .map(|(n, l, _)| {
+            if l.chars().count() > LABEL_MAX {
+                let mut ngan: String = l.chars().take(LABEL_MAX).collect();
+                ngan.push('…');
+                (n, ngan)
+            } else {
+                (n, l)
+            }
+        })
+        .collect()
+}
+
+/// Trần độ dài một nhãn lựa chọn, tính theo KÝ TỰ — xem `parse_choices`.
+const LABEL_MAX: usize = 120;
+
+/// Màn có đang vẽ CHÂN của một hộp chọn không.
+///
+/// Đây là câu "hộp tự khai nó là hộp": `claude` in dòng điều hướng ấy ngay dưới
+/// danh sách, và không đoạn văn nào có nó. Khớp lỏng theo TỪNG mảnh để không
+/// gãy khi CLI đổi dấu phân cách hay thêm phím tắt.
+pub fn has_chooser_footer(screen: &str) -> bool {
+    // 🔴 CLI có ÍT NHẤT HAI kiểu dòng chân, và bản cũ chỉ biết một — Hà
+    // 2026-08-16, ảnh chụp `[dwork]` kẹt hơn ba tiếng ở hộp *"Set up auto mode
+    // for your environment?"*. Hai bản đo được trên chính máy này:
+    //
+    //   Enter to select · ↑/↓ to navigate · Esc to cancel   (hộp khảo sát)
+    //   Enter to confirm · Esc to cancel                    (hộp bật auto mode)
+    //
+    // Bản cũ đòi có chữ *"to select"*, nên với hộp thứ hai nó trả `false` —
+    // trong khi `parse_choices` NGAY TRÊN CÙNG MÀN ẤY đọc ra đủ ba lựa chọn.
+    // Hai câu trả lời khác nhau cho cùng một câu hỏi, trên cùng một màn: đó là
+    // chỗ hỏng, không phải cái footer.
+    //
+    // Và hậu quả không nhẹ. `prompt_line_text` dùng hàm này làm cổng; cổng mở
+    // ⟹ nó quét ngược tìm dòng `❯`, mà lúc ô nhập trống thì dòng `❯` duy nhất
+    // là **con trỏ đang trỏ vào một lựa chọn** (`❯ 1. Set it up`). huba đọc đó
+    // thành "chữ trong ô nhập", dựng nút `⏎ Gửi`, và một cú Enter lúc màn đang
+    // mở hộp chọn thì **XÁC NHẬN lựa chọn số 1** chứ không gửi gì (luật 13).
+    // Tức cái nút ấy mời chủ máy bật auto mode mà tưởng mình đang gửi một câu.
+    //
+    // Đo TỪNG DÒNG chứ không đo cả màn: dòng chân thật là MỘT dòng, còn hai
+    // mảnh rời nằm cách nhau hai mươi dòng văn xuôi thì chỉ là trùng chữ.
+    chooser_footer_line(screen).is_some()
+}
+
+/// Dòng chân ấy nằm ở DÒNG nào — `parse_choices` cần VỊ TRÍ, không chỉ có/không.
+///
+/// Tách ra để hai câu hỏi (*"màn có hộp chọn không"* và *"hộp ấy kết thúc ở
+/// đâu"*) đọc CHUNG một phép đo. Hai bản chép của cùng một phép so chuỗi là hai
+/// câu trả lời lệch nhau — đúng cái bệnh mà chính hàm này đã mắc một lần
+/// (16/08: `has_chooser_footer` nói *không* trong khi `parse_choices` trên cùng
+/// màn ấy đọc ra ba lựa chọn).
+///
+/// Lấy dòng chân CUỐI CÙNG. Một màn có thể còn mang đoạn hội thoại cũ kèm dòng
+/// chân đã cuộn qua; hộp đang MỞ là cái ở dưới cùng.
+///
+/// (`lines()` không phải `ExactSizeIterator` nên không có `rposition` — duyệt
+/// xuôi rồi lấy `last` là cùng một thứ, và không phải gom cả màn vào một `Vec`.)
+pub fn chooser_footer_line(screen: &str) -> Option<usize> {
+    screen
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| {
+            let l = line.to_lowercase();
+            // `to amend`: hộp HỎI QUYỀN (sửa tệp ngoài thư mục làm việc) vẽ
+            // *"Esc to cancel · Tab to amend"* — không có "select"/"confirm".
+            // Đo 2026-09-23 trên cửa sổ 7949 (Hà: *"Tin có option nhưng không
+            // bấm được"*); vẫn đòi đủ HAI vế nên một câu văn nhắc "to amend"
+            // đứng một mình không thành dòng chân.
+            (l.contains("to select")
+                || l.contains("to confirm")
+                || l.contains("to amend")
+                || l.contains("để chọn"))
+                && (l.contains("to navigate") || l.contains("to cancel") || l.contains("để huỷ"))
+        })
+        .map(|(i, _)| i)
+        .last()
+}
+
+/// Thanh tab của một bảng hỏi nhiều câu, đọc từ màn.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AskTable {
+    /// Mỗi câu một mục, ĐÚNG thứ tự trái→phải: đã trả lời hay chưa.
+    pub answered: Vec<bool>,
+    /// Nhãn ngắn từng câu, dùng để ghép với `sessions::Asking` đọc từ nhật ký.
+    pub headers: Vec<String>,
+}
+
+impl AskTable {
+    /// Còn mấy câu trống. `0` nghĩa là bảng đã sẵn sàng gửi.
+    pub fn left(&self) -> usize {
+        self.answered.iter().filter(|a| !**a).count()
+    }
+}
+
+/// Bảng hỏi NHIỀU CÂU đang mở trên màn, nếu có.
+///
+/// 🔴 Hà 2026-08-13: *"chọn option xong thì vẫn còn bước nữa nên không pass qua
+/// được"*. Bảng nhiều câu vẽ một thanh tab, và **chỉ thanh ấy** nói ra cái ràng
+/// buộc chết người: bảng không gửi đi được chừng nào còn một ô trống.
+///
+/// Đọc theo KÝ TỰ ĐÃ ĐO trên máy này, không theo ký tự đoán từ ảnh chụp —
+/// `rust/tests/ask_table_live.rs` in ra nguyên văn: `←  ☒ Vá ACL  ☐ Đăng nhập
+/// ✔ Submit  →`, tức `☒ U+2612` / `☐ U+2610` / `✔ U+2714`. Ảnh chụp điện thoại
+/// không phân biệt nổi `☒` với `⊠ U+22A0`, và viết theo cái đoán thì hàm này
+/// đếm ra 0 ở mọi màn mà vẫn "chạy đúng" — đúng cái phép đo mù mà
+/// `OPERATING-CHARTER.md` §2d dựng ra để tránh.
+///
+/// Nhận diện cả dòng chứ không bắt từng ký tự rời: phải có mũi tên chỉ dẫn hai
+/// đầu (`←` … `→`) VÀ ít nhất một ô. Một dòng văn xuôi lỡ mang chữ `☐` thì
+/// không đủ điều kiện, nên hàm không dựng ra một cái bảng không có thật.
+pub fn ask_table(screen: &str) -> Option<AskTable> {
+    for line in screen.lines() {
+        if !line.contains('←') || !line.contains('→') {
+            continue;
+        }
+        let mut answered = Vec::new();
+        let mut headers: Vec<String> = Vec::new();
+        for ch in line.chars() {
+            match ch {
+                '☒' | '☑' => {
+                    answered.push(true);
+                    headers.push(String::new());
+                }
+                '☐' | '□' => {
+                    answered.push(false);
+                    headers.push(String::new());
+                }
+                // `✔ Submit` là NÚT GỬI, không phải một câu hỏi — đếm nó vào
+                // thành một câu là khai bảng dài hơn thật, và mọi phép "còn mấy
+                // câu trống" lệch theo.
+                '✔' | '✓' => break,
+                _ => {
+                    if let Some(last) = headers.last_mut() {
+                        last.push(ch);
+                    }
+                }
+            }
+        }
+        if answered.is_empty() {
+            continue;
+        }
+        return Some(AskTable {
+            answered,
+            headers: headers.into_iter().map(|h| h.trim().to_string()).collect(),
+        });
+    }
+    None
+}
+
+/// Bản đọc HẸP này có dấu hiệu THIẾU tab không.
+///
+/// 🔴 Cùng một cái bảng, huba đọc ra hai con số khác nhau tuỳ bề ngang cửa sổ:
+/// thanh tab bị mép cắt thì `/tab` và `/pick` đếm hụt, và câu trả lời đi ra
+/// điện thoại là *"bảng chỉ có 2 câu, không có câu 3"* về đúng cái nút huba vừa
+/// tự dựng ra. Cửa sổ hẹp còn một dạng tệ hơn: thanh tab bị BẺ DÒNG thì `←` và
+/// `→` thôi chung một dòng, [`ask_table`] trả `None`, và một bảng nhiều câu đọc
+/// thành bảng một câu.
+///
+/// `want` là con số đến từ nguồn KHÁC màn — sổ phiên, hoặc chính số tab chủ máy
+/// vừa bấm. Con số thứ hai không phải số bịa: cái nút ấy do huba dựng.
+///
+/// 🔴 **Từ 2026-08-30 hàm này chỉ còn để NÓI, không còn để SỬA.** Trước đó nó
+/// là cái cò của một lượt nới cửa sổ (`ask_table_wide`); nay huba không đụng
+/// vào cỡ cửa sổ của chủ máy nữa (xem tấm bia ở `screen_text_tall`), nên cái nó
+/// trả về đi thẳng vào lời từ chối: *"thanh tab có thể đang bị mép màn cắt"*.
+///
+/// Bỏ hẳn nó thì rẻ hơn một dòng mã và đắt hơn nhiều ở chỗ khác: lúc ấy huba
+/// đếm hụt rồi trả lời chắc nịch, và người đọc không có cách nào biết con số
+/// kia là con số cụt. Một phép đo hỏng phải KÊU (luật 3), kể cả khi nó không
+/// còn quyền tự chữa.
+pub fn tab_bar_cut(near: Option<&AskTable>, want: usize) -> bool {
+    match near {
+        Some(t) => t.answered.len() < want,
+        // Không thấy thanh tab nào mà nguồn khác nói bảng có từ 2 câu ⟹ nhiều
+        // khả năng thanh tab bị bẻ dòng. Bảng MỘT câu thì đúng là không vẽ
+        // thanh tab, nên đừng lấy nó làm cớ đụng vào cửa sổ chủ máy.
+        None => want >= 2,
+    }
+}
+
+/// Thanh tab đọc từ chữ ĐÃ CÓ, kèm lời cảnh báo nếu bản đọc có dấu hiệu cụt.
+///
+/// Trả `(bảng, lời cảnh báo)`. Lời cảnh báo có mặt đúng khi [`tab_bar_cut`] nói
+/// bản đọc thiếu tab so với `want` — chỗ gọi phải mang nó vào câu trả lời cho
+/// chủ máy, vì đó là lúc con số huba sắp nói ra là con số cụt.
+///
+/// 🪦 Tiền thân `ask_table_wide` (19/08–30/08) nới cửa sổ hết cỡ rồi đọc lại,
+/// và chỉ nhận bản rộng khi nó THẬT SỰ thấy nhiều tab hơn (`wider_table`). Cả
+/// bộ ấy đi cùng lượt bỏ nới cửa sổ 2026-08-30 — xem tấm bia ở
+/// `screen_text_tall`. Cái còn lại là phần huba vẫn được phép làm: NÓI.
+pub fn ask_table_seen(body: &str, want: usize) -> (Option<AskTable>, Option<String>) {
+    let table = ask_table(body);
+    if !tab_bar_cut(table.as_ref(), want) {
+        return (table, None);
+    }
+    let thay = table.as_ref().map(|t| t.answered.len()).unwrap_or(0);
+    logging::info(
+        "tab_bar_narrow",
+        json!({ "want": want, "seen": thay,
+                "effect": "thanh tab đọc ra ít hơn nguồn khác — nói ra, không nới cửa sổ" }),
+    );
+    (
+        table,
+        Some(format!(
+            "⚠ Màn đang hẹp: thanh tab đọc ra {thay} câu trong khi nguồn khác nói {want}. \
+             Nới cửa sổ Terminal rộng thêm rồi bấm lại."
+        )),
+    )
+}
+
+/// Bảng đang đứng ở CÂU NÀO, ghép bằng chữ chứ không bằng màu.
+///
+/// Tab đang chọn được vẽ bằng nền tím, mà `contents of tab` trả chữ TRẦN — màu
+/// không đi qua đường ấy. Nên vị trí con trỏ phải suy từ thứ đọc được: dưới
+/// thanh tab, bảng in nguyên văn câu hỏi đang mở. Ghép câu ấy với danh sách câu
+/// đọc từ nhật ký là biết đang đứng ở đâu, không phải đếm phím đã bấm — mà đếm
+/// phím thì sai ngay lần đầu chủ máy tự bấm một cái trên bàn phím.
+///
+/// Bỏ hết khoảng trắng hai bên trước khi so: TUI ngắt dòng câu hỏi theo bề
+/// ngang cửa sổ, nên so nguyên văn là trượt đúng những câu dài.
+/// 🔴 NEO DƯỚI THANH TAB, VÀ NHẬP NHẰNG THÌ TRẢ `None` — sửa 2026-09-01 sau khi
+/// Hà báo *"Tab lựa chọn hiện không đúng làm bấm chọn nhầm"*.
+///
+/// Bản trước soi **cả màn** rồi lấy câu KHỚP ĐẦU TIÊN theo thứ tự trong nhật ký.
+/// Hai chỗ hỏng, và cả hai đều trả về một con số trông như đã đo:
+///
+/// · **Chữ phía TRÊN bảng cũng khớp.** `/shot` gửi trọn màn, và lời phiên ngay
+///   trên bảng thường nhắc lại chính mấy câu ấy (*"xin chốt hai câu đang
+///   chặn…"*). Câu khớp đầu tiên khi ấy là câu ĐÃ TRẢ LỜI, không phải câu đang mở.
+/// · **Câu đang mở bị cắt** (hộp cao hơn khung nhìn — ca có thật, xem
+///   `tab_bar_cut`) thì nó không khớp, và hàm lặng lẽ rơi sang một câu khác còn
+///   nhìn thấy được.
+///
+/// Hậu quả không dừng ở một mũi tên chỉ sai: `pipeline::press_ack_from_screen`
+/// lấy đúng con số này làm **mã nút** `<câu>.<lựa chọn>`, nên chỉ sai một bậc là
+/// cú bấm sau ghi đè lên một câu đã chốt — thứ không lùi lại được.
+///
+/// Nên: câu đang mở là câu bảng in **NGAY DƯỚI thanh tab**, và chỉ vùng ấy được
+/// soi. Khớp nhiều hơn một câu ⟹ `None`, vì "không biết" phải là một trạng thái
+/// riêng chứ không được đội lốt một câu trả lời (điều 13② của charter).
+pub fn cursor_on(screen: &str, questions: &[String]) -> Option<usize> {
+    let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    // Thanh tab nhận đúng như `ask_table` nhận: một dòng có cả `←` lẫn `→`.
+    // Không có thanh tab ⟹ bảng MỘT câu ⟹ cả màn là vùng của nó.
+    let vung: String = match screen
+        .lines()
+        .position(|l| l.contains('←') && l.contains('→'))
+    {
+        Some(i) => screen.lines().skip(i + 1).collect::<Vec<_>>().join("\n"),
+        None => screen.to_string(),
+    };
+    let flat = squash(&vung);
+    let khop: Vec<usize> = questions
+        .iter()
+        .enumerate()
+        .filter(|(_, q)| !q.trim().is_empty())
+        .filter(|(_, q)| flat.contains(&squash(q)))
+        .map(|(i, _)| i)
+        .collect();
+    match khop.as_slice() {
+        [i] => Some(*i),
+        _ => None,
+    }
+}
+
+/// Phiên có đang chạy dở không, đọc từ màn hình.
+///
+/// `claude` chạy dở thì in một dòng đếm giờ — `✶ Unravelling… (2m 36s · ↓ 2.0k
+/// tokens · …)`. Chữ đầu đổi liên tục (Unravelling, Pondering, Herding…), nên
+/// bắt theo chữ là bắt trượt; thứ KHÔNG đổi là cái đồng hồ `(<số>m <số>s ·`.
+///
+/// Đây là tín hiệu cho câu "đã chạy hết chỗ dở chưa" (Hà 2026-08-10). Nhật ký
+/// không trả lời được: nó chỉ ghi SAU khi lượt xong, nên một phiên đang nghĩ ba
+/// phút trông y hệt một phiên đã nghỉ.
+/// Phiên đang làm gì, bằng đúng chữ terminal đang hiện.
+///
+/// Hà 2026-08-10: *"ui chưa thể hiện được phiên đang làm gì ví dụ Brewing…;
+/// Perambulating"*. Màn danh sách mới nói "đang chạy" — đúng nhưng rỗng; chữ
+/// người ta thật sự nhìn là cái động từ đang quay cùng đồng hồ.
+///
+/// Hình dạng thật, chụp trên máy này: `· Brewing… (10m 43s · ↓ 7.4k tokens)`.
+/// Neo vào **cái đồng hồ**, không vào động từ — y như `is_busy`: động từ đổi
+/// liên tục (Brewing, Perambulating, Unravelling, Herding…) nên bắt theo chữ là
+/// bắt trượt, còn `(<số>m <số>s` thì `claude` giữ nguyên.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Activity {
+    /// "Brewing", "Perambulating"… — đã bỏ dấu chấm lửng và ký hiệu quay.
+    pub verb: String,
+    pub elapsed_sec: u64,
+}
+
+impl Activity {
+    /// Câu ngắn cho thẻ phiên: `Brewing… 10m43s`.
+    pub fn label(&self) -> String {
+        let (m, s) = (self.elapsed_sec / 60, self.elapsed_sec % 60);
+        format!("{}… {m}m{s:02}s", self.verb)
+    }
+}
+
+/// Chỗ bắt đầu cái ĐỒNG HỒ `(<n>m <n>s …)` — `None` nếu dòng này không phải một
+/// dòng trạng thái đang quay.
+///
+/// Tách khỏi [`activity`] ngày 2026-09-21 để [`gop_khung_lap`] hỏi được về MỘT
+/// dòng. Hai chỗ tự so chuỗi mỗi chỗ một kiểu là cách rẻ nhất để về sau chúng
+/// phán khác nhau về cùng một dòng — và ở đây thì "dòng nào là một khung vẽ"
+/// phải là CÙNG một câu trả lời với "phiên có đang chạy không".
+pub fn moc_dong_ho(line: &str) -> Option<usize> {
+    let open = line.find(" (")?;
+    let inside = &line[open + 2..];
+    // "<số>m <số>s" — cùng cái neo `is_busy` dùng.
+    let mins: String = inside.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if mins.is_empty() || !inside[mins.len()..].starts_with("m ") {
+        return None;
+    }
+    let after = &inside[mins.len() + 2..];
+    let secs: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if secs.is_empty() || !after[secs.len()..].starts_with('s') {
+        return None;
+    }
+    Some(open)
+}
+
+/// Bỏ phần ĐỔI MỖI KHUNG khỏi một dòng, để so hai khung với nhau.
+///
+/// Hai thứ đổi: ký hiệu quay ở đầu (`· ✢ ✶ ✽ ✻`) và cái đồng hồ. Bỏ cả hai thì
+/// hai khung của cùng một chân màn trở thành hai chuỗi BẰNG NHAU.
+fn chuan_khung(line: &str) -> String {
+    let l = line.trim_end();
+    let l = match moc_dong_ho(l) {
+        Some(i) => &l[..i],
+        None => l,
+    };
+    l.trim()
+        .trim_start_matches(|c: char| !c.is_alphanumeric())
+        .trim()
+        .to_string()
+}
+
+/// Gộp các KHUNG VẼ lặp lại của cùng một chân màn động.
+///
+/// 🔴 Hà 2026-09-21, nhìn một lượt `/shot`: *"Sao thông tin lại bị lặp thế này"*.
+///
+/// Đo trên chính bản tin ấy: cụm chân màn 3 dòng (`✻ Razzmatazzing…` ·
+/// `⛶ auto mode on…` · `⌐ Tip: Use /clear…`) xuất hiện **11 lần**, bản tin phình
+/// lên **10.069 ký tự**, và nội dung thật bị đẩy lún giữa chúng. Mười một bản KHÔNG
+/// giống hệt nhau — ký hiệu quay đổi và đồng hồ chạy `35m49s → 35m46s` — tức đây là
+/// ~3 khung/giây, **11 khung ≈ 4 giây hoạt hình** cùng nằm trên màn một lúc.
+///
+/// Vì sao chúng cùng nằm trên màn: `screen_text` đọc `contents of selected tab` =
+/// **khung nhìn hiện tại**, một lệnh một lần (`keys.rs`, `screen_text`). Nên đây
+/// KHÔNG phải huba gọi nhiều lần rồi dán chồng, cũng không phải nó đọc lịch sử
+/// cuộn. TUI đẩy dòng mới mỗi khung thay vì vẽ đè, và cửa sổ 61 dòng chứa vừa 11
+/// khung × 3 dòng.
+///
+/// 🔴 PHẢI GỘP THEO KHỐI, KHÔNG THEO DÒNG. Ba dòng của một khung xen kẽ nhau, nên
+/// mọi phép so "hai dòng liền kề có giống nhau không" đều trượt sạch — đúng lý do
+/// [`merge_above`] (phép so duy nhất có sẵn trong vùng này) không bắt được ca này,
+/// bên cạnh việc nó so BẰNG NHAU TUYỆT ĐỐI nên spinner đổi một ký tự là trượt.
+///
+/// Mỗi khung = từ một dòng đồng hồ tới ngay trước dòng đồng hồ kế. Hai khung là
+/// MỘT nếu khung ngắn hơn là phần đầu của khung kia: khung mới nhất hay bị vẽ dở,
+/// và vẽ dở không phải một nội dung khác. Giữ bản MỚI NHẤT của mỗi cụm vì đồng hồ
+/// của nó tươi nhất.
+///
+/// ⚠ CỐ Ý chỉ dùng trên đường HIỂN THỊ (`screen_report` của `/shot`), không dùng
+/// trong `look_from_screen`: đường ấy nuôi các phép PHÁN QUYẾT (`arrow_verdict`,
+/// `parse_choices`, đếm monitor) và ở đó đổi số dòng là đổi kết luận.
+pub fn gop_khung_lap(body: &str) -> String {
+    let ls: Vec<&str> = body.lines().collect();
+    let moc: Vec<usize> = ls
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| moc_dong_ho(l).is_some())
+        .map(|(i, _)| i)
+        .collect();
+    if moc.len() < 2 {
+        return body.to_string();
+    }
+    let khung: Vec<Vec<String>> = moc
+        .iter()
+        .enumerate()
+        .map(|(k, &i)| {
+            let het = moc.get(k + 1).copied().unwrap_or(ls.len());
+            ls[i..het].iter().map(|l| chuan_khung(l)).collect()
+        })
+        .collect();
+    let cung = |a: &Vec<String>, b: &Vec<String>| -> bool {
+        let n = a.len().min(b.len());
+        n > 0 && a[..n] == b[..n]
+    };
+    let mut out: Vec<String> = ls[..moc[0]].iter().map(|s| (*s).to_string()).collect();
+    let mut k = 0usize;
+    while k < khung.len() {
+        let mut j = k;
+        while j + 1 < khung.len() && cung(&khung[j], &khung[j + 1]) {
+            j += 1;
+        }
+        if j > k {
+            out.push(format!(
+                "⟳ … {} khung vẽ trước của cùng chân màn — đã gộp (chỉ khác ký hiệu quay và đồng hồ)",
+                j - k
+            ));
+        }
+        let het = moc.get(j + 1).copied().unwrap_or(ls.len());
+        out.extend(ls[moc[j]..het].iter().map(|s| (*s).to_string()));
+        k = j + 1;
+    }
+    out.join("\n")
+}
+
+/// Đọc dòng trạng thái đang quay, nếu có.
+pub fn activity(screen: &str) -> Option<Activity> {
+    for line in screen.lines().rev() {
+        let Some(open) = moc_dong_ho(line) else {
+            continue;
+        };
+        let inside = &line[open + 2..];
+        let mins: String = inside.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let after = &inside[mins.len() + 2..];
+        let secs: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        // Động từ = phần trước dấu "(", bỏ ký hiệu quay ở đầu và "…" ở cuối.
+        let verb = line[..open]
+            .trim()
+            .trim_start_matches(|c: char| !c.is_alphanumeric())
+            .trim()
+            .trim_end_matches(['…', '.'])
+            .trim()
+            .to_string();
+        if verb.is_empty() || verb.chars().count() > 24 {
+            continue;
+        }
+        return Some(Activity {
+            verb,
+            elapsed_sec: mins.parse::<u64>().ok()? * 60 + secs.parse::<u64>().ok()?,
+        });
+    }
+    None
+}
+
+/// Phiên có đang bị CHẶN VÌ HẾT HẠN MỨC không — và mở lại lúc nào.
+///
+/// 🔴 Hà 2026-08-28: *"đang có tk bị limit"* → *"theo tôi hiểu là hub tự kiểm
+/// soát khi bị limit thì xử lý luôn chứ?"*. Đúng: cần gạt tay (`/handover -a`)
+/// chỉ dùng được khi chủ máy ĐÃ BIẾT, mà biết là việc của huba.
+///
+/// Đo nguyên văn trên máy này cùng ngày, tài khoản acc3:
+/// `You've hit your session limit · resets 10:30pm (Asia/Saigon)`
+///
+/// Trả về nguyên văn phần SAU dấu `·` (giờ mở lại) vì đó là thứ quyết định chủ
+/// máy làm gì tiếp: còn 10 phút thì chờ, còn 5 tiếng thì chuyển tài khoản. Gộp
+/// thành `bool` là vứt đi dữ kiện đã đọc được — cùng lý lẽ với
+/// [`monitors_on_screen`] ngay dưới.
+///
+/// Hẹp có chủ ý: đòi CẢ `hit your` LẪN `limit` trên cùng một dòng. Màn của một
+/// phiên đang BÀN về hạn mức (đúng cái phiên này suốt hôm nay) nhắc chữ `limit`
+/// cả chục lần; bắt theo một chữ là dựng một phép đo kêu oan, và một cảnh báo
+/// kêu oan thì bị lướt qua.
+///
+/// 🔴 **VÀ TRẦN 120 KÝ TỰ KHÔNG ĐỦ — đo được hai lần trong một đêm, lần thứ hai
+/// giết đúng cái phiên đang viết bản vá cho lần thứ nhất** (2026-09-01):
+///
+/// ```text
+/// 19:50:21  mở phiên 34f57a63 mang bản bàn giao dựng từ nhật ký
+/// 19:52:39  auto_limit_firing session=34f57a63  khi="resets 11:50pm"   ← dây chuyền
+/// 22:05:13  auto_limit_firing session=5dac6ac5  khi="…` —"             ← phiên đang vá
+/// ```
+///
+/// Dòng khớp ở lượt 22:05 là một dòng **chú thích trong mã nguồn của chính bản
+/// vá** — `rust/tests/auto_limit_switch.rs:182`, 76 ký tự, tức LỌT trần 120 vì
+/// một câu TRÍCH bao giờ cũng ngắn hơn câu gốc nó trích. Cắt trần xuống nữa là
+/// vặn một con số cho vừa đúng một mẫu, và mẫu sau lại lọt — cùng cái bẫy đã
+/// ghi ở [`account_blocked_on_screen`] ngay dưới.
+///
+/// Nên nhận theo HÌNH DẠNG, hai cửa, cửa nào cũng đọc được bằng mắt:
+/// 1. **Dòng phải MỞ ĐẦU bằng chính câu CLI in ra.** Một câu văn nhắc tới nó thì
+///    câu ấy nằm giữa dòng — đúng hình dạng cả hai lượt nhận nhầm.
+/// 2. **Dòng có dấu nháy ngược thì không phải dòng trạng thái.** `claude` không
+///    in dấu ấy bao giờ; người TRÍCH thì luôn. Đây là cửa chặn ca mà cửa 1 để
+///    lọt: một dòng chú thích mở đầu bằng ``` `You've hit your …` ``` (đúng
+///    hình dạng đang nằm trong tệp này, mấy dòng phía trên).
+///
+/// ⚠ Còn một ca hai cửa này KHÔNG phân biệt được, và nói thẳng ra thay vì giấu:
+/// một dòng chép NGUYÊN VĂN câu CLI, không nháy, đứng đầu dòng. Nó không đọc
+/// khác được — kể cả người đọc cũng vậy. Phanh tuổi phiên
+/// ([`crate::pipeline::auto_limit_why`], `TooYoung`) là thứ đỡ ca đó.
+/// Cỡ "gần đây" cho [`session_limit_on_screen`] và [`account_blocked_on_screen`].
+///
+/// 🔴 Hà 2026-09-08, ảnh buồng chat: phiên `[dwork/a-chung]` đang chạy THẬT
+/// (`Proofing… 2m 48s`, tin nhắn chân trang `esc to interrupt`) mà tin gim vẫn
+/// đọc 🚫 hết hạn mức — sau khi đã chờ qua giờ reset và chạy lại bình thường.
+///
+/// Gốc: `contents of tab` trả về TOÀN BỘ scrollback Terminal.app đang giữ
+/// (không có `characters -N thru -1` nào ở `probe_tabs`), mà cả hai hàm dưới
+/// đây quét TỚI (`for line in screen.lines()`) và trả ở LẦN KHỚP ĐẦU TIÊN. Câu
+/// *"You've hit your limit"* chỉ in đúng MỘT lần rồi không lặp lại — kể cả sau
+/// khi phiên chạy lại — nên một khi nó từng xuất hiện, hai hàm này thấy nó ở
+/// MỌI lượt quét sau đó cho tới khi Terminal tự dọn buffer (không bao giờ,
+/// trong một phiên dài). `.rev()` không cứu được: đảo chiều tìm vẫn tìm THẤY
+/// đúng dòng ấy vì không có gì phủ định nó cả — cái thiếu là một GIỚI HẠN gần
+/// đây, không phải HƯỚNG quét.
+///
+/// Cùng luật `activity`/`screen_running` đã áp cho "trạng thái HIỆN TẠI": chỉ
+/// những dòng còn nằm trong khung mà một người xem `/shot` sẽ thấy
+/// (`pipeline::SHOT_LINES` = 40) mới còn tính là hiện tại — dòng cũ hơn bị
+/// chôn dưới đủ nội dung mới thì không còn là trạng thái nữa, nó là LỊCH SỬ.
+const RECENT_STATUS_LINES: usize = 40;
+
+pub fn session_limit_on_screen(screen: &str) -> Option<String> {
+    limit_line_on_screen(screen).map(|(_, khi)| khi)
+}
+
+/// Hạn mức NÀO chặn phiên — cái tên CLI in giữa `You've hit your` và `limit`.
+///
+/// 🔴 Sinh ra từ ca thật 19/10 ([dwork/review], acc3, Hà duyệt chuyển sang
+/// huba): `You've hit your weekly limit · resets 1pm (Asia/Saigon)` in lúc
+/// 19:25 giờ máy, và [`crate::pipeline::auto_limit_why`] đọc nó thành
+/// `ResetAlreadyPassed(1039)` **13 lần trong 15 phút**. Đúng giây ấy, sổ hạn
+/// mức của chính huba ghi acc3 tuần 100 %, mở lại 2026-10-20T06:00Z, tức còn
+/// đúng 1039 phút: mốc CHƯA qua. Phiên đứng chết cho tới khi Hà tự bấm đóng.
+///
+/// Gốc: [`session_limit_on_screen`] chỉ giữ phần sau `·`, nên chữ `weekly` rơi
+/// mất, và trần 360 phút của [`crate::pipeline::read_reset`] (đo cho cửa sổ
+/// 5 giờ) bị áp lên một hạn mức TUẦN. Tiền đề cũ *"hạn mức tuần thì in NGÀY"*
+/// đo lại trên mã CLI 2.1.28x là SAI: hàm định dạng (`function Pc` trong
+/// `claude.exe`) in ĐỒNG HỒ cho MỌI loại hạn mức khi mốc còn ≤ 24 giờ lúc in,
+/// và chỉ in ngày khi xa hơn.
+///
+/// Tên CLI đang có (đọc từ chính bản cài): `session` · `weekly` · `Opus` ·
+/// `Sonnet` · `Fable` · `usage credit` · `monthly spend`. Chỉ `session` là cửa
+/// sổ 5 giờ; mọi tên khác đều dài hơn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum LimitWindow {
+    /// `session limit`, cửa sổ 5 giờ. Đứng làm mặc định vì đó là hành vi CŨ:
+    /// một phiên dựng tay (bài kiểm, JSON cũ) không khai loại thì vẫn được xét
+    /// như trước lượt vá.
+    #[default]
+    Session,
+    /// Mọi tên còn lại, kể cả dòng không có tên: không có cửa sổ nào ngắn hơn
+    /// 5 giờ, nên trần 360 phút không được phép áp vào đây.
+    Longer,
+}
+
+impl LimitWindow {
+    /// Cửa `skip_serializing_if` của `LiveSession::limit_window`.
+    pub fn is_session(&self) -> bool {
+        *self == LimitWindow::Session
+    }
+}
+
+/// Loại hạn mức của MỘT dòng chặn. Xem [`LimitWindow`].
+pub fn limit_window_of(line: &str) -> LimitWindow {
+    let low = line.to_lowercase();
+    let sau = low.split_once("hit your").map_or(low.as_str(), |(_, r)| r);
+    let ten = sau.split_once("limit").map_or(sau, |(t, _)| t);
+    if ten.contains("session") {
+        LimitWindow::Session
+    } else {
+        LimitWindow::Longer
+    }
+}
+
+/// Như [`session_limit_on_screen`], kèm LOẠI hạn mức đọc từ chính dòng ấy —
+/// một dòng, một lượt đọc, hai dữ kiện; đừng đọc lại dòng lần thứ hai để lấy loại.
+pub fn limit_line_on_screen(screen: &str) -> Option<(LimitWindow, String)> {
+    // Nguyên văn CLI in ra, tính từ ĐẦU dòng. Chữ thường vì so sau `to_lowercase`.
+    const MO_DAU: &str = "you've hit your";
+    let lines: Vec<&str> = screen.lines().collect();
+    let recent = lines.len().saturating_sub(RECENT_STATUS_LINES);
+    for line in &lines[recent..] {
+        let l = line.trim();
+        // Cửa 2 — trích dẫn, không phải trạng thái.
+        if l.contains('`') {
+            continue;
+        }
+        // Bỏ dấu trang trí đầu dòng (`⏺`, `>`, `·`) trước khi so, y như
+        // `account_blocked_on_screen`: TUI hay chèn chúng.
+        let l = l.trim_start_matches(|c: char| !c.is_alphanumeric()).trim();
+        // Cửa 1 — mở đầu dòng. Dấu nháy cong `’` quy về `'` vì có bản CLI in nó.
+        let low = l.to_lowercase().replace('\u{2019}', "'");
+        if !(low.starts_with(MO_DAU) && low.contains("limit")) {
+            continue;
+        }
+        // Dòng phải NGẮN như một dòng trạng thái. Một câu văn dài nhắc tới nó
+        // (ví dụ chính bản bàn giao đang kể lại sự cố) không phải trạng thái.
+        if l.chars().count() > 120 {
+            continue;
+        }
+        let khi = l
+            .split_once('·')
+            .map(|(_, r)| r.trim().to_string())
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| l.to_string());
+        return Some((limit_window_of(&low), khi));
+    }
+    None
+}
+
+/// Tài khoản này bị TỔ CHỨC KHOÁ — đọc từ màn, vì không sổ nào ghi nó.
+///
+/// 🔴 Hà 2026-08-31, ảnh buồng chat: `/new dwork/a-dsign` mở một cửa sổ acc1 và
+/// nó chết ngay dòng đầu:
+///
+/// ```text
+/// Your organization has disabled Claude subscription access for Claude Code ·
+/// Use an Anthropic API key instead, or ask your admin to enable access
+/// ```
+///
+/// Đây KHÔNG phải hết hạn mức, và khác nhau ở chỗ đắt nhất: hạn mức chờ một cái
+/// đồng hồ rồi tự mở, còn cái này thì không — chờ bao lâu cũng vô ích.
+///
+/// ⚠ Và không có phép đo nào khác thấy được nó. Đo trên máy này cùng lúc:
+/// `~/.claude.json` của acc1 vẫn ghi `seven_day 92%`, `fetchedAtMs` **28/08**
+/// (già ba ngày), `resets_at` đã qua từ 30/08 — nên [`crate::quota`] xếp acc1
+/// vào `Unknown`, tức "chưa đo được", chứ không phải "đã chết". Sổ của CLI
+/// không có trường nào cho việc bị khoá; dòng chữ này là nguồn DUY NHẤT.
+///
+/// Bắt bằng HÌNH DẠNG, không bằng một trần độ dài vặn cho vừa: dòng phải **MỞ
+/// ĐẦU** bằng đúng câu CLI in ra (`Your organization has disabled`).
+///
+/// 🔴 Bản đầu của tôi bắt theo cụm `disabled` + `subscription access` kèm trần
+/// 200 ký tự, và **đối chứng ngược đỏ ngay**: một câu tiếng Việt tôi vừa viết
+/// cho Hà về chính sự cố này dài 172 ký tự — lọt trần, khớp cả hai từ. Vặn trần
+/// xuống 160 thì chỉ là chỉnh một con số cho vừa đúng một mẫu, và nó sẽ đỏ lại ở
+/// mẫu sau.
+///
+/// Neo vào ĐẦU DÒNG thì chặt hơn hẳn, và nó chặn đúng ca nguy hiểm nhất: một
+/// phiên đang BÀN về chuyện bị khoá — chính phiên này suốt hôm nay — có thể chép
+/// nguyên văn câu tiếng Anh ấy vào giữa một đoạn văn. Cùng bài học với
+/// [`session_limit_on_screen`] và với con bug 21/08 (*văn xuôi đánh số không
+/// phải hộp chọn*): nhận theo hình dạng của thứ CLI vẽ ra, đừng nhận theo việc
+/// một chuỗi có xuất hiện hay không.
+///
+/// Bỏ dấu trang trí ở đầu (`⏺`, `>`, `·`) trước khi so, vì TUI hay chèn chúng.
+pub fn account_blocked_on_screen(screen: &str) -> Option<String> {
+    const MO_DAU: &str = "Your organization has disabled";
+    // Cùng bẫy, cùng vá — xem [`RECENT_STATUS_LINES`].
+    let lines: Vec<&str> = screen.lines().collect();
+    let recent = lines.len().saturating_sub(RECENT_STATUS_LINES);
+    for line in &lines[recent..] {
+        let l = line
+            .trim()
+            .trim_start_matches(|c: char| !c.is_alphanumeric())
+            .trim();
+        if !l.starts_with(MO_DAU) {
+            continue;
+        }
+        return Some(crate::exec::truncate(l, 160));
+    }
+    None
+}
+
+/// Phiên có đang chạy một lượt không — hỏi DÒNG CHÂN, thứ TUI luôn vẽ.
+///
+/// `None` = không tìm thấy dòng chân ⟹ không đo được, và chỗ gọi phải xử lý
+/// đúng như thế chứ không được đọc thành "rảnh".
+///
+/// 🔴 Vì sao không dùng [`is_busy`] cho câu hỏi này: `is_busy` tìm một đồng hồ
+/// dạng `(3m 12s ·`, mà TUI có ÍT NHẤT hai kiểu dòng đang-chạy, và kiểu thứ hai
+/// không có ngoặc — `✻ Cogitated for 37m 51s · 2 shells still running` (nguyên
+/// văn, từ ảnh màn huba gửi đi 18/08). Đọc bằng `is_busy` thì phiên ấy ra "rảnh",
+/// và nếu lấy đó làm cớ để lật ngược bằng chứng shell thì bản vá 16/08 chết —
+/// bài kiểm `shell_is_not_busy` bắt đúng ca ấy trước khi nó kịp lên máy.
+///
+/// Dòng chân thì nói thẳng và không đổi theo lượt: đang chạy thì nó mang
+/// Phiên có mấy **monitor** còn chạy — đọc từ CHÂN MÀN.
+///
+/// 🔴 Hà 2026-08-27: *"Một phiên đang có monitor thì luôn chèn thêm icon eye vào
+/// để dễ nhận dạng"* · *"monitor là cái đang chạy nền ở cuối màn hình"*.
+///
+/// `monitor` là khái niệm của chính `claude`, không phải của huba. Ảnh chụp Hà
+/// gửi có đúng hai chỗ in nó, và cả hai đều ở chân màn:
+///
+/// ```text
+/// ✳ Sautéed for 8s · 1 monitor still running
+/// ⏵⏵ auto mode on · 1 monitor · ← for agents · ↓ to manage
+/// ```
+///
+/// **Không có dấu vết nào trong `ps`** — khác hẳn `· 1 shell still running`, thứ
+/// mà `Procs::running_shell` bắt được qua tiến trình con `shell-snapshots`. Một
+/// monitor là việc nền BÊN TRONG `claude`, nên màn là nguồn duy nhất.
+///
+/// Hai cửa chặn đoán bừa, và cả hai đều cần:
+/// ① chỉ đọc **8 dòng cuối** còn chữ — chữ "monitor" nằm rải rác trong hội thoại
+///   (chính phiên này vừa bàn về nó cả buổi), quét cả màn là đếm nhầm lời bàn
+///   thành việc đang chạy;
+/// ② dòng phải có dấu `·` — cả hai dòng chân thật đều dùng nó làm dấu phân cách,
+///   còn một câu văn xuôi lỡ mang chữ "3 monitor" thì thường không có.
+///
+/// Trả về SỐ, không phải `bool`: chân màn khai *bao nhiêu* cái, và một ngày nào
+/// đó chỗ hiển thị có thể muốn nói ra con số ấy. Gộp thành `bool` ở đây là vứt
+/// một dữ kiện đã đọc được rồi.
+pub fn monitors_on_screen(screen: &str) -> usize {
+    screen
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .rev()
+        .take(8)
+        .filter(|l| l.contains('·'))
+        .filter_map(monitors_in_line)
+        .max()
+        .unwrap_or(0)
+}
+
+/// `… · 1 monitor …` → `Some(1)`. Tách ra để kiểm được từng dòng một.
+fn monitors_in_line(line: &str) -> Option<usize> {
+    // Bắt `<số> monitor` — số đứng NGAY TRƯỚC chữ, cách đúng một khoảng trắng.
+    // Không dùng regex: một phép tách chuỗi ở đây đọc được bằng mắt, và nó là
+    // thứ sẽ bị soi lại khi `claude` đổi chân màn.
+    for (i, _) in line.match_indices("monitor") {
+        let truoc = line[..i].trim_end();
+        let so: String = truoc
+            .chars()
+            .rev()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        if so.is_empty() || truoc.len() == so.len() && truoc.is_empty() {
+            continue;
+        }
+        // Phải có khoảng trắng ngăn số với chữ, nếu không `10monitor` cũng lọt.
+        if line[..i].ends_with(' ') {
+            if let Ok(n) = so.chars().rev().collect::<String>().parse::<usize>() {
+                return Some(n);
+            }
+        }
+    }
+    None
+}
+
+/// Cửa sổ đang đứng ở một Ô HỎI MẬT KHẨU (`sudo`, `ssh`, `ssh` + `sudo`).
+///
+/// 🔴 Hà 2026-08-26: *"chạy ssh sudo thì sẽ hỏi mật khẩu, lệnh terminal thấy rồi
+/// nhưng trạng thái lại là dấu nhắc trống là không đúng"*.
+///
+/// Đây là một trạng thái RIÊNG, không phải "rảnh" và cũng không phải "đang chạy
+/// gì đó": chữ gõ vào lúc này đi thẳng vào ô mật khẩu, KHÔNG phải vào shell — nên
+/// một câu chào mời *"gõ chữ ở đây là chạy lệnh shell"* là mời chủ máy gõ một
+/// dòng lệnh vào đúng chỗ nó sẽ bị hiểu thành mật khẩu.
+///
+/// Đo trên DÒNG CUỐI còn chữ, không quét cả màn: chữ "password" nằm rải rác
+/// trong output của bất cứ lệnh nào (`grep -i password`, một tệp `.env` vừa
+/// `cat`, chính lệnh vừa gõ), nên quét cả màn là dựng một phép đo kêu oan —
+/// cùng bài học `screen_running` ngay dưới.
+///
+/// Ba hình dạng đã gặp thật, đều kết bằng dấu hai chấm rồi để con trỏ ngay sau:
+/// `[sudo] password for ha:` · `ha@vps-a's password:` · `Enter passphrase for key
+/// '…':`. Bắt theo cái ĐUÔI ấy chứ không theo chữ đầu dòng, vì phần đầu đổi theo
+/// hệ điều hành và theo tên người.
+pub fn password_prompt(screen: &str) -> bool {
+    let Some(cuoi) = screen.lines().rev().find(|l| !l.trim().is_empty()) else {
+        return false;
+    };
+    let l = cuoi.trim().to_lowercase();
+    // Dấu nhắc thật để con trỏ NGAY SAU dấu hai chấm — cùng lắm là một khoảng
+    // trắng. Một dòng kể chuyện về mật khẩu thì còn chữ phía sau.
+    if !l.trim_end().ends_with(':') {
+        return false;
+    }
+    l.contains("password") || l.contains("passphrase") || l.contains("mật khẩu")
+}
+
+/// `esc to interrupt`, đang chờ thì không. Đo trên ĐÚNG dòng ấy chứ không quét
+/// cả màn: chữ `esc to interrupt` còn nằm rải rác trong phần hội thoại đã cuộn.
+pub fn screen_running(screen: &str) -> Option<bool> {
+    let footer = screen.lines().rev().find(|l| {
+        l.contains("⏵⏵") || l.contains("auto mode") || l.contains("bypass permissions")
+    })?;
+    Some(footer.contains("esc to interrupt"))
+}
+
+pub fn is_busy(screen: &str) -> bool {
+    screen.lines().any(|l| {
+        let b = l.as_bytes();
+        // tìm "(<số>m <số>s ·" — quét tay cho rẻ, không kéo regex vào đây.
+        let mut i = 0;
+        while let Some(p) = l[i..].find('(') {
+            let rest = &l[i + p + 1..];
+            let mut it = rest.chars();
+            let mut digits = 0;
+            for c in it.by_ref() {
+                if c.is_ascii_digit() {
+                    digits += 1;
+                } else {
+                    if digits > 0 && c == 'm' && rest[digits..].starts_with("m ") {
+                        // "<số>m " — kiểm tiếp "<số>s"
+                        let after = &rest[digits + 2..];
+                        let secs = after.chars().take_while(|c| c.is_ascii_digit()).count();
+                        if secs > 0 && after[secs..].starts_with('s') {
+                            return true;
+                        }
+                    }
+                    break;
+                }
+            }
+            i += p + 1;
+            if i >= l.len() {
+                break;
+            }
+        }
+        let _ = b;
+        false
+    })
+}
+
+/// Một lần nhìn màn phiên — BA kết cục, không phải hai.
+///
+/// Vì sao phải là ba: `screen_of` cũ gộp cả ba vào `None`, và chỗ dùng nguy
+/// hiểm nhất (`pipeline`, chốt phím mũi tên) đọc `None` thành *"không có hộp
+/// chọn"* rồi GỬI. Tức đúng lúc huba mù nhất là lúc nó dám tay nhất — mà chú
+/// thích ngay tại chốt ấy nói rõ hậu quả là "không lùi lại được".
+#[derive(Debug, Clone, PartialEq)]
+pub enum Look {
+    /// Nhìn rõ: chữ đang hiện + các lựa chọn (rỗng = không có hộp chọn).
+    Saw {
+        body: String,
+        choices: Vec<(usize, String)>,
+    },
+    /// Không nhìn được: phiên không có cửa sổ, hoặc Terminal/osascript không
+    /// trả lời. Đây KHÔNG phải "không có hộp chọn".
+    Blind { why: String },
+    // 🪦 `Withheld { choices, risk }` — gỡ 2026-08-16 cùng lượt với cổng sinh
+    // ra nó. Nó nghĩa là *"màn có dấu hiệu bí mật nên huba giữ chữ lại, chỉ giữ
+    // con số lựa chọn"*, và lý lẽ ấy đúng hồi `/shot` cũng quét rò. Nay `/shot`
+    // gửi nguyên màn lên Telegram (gỡ 14/08), nên nhánh này giấu với huba đúng
+    // thứ huba vừa công bố — và cái giá là `/pick` từ chối một cú bấm hợp lệ
+    // bằng câu *"không đọc được chữ"* về một màn chủ máy đang nhìn tận mắt.
+    //
+    // Để lại một nhánh không ai sinh ra được thì tệ hơn xoá: người đọc sau sẽ
+    // tin rằng huba còn xử lý riêng màn có bí mật. Cùng bài học `portal.rs` để
+    // lại ba cỗ máy chết câm (`tests/cycle_wiring.rs`).
+}
+
+/// Nhìn màn phiên, nói thật là nhìn được tới đâu.
+///
+/// 🪦 Có một thời hàm này có người anh em `look_sure` — nới cửa sổ hết cỡ trước
+/// khi đọc, dành cho hai cổng mà đọc hụt thì hỏng KHÔNG LÙI LẠI ĐƯỢC (cổng chặn
+/// phím mũi tên và cổng chặn phím SỐ: `do script` luôn kèm một CR, nên ở đó một
+/// phím vừa DI vừa CHỐT). Nó chết 2026-08-30 cùng cả lối nới cửa sổ — xem tấm
+/// bia ở `screen_text_tall`.
+///
+/// 🔴 Điều KHÔNG chết theo nó, và phải đọc trước khi chạm vào hai cổng ấy: khi
+/// đọc hụt, cổng phải từ chối chứ không được đoán. [`arrow_verdict`] gửi phím
+/// **chỉ khi chứng minh được màn không có hộp chọn**, không phải khi nó không
+/// nhìn thấy hộp nào — `Blind`/`Withheld` là từ chối, y như cũ. Bản đọc nay hẹp
+/// hơn thì cổng ấy từ chối NHIỀU hơn, và đó là chiều an toàn.
+pub fn look(tty: &str, lines: usize) -> Look {
+    look_at(tty, lines)
+}
+
+fn look_at(tty: &str, lines: usize) -> Look {
+    let w = match window_of(tty) {
+        Ok(Some(w)) => w,
+        Ok(None) => {
+            return Look::Blind {
+                why: "phiên không gắn cửa sổ Terminal nào".into(),
+            }
+        }
+        Err(e) => {
+            // Không im lặng: hỏng ở đây làm chốt an toàn phía dưới mất căn cứ.
+            logging::warn(
+                "keys_window_probe_failed",
+                json!({ "tty": tty, "err": e.to_string() }),
+            );
+            return Look::Blind {
+                why: format!("không hỏi được Terminal cửa sổ nào: {e}"),
+            };
+        }
+    };
+    // Một bản đọc, đúng khung nhìn đang có. Hỏng thì `Blind` — KHÔNG im, vì cổng
+    // an toàn phía dưới phán trên thứ này, và "không đọc được" phải khác hẳn
+    // "đọc được và không thấy gì".
+    let screen = match screen_text(w) {
+        Ok(s) => s,
+        Err(e) => {
+            logging::warn(
+                "keys_screen_read_failed",
+                json!({ "window": w, "err": e.to_string() }),
+            );
+            return Look::Blind {
+                why: format!("không đọc được chữ trên màn: {e}"),
+            };
+        }
+    };
+    look_from_screen(&screen, lines)
+}
+
+/// Cùng ba kết cục ấy, đọc từ chữ ĐÃ CÓ SẴN — không hỏi Terminal lần nào.
+///
+/// Tách ra 2026-08-16 vì ảnh chụp nay lấy chữ mọi tab trong MỘT lượt dò
+/// (`terminal_screens`), nên chỗ nào có sẵn chữ thì không phải trả giá hỏi lại.
+/// Luật phải nằm ở đúng một chỗ: cổng quét rò rỉ (điều 5) và phép đếm ô chọn là
+/// thứ quyết định huba có dám gõ hay không, nên hai bản chép là hai bản sẽ lệch.
+pub fn look_from_screen(screen: &str, lines: usize) -> Look {
+    let choices = parse_choices(screen);
+    // 🔴 THÔI GIỮ CHỮ LẠI VỚI CHÍNH MÌNH — 2026-08-16.
+    //
+    // Hà, phân biệt hai loại việc: *"lệnh ở đây là lệnh bash chứ không phải
+    // route của huba, route get file là yc huba gửi file lên tele thì không liên
+    // quan gì tới cli cả"*. Cùng ý ấy soi vào đây thì lộ ra một chỗ vô lý:
+    //
+    // `/shot` gửi NGUYÊN màn ấy lên Telegram, không quét gì cả (cổng quét rò gỡ
+    // ngày 14/08, cùng câu *"huba là cổng làm việc của tôi mà"*). Còn hàm này
+    // vẫn giấu ĐÚNG CÁI MÀN ẤY với chính huba, nên `/pick` trả lời *"màn có dấu
+    // hiệu bí mật nên huba không đọc được chữ"* về một màn chủ máy vừa nhìn tận
+    // mắt trên điện thoại. Giấu một thứ đã công bố thì không bảo vệ được gì —
+    // nó chỉ làm huba mù đúng lúc cần thấy nhất, rồi từ chối một cú bấm hợp lệ.
+    //
+    // Dấu hiệu vẫn được GHI, vì nó là một dữ kiện đáng biết; nó thôi làm một
+    // cánh cửa. (`sessions::preview_risk` giữ nguyên chỗ dùng THẬT của nó: phần
+    // xem trước nằm lại trong một tài liệu trên server, chỗ mà thiết lập tự xoá
+    // của Telegram không với tới.)
+    let risk = crate::sessions::preview_risk(screen);
+    if !risk.is_empty() {
+        logging::info(
+            "screen_risk_noted",
+            json!({ "risk": risk,
+                    "why": "màn có dấu hiệu bí mật — GHI LẠI, không giữ chữ: /shot đã gửi chính màn này" }),
+        );
+    }
+    let tail: Vec<&str> = screen
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .rev()
+        .take(lines)
+        .collect();
+    Look::Saw {
+        body: tail.into_iter().rev().collect::<Vec<_>>().join("\n"),
+        choices,
+    }
+}
+
+/// Phím mũi tên có được gửi không.
+///
+/// `do script` LUÔN kèm một dấu xuống dòng, không tắt được — nên trên hộp chọn
+/// một phím mũi tên vừa DI vừa CHỐT, và chốt nhầm hộ chủ máy là thứ không lùi
+/// lại được. Vậy nên điều kiện để gửi là **biết chắc KHÔNG có hộp chọn**, chứ
+/// không phải "không thấy hộp chọn nào".
+#[derive(Debug, Clone, PartialEq)]
+pub enum Arrow {
+    Send,
+    RefuseDialog,
+    RefuseBlind(String),
+}
+
+pub fn arrow_verdict(look: &Look) -> Arrow {
+    match look {
+        Look::Saw { choices, .. } if choices.is_empty() => Arrow::Send,
+        Look::Saw { .. } => Arrow::RefuseDialog,
+        Look::Blind { why } => Arrow::RefuseBlind(why.clone()),
+    }
+}
+
+/// Sau một cú Enter mà màn KHÔNG đổi: có được thử `→` để NHẬN GỢI Ý MỜ không?
+///
+/// 🔴 Hà 2026-08-16, ảnh chụp buồng chat lúc 11:54: *"Bấm nút enter không nhận,
+/// chỗ ô chat có gợi ý, phải bấm nút right trước thì nó mới điền text theo gợi
+/// ý"*. Đây là mảnh còn thiếu của một chuyện huba ĐÃ nhận ra mà chưa làm gì:
+/// tin trả lời hôm ấy nói đúng chẩn đoán (*"nhiều khả năng là GỢI Ý MỜ của
+/// TUI"*) rồi đẩy việc về cho chủ máy — *"muốn gửi câu ấy thì gõ thẳng nó ở
+/// đây"*. Một trạng thái đã gọi được tên thì phải có hành động đi kèm, không
+/// thì cây cầu dừng lại đúng chỗ nó vừa chỉ ra vấn đề.
+///
+/// **Thứ tự Enter-TRƯỚC là phần quan trọng nhất, đừng đảo lại cho gọn.** Bấm
+/// `→` ngay từ đầu thì nhanh hơn một nhịp, và sai ở đúng ca không lùi được:
+/// khi ô đang có chữ THẬT chủ máy gõ dở, `→` **nhận nốt phần gợi ý còn lại** và
+/// cú CR đi kèm gửi luôn một câu dài hơn câu anh gõ. Enter trước là một phép
+/// đo: màn không đổi ⟹ Enter chẳng có gì để gửi ⟹ ô rỗng thật, chữ đang nhìn
+/// thấy là gợi ý. Chỉ sau bằng chứng ấy `→` mới an toàn.
+///
+/// Cửa hộp chọn dùng chung `arrow_verdict`: `press` nào cũng kèm một CR của
+/// `do script`, nên `→` trên hộp chọn vừa DI vừa CHỐT.
+/// `None` = ca này không áp dụng (phím khác, hoặc màn ĐÃ đổi nên Enter đã ăn).
+/// `Some(verdict)` = có lý do để thử, và đây là phán quyết của cửa mũi tên.
+/// Hai kết cục ấy phải phân biệt được: gộp "không cần" vào "bị từ chối" là lại
+/// đẻ ra một `None` mang ba nghĩa, đúng con bug `screen_of` từng gây.
+pub fn ghost_verdict(key: &str, screen_unchanged: bool, seen: &Look) -> Option<Arrow> {
+    if key.trim() != "enter" || !screen_unchanged {
+        return None;
+    }
+    Some(arrow_verdict(seen))
+}
+
+/// Một phím không ăn — được phép nói ra chẩn đoán NÀO.
+///
+/// 🔴 Hà 2026-08-30, dán lại nguyên tin huba gửi: *"⚠ đã bấm 'enter' rồi bấm →
+/// để nhận gợi ý nhưng màn KHÔNG đổi … Chữ trong ô nhập nhiều khả năng là GỢI Ý
+/// MỜ của TUI"* — rồi hỏi *"thứ tự bấm ở gợi ý bị ngược à?"*.
+///
+/// Thứ tự KHÔNG ngược ([`ghost_verdict`] giải thích vì sao Enter phải đi trước).
+/// Cái sai là câu chẩn đoán: đo màn của chính phiên ấy cùng lúc (`ttys018`,
+/// window 18153, 24×80, 1687 ký tự) thì **ô nhập RỖNG**, không có gợi ý mờ nào —
+/// phiên đang giữa một lượt chạy, `✻ Meandering… (34m 7s · ↓ 51.5k tokens)`.
+///
+/// Và trên một phiên ĐANG CHẠY, "màn không đổi" không nói được gì về cú bấm:
+/// `unchanged` là phép so HAI BẢN ĐỌC RỜI (`is_key` phá vòng ngay sau lần đọc
+/// đầu), nên nó trả lời *"hai lượt đọc ấy có giống nhau không"* — một câu hỏi mà
+/// nhịp vẽ của TUI trả lời hộ, chứ không phải phím. Bằng nhau ở đó là im lặng,
+/// không phải bằng chứng, và một phỏng đoán dựng trên im lặng thì đọc lên vẫn
+/// giống hệt một chẩn đoán.
+///
+/// Nên thứ tự ở đây là thứ tự CHẮC CHẮN GIẢM DẦN, không phải thứ tự dễ nói:
+/// 1. **hết hạn mức** — đọc được thành chữ, và có đường đi tiếp (`/handover -a`);
+/// 2. **đang chạy** — biết chắc, nên nói thẳng là chưa kết luận được;
+/// 3. **gợi ý mờ** — chỉ khi đã loại được hai ca trên. Đây là phỏng đoán, và nó
+///    phải đứng cuối: một phỏng đoán nói trước hai điều biết chắc thì người đọc
+///    đi sửa nhầm chỗ, đúng như sáng nay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoEffect {
+    /// Tài khoản hết hạn mức — gõ gì cũng không vào. Mang theo giờ mở lại.
+    Limited(String),
+    /// Phiên đang giữa một lượt. Mang theo dòng việc nếu đọc được.
+    Busy(Option<String>),
+    /// Không loại được hai ca trên ⟹ mới tới lượt nghi gợi ý mờ.
+    Ghost,
+}
+
+pub fn no_effect_reason(limited: Option<&str>, working: bool, activity: Option<&str>) -> NoEffect {
+    match (limited, working) {
+        (Some(khi), _) => NoEffect::Limited(khi.to_string()),
+        (None, true) => NoEffect::Busy(activity.map(str::to_string)),
+        (None, false) => NoEffect::Ghost,
+    }
+}
+
+/// Chữ trên màn của phiên, đã gác bí mật và cắt gọn — dạng dùng được ngay.
+///
+/// `None` khi phiên không có cửa sổ, khi không đọc được màn, hoặc khi màn có
+/// dấu hiệu chứa bí mật: chữ này rời khỏi máy y như phần xem trước của phiên,
+/// nên nó phải đi qua đúng cái cổng ấy (điều 5 trong CLAUDE.md).
+///
+/// Dạng gộp này chỉ hợp cho chỗ **hiển thị** — không có gì để hiện thì thôi.
+/// Chỗ nào phải RA QUYẾT ĐỊNH thì dùng `look` và phân biệt cho đủ ba kết cục.
+pub fn screen_of(tty: &str, lines: usize) -> Option<(String, Vec<(usize, String)>)> {
+    match look(tty, lines) {
+        Look::Saw { body, choices } => Some((body, choices)),
+        _ => None,
+    }
+}
+
+/// Dòng LỖI API đang hiện trên màn, nếu có.
+///
+/// 🔴 Hà 2026-08-12: *"vừa rồi báo lỗi api mà chưa thấy bắt được"*. Một phiên
+/// gặp lỗi API thì nhật ký thôi lớn lên y hệt lúc nó xong việc, nên cái loa gọi
+/// đó là *"⏸ dừng, đang chờ bạn"* — đúng hình dạng, sai việc phải làm.
+///
+/// Mẫu lấy từ NHẬT KÝ THẬT trên máy này (đếm 2026-08-12): `API Error:` 30 lần
+/// (rate limit · 401 token bị thu hồi · đứt kết nối giữa chừng · máy ngủ),
+/// `Request timed out.` 18 lần. Cố ý hẹp: bắt bằng câu chữ `claude` in ra, chứ
+/// không đoán theo "màn có chữ error".
+pub fn api_error(screen: &str) -> Option<String> {
+    screen
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| l.contains("API Error") || l.contains("Request timed out"))
+        .map(str::to_string)
+}
+
+#[cfg(test)]
+mod numbered_prose_tests {
+    use super::parse_choices;
+
+    /// Một DANH SÁCH ĐÁNH SỐ trong câu trả lời của phiên KHÔNG phải hộp chọn.
+    ///
+    /// 🔴 Hà 2026-08-21, ảnh `/shot` phiên `[tfl5]`: huba gắn ☑ vào ba dòng
+    /// `1.` `2.` `3.` của một đoạn văn, rồi khi Hà bấm thì báo *"đã gửi '2' mà
+    /// bảng vẫn còn nguyên 2 lựa chọn"* và tự đoán *"hộp này có thể không nhận
+    /// phím số"*. Không phải hộp nào không nhận phím — **không có hộp nào cả**.
+    ///
+    /// Luật cũ chỉ đòi "số liên tiếp bắt đầu từ 1", mà một đoạn văn liệt kê ba
+    /// việc thì thoả đúng điều đó. Cửa thật phải là DÒNG CHÂN của hộp chọn: nó
+    /// là thứ duy nhất chỉ CLI mới vẽ ra.
+    ///
+    /// Hậu quả không chỉ là một cái nút thừa: bấm nó gửi một con số vào phiên,
+    /// và một con số rơi vào màn không có hộp chọn có thể đi làm một lượt chat.
+    #[test]
+    fn danh_sach_danh_so_trong_van_xuoi_khong_phai_hop_chon() {
+        let man = "  Ba việc còn chờ Hà, đều không phải việc mã:\n\
+                   \x20 1. Secret ba cổng thanh toán (B4) — không mã nào thay được.\n\
+                   \x20 2. Ngày admin.js thôi là đường chính thức.\n\
+                   \x20 3. Tenant tự mint token — đã mở khoá.\n\
+                   \x20 ⏵⏵ auto mode on · 2 shells · ← 2 agents · ↓ to manage\n";
+        assert!(
+            parse_choices(man).is_empty(),
+            "đoạn văn đánh số bị đọc thành hộp chọn: {:?}",
+            parse_choices(man)
+        );
+    }
+
+    /// …và cửa mới KHÔNG được giết hộp chọn thật: có dòng chân thì vẫn đọc ra đủ.
+    #[test]
+    fn hop_chon_that_van_doc_duoc() {
+        let man = "❯ 1. Vá ACL trước\n\
+                   \x20 2. Đăng nhập lại\n\
+                   \x20 Enter to select · ↑/↓ to navigate · Esc to cancel\n";
+        let c = parse_choices(man);
+        assert_eq!(c.len(), 2, "hộp thật phải đọc ra 2 lựa chọn, đọc ra: {c:?}");
+    }
+}
+
+// `merge_above`/`window_script` chỉ có trên macOS ⟹ hai khối kiểm này cũng chỉ dựng ở
+// đó; dựng cho Windows thì chúng là lỗi biên dịch (đo 30/09, E0432).
+#[cfg(all(test, target_os = "macos"))]
+mod merge_above_tests {
+    use super::merge_above;
+
+    fn v(s: &[&str]) -> Vec<String> {
+        s.iter().map(|x| x.to_string()).collect()
+    }
+
+    /// Hai khung liên tiếp CHỒNG nhau — đó là lý do [`SCROLL_STEP`] nhỏ hơn
+    /// chiều cao khung. Ghép phải nối đúng chỗ chồng, không chép lại nó.
+    #[test]
+    fn cho_chong_thi_noi_dung_cho_khong_chep_lai() {
+        let cu = v(&["một", "hai", "ba", "bốn"]);
+        let dang_co = v(&["ba", "bốn", "năm"]);
+        assert_eq!(
+            merge_above(&cu, &dang_co),
+            v(&["một", "hai", "ba", "bốn", "năm"])
+        );
+    }
+
+    /// TUI vẽ lại có thể đổi phần đệm bên phải giữa hai lượt. Một dấu cách thừa
+    /// KHÔNG được biến hai bản sao của cùng một dòng thành hai dòng khác nhau —
+    /// nếu không, mỗi lượt cuộn lại nhân đôi một khung.
+    #[test]
+    fn khoang_trang_cuoi_dong_khong_pha_cho_ghep() {
+        let cu = v(&["một", "hai  ", "ba   "]);
+        let dang_co = v(&["hai", "ba", "bốn"]);
+        assert_eq!(merge_above(&cu, &dang_co), v(&["một", "hai", "ba", "bốn"]));
+    }
+
+    /// Không tìm ra chỗ chồng (cuộn quá nhanh, hoặc màn vừa đổi hẳn) thì nối
+    /// thẳng: thà thừa một khung còn hơn NUỐT một đoạn — mất chữ là thứ người
+    /// đọc không thể tự phát hiện.
+    #[test]
+    fn khong_co_cho_chong_thi_noi_thang_chu_khong_nuot() {
+        let cu = v(&["một", "hai"]);
+        let dang_co = v(&["chín", "mười"]);
+        assert_eq!(
+            merge_above(&cu, &dang_co),
+            v(&["một", "hai", "chín", "mười"])
+        );
+    }
+
+    /// Khung cũ nằm TRỌN trong phần đã có (cuộn không ra thêm gì) ⟹ không thêm
+    /// dòng nào. Đây chính là điều kiện dừng `dry` của `screen_scrollback`: nếu
+    /// phép ghép ở đây trả về dài hơn, vòng cuộn sẽ không bao giờ tự dừng.
+    #[test]
+    fn khung_khong_moi_thi_khong_dai_them() {
+        let dang_co = v(&["một", "hai", "ba"]);
+        let cu = v(&["một", "hai"]);
+        assert_eq!(merge_above(&cu, &dang_co), dang_co);
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::{
+        activity, arrow_verdict, as_string, ghost_verdict, gop_khung_lap, landed,
+        window_any_script, window_script, Arrow, Landed, Look,
+    };
+
+    /// 🔴 11 KHUNG VẼ CỦA CÙNG MỘT CHÂN MÀN ⇒ GỘP CÒN MỘT (Hà 2026-09-21).
+    ///
+    /// Dữ liệu là bản chụp THẬT: đếm trên chính bản tin Hà nhận thì cụm chân màn
+    /// 3 dòng lặp 11 lần, ký hiệu quay đổi và đồng hồ chạy `35m49s → 35m46s`.
+    #[test]
+    fn muoi_mot_khung_ve_cua_mot_chan_man_gop_con_mot() {
+        let mut man = String::from("❯ Account xong chưa\n");
+        // Đồng hồ ĐI LÙI dần về cuối cho giống bản chụp thật (khung mới ở dưới).
+        let quay = ['·', '✢', '✶', '✽', '✻', '✢', '·', '✳', '✻', '✽', '✻'];
+        for (i, q) in quay.iter().enumerate() {
+            let s = 49 - i / 3;
+            man.push_str(&format!("{q} Razzmatazzing… (35m {s}s · ↓ 77.4k tokens)\n"));
+            man.push_str("  ⌐ Tip: Use /clear to start fresh when switching topics\n");
+            man.push_str("⛶⛶ auto mode on (shift+tab to cycle) · esc to interrupt\n");
+        }
+        let ra = gop_khung_lap(man.trim_end());
+
+        assert_eq!(
+            ra.matches("Razzmatazzing").count(),
+            1,
+            "phải còn ĐÚNG MỘT khung:\n{ra}"
+        );
+        assert_eq!(ra.matches("auto mode on").count(), 1, "{ra}");
+        assert!(
+            ra.contains("⟳ … 10 khung"),
+            "thiếu lời khai đã gộp mấy:\n{ra}"
+        );
+        // Giữ bản MỚI NHẤT — đồng hồ nhỏ nhất là khung cuối cùng.
+        assert!(ra.contains("(35m 46s"), "giữ nhầm khung cũ:\n{ra}");
+        // Nội dung THẬT nằm trước cụm chân màn không được đụng tới.
+        assert!(ra.starts_with("❯ Account xong chưa"), "{ra}");
+        assert!(
+            ra.lines().count() < man.lines().count() / 3,
+            "gộp mà không ngắn đi thì gộp cái gì:\n{ra}"
+        );
+    }
+
+    /// CHIỀU NGƯỢC — hai dòng đồng hồ KHÁC NỘI DUNG thì tuyệt đối không được gộp.
+    ///
+    /// Đây là vế giữ cho phép gộp khỏi ăn mất chữ thật: một màn có hai lượt việc
+    /// khác nhau vẫn phải giữ đủ hai.
+    #[test]
+    fn hai_khung_khac_noi_dung_thi_khong_gop() {
+        let man = "✳ Brewing… (1m 2s · ↓ 1.0k tokens)\n\
+                   kết quả lượt một\n\
+                   ✶ Perambulating… (2m 3s · ↓ 2.0k tokens)\n\
+                   kết quả lượt hai";
+        let ra = gop_khung_lap(man);
+        assert_eq!(ra, man, "gộp nhầm hai nội dung khác nhau:\n{ra}");
+
+        // Và một màn KHÔNG có khung nào lặp thì trả nguyên văn.
+        let mot = "✳ Brewing… (1m 2s · ↓ 1.0k tokens)\nxong";
+        assert_eq!(gop_khung_lap(mot), mot);
+        assert_eq!(gop_khung_lap(""), "");
+    }
+
+    /// Đọc ĐÚNG chữ terminal đang hiện, và neo vào đồng hồ chứ không vào động từ.
+    ///
+    /// Hà 2026-08-10: *"ui chưa thể hiện được phiên đang làm gì ví dụ Brewing…;
+    /// Perambulating"*. Động từ đổi liên tục nên bắt theo chữ là bắt trượt —
+    /// cùng lý do `is_busy` neo vào `(<số>m <số>s`.
+    #[test]
+    fn the_spinner_line_is_read_by_its_clock_not_by_its_verb() {
+        // Dòng thật, chụp trên máy này 2026-08-10.
+        let real = "· Brewing… (10m 43s · ↓ 7.4k tokens)";
+        let a = activity(real).expect("phải đọc được");
+        assert_eq!(a.verb, "Brewing");
+        assert_eq!(a.elapsed_sec, 10 * 60 + 43);
+        assert_eq!(a.label(), "Brewing… 10m43s");
+
+        // Động từ khác, ký hiệu quay khác — vẫn đọc được.
+        let other = activity("✶ Perambulating… (0m 8s · ↓ 12 tokens)").unwrap();
+        assert_eq!(other.verb, "Perambulating");
+        assert_eq!(other.label(), "Perambulating… 0m08s");
+
+        // Màn đứng yên thì KHÔNG bịa ra hoạt động nào.
+        assert!(activity("❯ ").is_none());
+        assert!(activity("  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt").is_none());
+        assert!(activity("").is_none());
+        // Có ngoặc, có chữ, nhưng không có đồng hồ ⟹ không phải dòng trạng thái.
+        assert!(activity("Đã sửa 2 tệp (xem lại 2 chỗ)").is_none());
+
+        // Dòng cuối cùng thắng: màn cuộn thì cái mới nhất nằm dưới.
+        let two = "· Cũ… (1m 00s · x)\n· Mới… (2m 05s · y)";
+        assert_eq!(activity(two).unwrap().verb, "Mới");
+    }
+
+    /// Chốt mũi tên chỉ được mở khi BIẾT CHẮC không có hộp chọn.
+    ///
+    /// Bug thật, tìm ra 2026-08-10: `screen_of` gộp ba kết cục vào `None`, và
+    /// chốt đọc `None` thành "không có hộp chọn" rồi GỬI — tức hỏng về phía
+    /// nguy hiểm, và hỏng nặng nhất đúng lúc màn đang hiện một mật khẩu (đó
+    /// cũng là một đường trả `None`). `do script` luôn kèm dấu xuống dòng nên
+    /// trên hộp chọn, mũi tên vừa di vừa CHỐT; chốt nhầm hộ chủ máy là thứ
+    /// không lùi lại được.
+    #[test]
+    fn an_arrow_goes_only_when_we_are_sure_there_is_no_dialog() {
+        let quiet = Look::Saw {
+            body: "$ ".into(),
+            choices: vec![],
+        };
+        assert_eq!(arrow_verdict(&quiet), Arrow::Send);
+
+        let asking = Look::Saw {
+            body: "Chọn đi?".into(),
+            choices: vec![(1, "một".into()), (2, "hai".into())],
+        };
+        assert_eq!(arrow_verdict(&asking), Arrow::RefuseDialog);
+
+        // Màn có dấu hiệu bí mật nay đi đúng nhánh `Saw` như mọi màn khác —
+        // chữ không còn bị giữ lại với chính huba (xem bia mộ `Look::Withheld`).
+        // Cái phải giữ nguyên: luật quyết vẫn đọc SỐ LỰA CHỌN, nên một màn có
+        // mật khẩu mà đang mở hộp chọn thì vẫn không được gửi mũi tên.
+        let secret_asking = Look::Saw {
+            body: "mật khẩu: hunter2\nChọn đi?".into(),
+            choices: vec![(1, "một".into()), (2, "hai".into())],
+        };
+        assert_eq!(arrow_verdict(&secret_asking), Arrow::RefuseDialog);
+
+        // Không nhìn được thì KHÔNG gửi — và câu từ chối phải mang theo lý do,
+        // không thì người ta không biết bấm lại có ích gì không.
+        let blind = Look::Blind {
+            why: "osascript hết giờ".into(),
+        };
+        match arrow_verdict(&blind) {
+            Arrow::RefuseBlind(why) => assert!(why.contains("osascript"), "phải nói lý do: {why}"),
+            other => panic!("mù mà vẫn gửi: {other:?}"),
+        }
+    }
+
+    /// `→` để NHẬN GỢI Ý MỜ chỉ được bấm khi Enter đã CHỨNG MINH là ô rỗng.
+    ///
+    /// Hà 2026-08-16: *"Bấm nút enter không nhận, chỗ ô chat có gợi ý, phải bấm
+    /// nút right trước thì nó mới điền text theo gợi ý"*. Cái bẫy của tính năng
+    /// này là làm cho nhanh: bấm `→` ngay từ đầu. Ca hỏng của đường tắt ấy là ô
+    /// đang có chữ THẬT gõ dở — `→` nhận nốt phần gợi ý còn lại rồi cú CR đi kèm
+    /// gửi luôn một câu dài hơn câu chủ máy gõ, và không lùi lại được.
+    #[test]
+    fn the_ghost_suggestion_key_needs_a_dead_enter_first() {
+        let quiet = Look::Saw {
+            body: "❯ chạy deploy đi".into(),
+            choices: vec![],
+        };
+        // Enter bấm rồi mà màn đứng yên ⟹ Enter chẳng có gì để gửi ⟹ thử `→`.
+        assert_eq!(ghost_verdict("enter", true, &quiet), Some(Arrow::Send));
+        // Màn ĐÃ đổi ⟹ Enter ăn rồi, không có gì để chữa.
+        assert_eq!(ghost_verdict("enter", false, &quiet), None);
+        // Phím khác không liên quan: `3` không đổi màn là chuyện của `3`.
+        assert_eq!(ghost_verdict("3", true, &quiet), None);
+        assert_eq!(ghost_verdict("clear", true, &quiet), None);
+
+        // Trên hộp chọn thì `→` vừa DI vừa CHỐT — dùng chung cửa với mũi tên.
+        let asking = Look::Saw {
+            body: "Chọn đi?".into(),
+            choices: vec![(1, "một".into()), (2, "hai".into())],
+        };
+        assert_eq!(
+            ghost_verdict("enter", true, &asking),
+            Some(Arrow::RefuseDialog)
+        );
+        // …và mù thì KHÔNG bấm: không đọc được màn không có nghĩa là không có
+        // hộp chọn.
+        let blind = Look::Blind {
+            why: "osascript hết giờ".into(),
+        };
+        match ghost_verdict("enter", true, &blind) {
+            Some(Arrow::RefuseBlind(why)) => assert!(why.contains("osascript"), "{why}"),
+            other => panic!("mù mà vẫn bấm →: {other:?}"),
+        }
+    }
+
+    /// Chuỗi AppleScript sinh ra phải ĐÓNG ĐỦ dấu nháy và kết thúc đúng chỗ.
+    ///
+    /// Lỗi thật 2026-08-10: một dòng `return ""` ở cuối, viết trong chuỗi thô
+    /// `r#"…"#` của Rust, bị cắt thành `return "` — AppleScript hỏng ngay dòng
+    /// đầu (*"Expected string but found end of script. (-2741)"*) và cả tính
+    /// năng chết. Không phép đo nào bắt được vì test cũ chỉ soi phần thoát chuỗi.
+    /// base64 tự viết thì phải kiểm bằng những ca người ta hay sai: độ dài
+    /// không chia hết cho 3, và byte 0xFF (dễ lộ lỗi dấu).
+    /// Hộp chọn nhận ra bằng HÌNH DẠNG, và phải từ chối những thứ chỉ trông
+    /// giống. Đây là chỗ dễ nhận nhầm nhất: mọi đoạn văn đều có thể chứa "1.".
+    /// "Đang chạy dở" phải bắt theo ĐỒNG HỒ, không theo chữ — chữ đổi mỗi lần.
+    #[test]
+    fn landed_reads_the_queue_line_the_cli_actually_prints() {
+        // Nguyên văn từ màn thật lúc gõ vào phiên đang chạy.
+        let busy_with_queue = "❯ Press up to edit queued messages\n  (2m 5s · ↑ 1.2k tokens)";
+        assert_eq!(landed(busy_with_queue, "chữ nào đó"), Landed::Queued);
+        // Đang chạy mà chưa có hàng chờ.
+        assert_eq!(
+            landed("  (1m 2s · esc to interrupt)", "chữ nào đó"),
+            Landed::Running
+        );
+        // Đứng ở dấu nhắc.
+        assert_eq!(landed("❯ \n  ⏵⏵ auto mode on", "chữ nào đó"), Landed::Idle);
+    }
+
+    #[test]
+    fn busy_is_read_from_the_clock_not_the_word() {
+        use super::is_busy;
+        assert!(is_busy(
+            "✶ Unravelling… (2m 36s · ↓ 2.0k tokens · thinking)"
+        ));
+        assert!(is_busy("✻ Pondering… (12m 4s · ↑ 900 tokens)"));
+        assert!(is_busy("· Herding cats… (0m 8s ·)"));
+        // Rảnh: dấu nhắc trống, dòng gợi ý, không có đồng hồ.
+        assert!(!is_busy(
+            "❯ \n⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt"
+        ));
+        assert!(!is_busy(""));
+        // Ngoặc có số nhưng KHÔNG phải đồng hồ thì không tính.
+        assert!(!is_busy("Đã sửa 3 tệp (xem lại 2 chỗ)"));
+        assert!(!is_busy("chạy trong (500ms)"));
+    }
+
+    /// Nguyên văn màn THẬT, chép từ `tests/ask_table_live.rs` chạy trên phiên
+    /// `projects-bd` đang kẹt (2026-08-13). Giữ nguyên ký tự đo được — sửa cho
+    /// "gọn" là vứt đúng cái bằng chứng khiến hàm đếm đúng.
+    const REAL_TAB_BAR: &str = "←  ☒ Vá ACL  ☐ Đăng nhập  ✔ Submit  →";
+
+    #[test]
+    fn the_tab_bar_says_which_questions_are_still_empty() {
+        let t = super::ask_table(&format!("chữ ở trên\n{REAL_TAB_BAR}\ncâu hỏi ở dưới"))
+            .expect("thanh tab thật phải đọc được");
+        assert_eq!(t.answered, vec![true, false], "☒ rồi ☐");
+        assert_eq!(t.headers, vec!["Vá ACL", "Đăng nhập"]);
+        // `✔ Submit` là nút gửi, KHÔNG phải câu thứ ba.
+        assert_eq!(t.left(), 1, "còn đúng một ô trống");
+    }
+
+    /// 🔴 CÙNG MỘT BẢNG, HAI CON SỐ — cái nút đi ra điện thoại từ một bản đọc
+    /// còn cú bấm vào nó chấm trên một bản đọc khác, hẹp hơn.
+    ///
+    /// Nguồn của bề rộng nay là chính chủ máy (huba thôi đổi cỡ cửa sổ từ
+    /// 2026-08-30), nên khoảng lệch ấy vẫn còn: anh kéo hẹp cửa sổ lại giữa hai
+    /// lượt là đủ. Cái đổi là huba không tự chữa nữa — nó NÓI.
+    #[test]
+    fn doc_ra_it_tab_hon_so_la_dau_hieu_bi_cat() {
+        let t = super::ask_table(REAL_TAB_BAR).expect("thanh tab thật phải đọc được");
+        assert_eq!(t.answered.len(), 2, "bản đọc hẹp thấy 2 tab");
+        // Nguồn khác màn nói 3 câu ⟹ con số đang cầm là con số cụt.
+        assert!(super::tab_bar_cut(Some(&t), 3));
+        // Khớp rồi thì im: một lời cảnh báo lúc nào cũng bật là một lời không ai đọc.
+        assert!(!super::tab_bar_cut(Some(&t), 2));
+        assert!(!super::tab_bar_cut(Some(&t), 0));
+    }
+
+    /// Cửa sổ hẹp BẺ ĐÔI thanh tab ⟹ `ask_table` trả `None`, tức bảng nhiều câu
+    /// đọc thành bảng một câu. Đây là dạng cắt tệ hơn dạng thiếu vài tab: nó
+    /// không thiếu một phần, nó mất hẳn cả cái bảng.
+    #[test]
+    fn thanh_tab_bi_be_dong_thi_khong_doc_ra_bang_nao() {
+        let be = "←  ☒ Vá ACL  ☐ Đăng nhập\n  ☐ RPC pool  ✔ Submit  →";
+        assert!(
+            super::ask_table(be).is_none(),
+            "`←` và `→` khác dòng ⟹ không phải một thanh tab đọc được"
+        );
+        assert!(
+            super::tab_bar_cut(None, 3),
+            "sổ nói 3 câu mà không thấy tab nào ⟹ bản đọc này không tin được"
+        );
+        // Bảng MỘT câu thì đúng là không có thanh tab — không phải cớ để kêu.
+        assert!(!super::tab_bar_cut(None, 1));
+        assert!(!super::tab_bar_cut(None, 0));
+    }
+
+    /// Bản đọc cụt phải đi kèm LỜI, và bản đọc đủ thì phải im.
+    ///
+    /// 🔴 Đây là chỗ luật "bỏ nới cửa sổ" (Hà 2026-08-30) không được biến thành
+    /// một lượt đếm hụt trong im lặng. Bài kiểm chấm cả hai chiều, vì một hàm
+    /// luôn cảnh báo và một hàm không bao giờ cảnh báo đều "qua" nếu chỉ chấm
+    /// một chiều — và cả hai đều vô dụng.
+    #[test]
+    fn ban_doc_cut_thi_phai_kem_loi_canh_bao() {
+        let (bang, loi) = super::ask_table_seen(REAL_TAB_BAR, 3);
+        assert_eq!(
+            bang.expect("vẫn đọc ra bảng").answered.len(),
+            2,
+            "bảng vẫn trả về — cụt không phải là mù"
+        );
+        let loi = loi.expect("2 tab đọc được mà nguồn khác nói 3 ⟹ phải có lời");
+        assert!(
+            loi.contains('2') && loi.contains('3'),
+            "lời phải mang cả hai con số: {loi}"
+        );
+
+        let (bang, loi) = super::ask_table_seen(REAL_TAB_BAR, 2);
+        assert_eq!(bang.expect("vẫn đọc ra bảng").answered.len(), 2);
+        assert!(
+            loi.is_none(),
+            "khớp thì KHÔNG kêu, kẻo lời cảnh báo mất giá"
+        );
+
+        // Thanh tab bẻ dòng: không có bảng nào, và đó đúng là lúc phải kêu to nhất.
+        let (bang, loi) = super::ask_table_seen("←  ☒ Vá ACL  ☐ Đăng nhập\n  ✔ Submit  →", 2);
+        assert!(bang.is_none());
+        assert!(loi.is_some(), "mất hẳn bảng mà im là dạng hỏng tệ nhất");
+    }
+
+    #[test]
+    fn a_line_that_merely_mentions_a_box_is_not_a_table() {
+        // Không có mũi tên hai đầu ⟹ không phải thanh tab. Dựng bảng từ một
+        // dòng văn xuôi là bịa ra một cái hộp không có thật, rồi gửi phím vào.
+        assert!(super::ask_table("tôi đã đánh dấu ☐ vào ô ấy").is_none());
+        assert!(
+            super::ask_table("← quay lại · tiếp →").is_none(),
+            "không có ô nào"
+        );
+    }
+
+    #[test]
+    fn the_cursor_is_found_by_text_even_when_the_question_wraps() {
+        // Đúng hình dạng thật: TUI bẻ câu hỏi theo bề ngang cửa sổ.
+        let screen = format!(
+            "{REAL_TAB_BAR}\nCòn chuyện đăng ký hạ chữ username mà đăng nhập lại so đúng\nnhư gõ?\n❯ 1. Có"
+        );
+        let qs = vec![
+            "Khi ô ACL nhận một chuỗi không trỏ tới ai, server nên xử sao?".to_string(),
+            "Còn chuyện đăng ký hạ chữ username mà đăng nhập lại so đúng như gõ?".to_string(),
+        ];
+        assert_eq!(super::cursor_on(&screen, &qs), Some(1), "đang đứng ở câu 2");
+        assert_eq!(super::cursor_on("màn chẳng có câu nào", &qs), None);
+    }
+
+    #[test]
+    fn choices_are_recognised_by_shape_only() {
+        use super::parse_choices;
+        let box_ = "Chọn cách đi tiếp?\n❯ 1. Sửa tại chỗ\n  2. Mở phiên mới\n  3. Bỏ qua";
+        assert_eq!(
+            parse_choices(box_),
+            vec![
+                (1, "Sửa tại chỗ".to_string()),
+                (2, "Mở phiên mới".to_string()),
+                (3, "Bỏ qua".to_string())
+            ]
+        );
+        // Không bắt đầu từ 1 thì không phải hộp chọn.
+        assert!(parse_choices("3. xong rồi\n4. tiếp").is_empty());
+        // Số nhảy cóc cũng không.
+        assert!(parse_choices("1. một\n3. ba").is_empty());
+        // Đoạn văn có dấu chấm không phải lựa chọn.
+        assert!(parse_choices("Tôi đã sửa 2 tệp. Xong.").is_empty());
+        // Màn trống thì không có gì.
+        assert!(parse_choices("").is_empty());
+        // Một mục thì không có gì để chọn.
+        assert!(parse_choices("❯ 1. Chỉ có một").is_empty());
+
+        // ĐOẠN VĂN CÓ ĐÁNH SỐ — chuông từng kêu nhầm ở đây (2026-08-11).
+        // Một câu TRẢ LỜI của phiên, ba mục đánh số, mỗi mục tràn sang dòng
+        // sau: huba đọc thành hộp chọn rồi bắn `⚠ dừng lại HỎI — cần bạn chọn`
+        // kèm nguyên văn, cho một phiên chẳng hỏi gì ai. Cái khác nhau giữa
+        // hai hình dạng là DÒNG CHỮ TRÀN nằm giữa hai mục.
+        let prose = "Chờ anh\n\
+                     1. Mở lại quyền Documents — mọi việc còn lại đều cần đọc repo.\n\
+                     rồi mới chạy tiếp được kịch bản nghiệm thu.\n\
+                     2. Telegram hai chiều là việc chưa làm và tôi chưa tự quyết:\n\
+                     máy móc đã có sẵn, nhưng nó chỉ sống trong lúc chờ xác nhận.\n\
+                     3. Sau khi có quyền thì chạy /btw thật trên một phiên Terminal.";
+        assert!(
+            parse_choices(prose).is_empty(),
+            "đoạn văn có đánh số KHÔNG phải hộp chọn: {:?}",
+            parse_choices(prose)
+        );
+        // Nhưng hộp thật giãn một dòng trống thì vẫn phải nhận ra.
+        let spaced = "❯ 1. Yes\n\n  2. No, tell Claude what to do differently";
+        assert_eq!(parse_choices(spaced).len(), 2, "{spaced}");
+    }
+
+    /// Đường ĐÓNG phải nhìn thấy được tab đã chết — đường GÕ thì không.
+    ///
+    /// 🔴 Hà 2026-08-17, bấm ◻ ở một hàng `/terminal`: *"Ko còn sao vẫn liệt kê,
+    /// hay nó ở tab con"*. huba trả lời *"không còn cửa sổ terminal nào chạy
+    /// ttys014"* trong khi cửa sổ ấy đang mở ngay đó — vì `tabs_script` (thứ
+    /// DỰNG danh sách) đọc mọi tab, còn `window_script` (thứ THI HÀNH) lọc
+    /// `count of processes > 0`. Đo lại bằng tay hôm ấy: `window_any_script`
+    /// trả `2158` cho `/dev/ttys014`, còn `window_script` trả rỗng.
+    #[test]
+    fn the_close_path_can_see_a_dead_tab_but_the_typing_path_cannot() {
+        let any = window_any_script("/dev/ttys014");
+        assert!(any.contains(r#"is "/dev/ttys014" then"#), "{any}");
+        assert!(
+            any.contains("if dead is missing value then set dead to id of w"),
+            "phải có nhánh nhận tab KHÔNG còn tiến trình:\n{any}"
+        );
+        assert!(
+            any.find("set alive to id of w").unwrap() < any.find("set dead to id of w").unwrap(),
+            "tab còn sống phải được ưu tiên trước cái xác:\n{any}"
+        );
+        // …còn đường gõ giữ nguyên hàng rào: gõ vào một cái xác là gõ vào chỗ
+        // không ai đọc (đo 2026-08-11, ba cửa sổ cùng khai `/dev/ttys005`).
+        let typing = window_script("/dev/ttys014");
+        assert!(
+            !typing.contains("set dead to"),
+            "đường gõ KHÔNG được nhận tab chết:\n{typing}"
+        );
+        assert_eq!(any.matches('"').count() % 2, 0, "dấu nháy lẻ:\n{any}");
+        assert_eq!(any.matches("end try").count(), 1, "{any}");
+        assert!(any.trim_end().ends_with("end tell"), "{any}");
+        assert!(!any.contains("{}"), "{any}");
+    }
+
+    #[test]
+    fn window_script_is_well_formed() {
+        let s = window_script("/dev/ttys005");
+        assert!(s.contains(r#"is "/dev/ttys005" and"#), "{s}");
+        // Tab ĐÃ CHẾT vẫn khai tty cũ, và tty thì bị dùng lại — ba cửa sổ cùng
+        // khai `/dev/ttys005` (đo 2026-08-11, hai trong ba là xác). Khớp tty
+        // trần là trả về một cửa sổ ma: màn hình sai lên điện thoại, `/type` gõ
+        // vào chỗ không ai đọc.
+        assert!(
+            s.contains("count of (processes of t)) > 0"),
+            "phải lọc tab còn sống:\n{s}"
+        );
+        assert!(
+            s.contains("busy of t"),
+            "phải ưu tiên tab đang chạy chương trình:\n{s}"
+        );
+        assert!(s.trim_end().ends_with("end tell"), "kết thúc sai:\n{s}");
+        // Số dấu nháy phải CHẴN — lẻ nghĩa là có một chuỗi treo lửng.
+        assert_eq!(s.matches('"').count() % 2, 0, "dấu nháy lẻ:\n{s}");
+        // Và không được còn chỗ giữ chỗ nào chưa thay.
+        assert!(!s.contains("{}"), "{s}");
+        // Cửa sổ không có tab (cài đặt, inspector) phải bị BỎ QUA chứ không
+        // làm chết cả script — lỗi -1728 đo được 2026-08-10.
+        // Đếm `"try"` trần là sai: nó nằm trong cả `end try`. Mỗi `try` phải có
+        // đúng một `end try` — đó mới là điều cần kiểm.
+        assert_eq!(s.matches("end try").count(), 1, "{s}");
+        assert_eq!(
+            s.matches("try").count() - s.matches("end try").count(),
+            1,
+            "{s}"
+        );
+    }
+
+    /// Thoát chuỗi sai là script hỏng cú pháp — hoặc đổi nghĩa, thứ tệ hơn.
+    #[test]
+    fn applescript_strings_escape_quotes_and_backslashes() {
+        assert_eq!(as_string("hello"), "\"hello\"");
+        assert_eq!(as_string(r#"nói "xin chào""#), "\"nói \\\"xin chào\\\"\"");
+        assert_eq!(as_string(r"C:\path"), "\"C:\\\\path\"");
+        // Chuỗi rỗng vẫn phải là một chuỗi hợp lệ, không phải hai dấu nháy trần.
+        assert_eq!(as_string(""), "\"\"");
+    }
+}
