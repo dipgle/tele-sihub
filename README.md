@@ -281,3 +281,12 @@ Test xanh là điều kiện cần, không phải đủ: đường thật phải
 ## Liên hệ
 
 - Email: [info@dipgle.com](mailto:info@dipgle.com)
+
+## Ủng hộ
+
+Thấy dự án có ích thì có thể ủng hộ qua **Binance Pay** — quét mã bằng app Binance
+hoặc mở liên kết; người gửi tự chọn loại tiền và số tiền.
+
+- Liên kết: <https://app.binance.com/uni-qr/XjaYe6fE>
+
+<img src="docs/donate-binance-qr.png" alt="Mã QR Binance Pay để ủng hộ" width="220">
