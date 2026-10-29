@@ -31,14 +31,16 @@ the Mac at home and go out: you can still see what every session did, answer its
 questions with a tap, give it the next task, open a new session for a new job, and
 have the files it produces sent to you in the chat.
 
-What the Mac needs while you are away:
+**No more waiting before you can leave.** Carrying a laptop means closing it, and
+closing it means waiting for every running session to finish first — or killing
+work halfway. With huba the Mac simply stays at home and keeps working; you walk
+out the door whenever you like and pick the sessions up from your phone.
 
-- **Powered on, online and not asleep.** A sleeping Mac runs nothing — turn off
-  automatic sleep (or keep it awake with `caffeinate`).
-- **Logged in** to your user account — huba runs as a launchd agent of that
-  session. The screen **may be locked**: typing into sessions and `/shot` go
-  through Terminal and keep working on the lock screen; only `/anh` (screenshots)
-  and `/web` (driving Chrome) need it unlocked.
+Set it up once and forget it: keep the Mac **plugged in, online and awake**
+(turn off automatic sleep, or use `caffeinate`) and **logged in**. Locking the
+screen is fine — typing into sessions and `/shot` go through Terminal and keep
+working on the lock screen; only `/anh` (screenshots) and `/web` (driving Chrome)
+need it unlocked.
 
 ## Telegram is the main channel
 

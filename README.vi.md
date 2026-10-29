@@ -23,13 +23,14 @@ Có huba thì **một chiếc điện thoại có Telegram là đủ để làm 
 phiên đang hỏi, giao việc tiếp theo, mở phiên mới cho việc mới, và nhận tệp kết
 quả gửi thẳng vào buồng chat.
 
-Máy Mac ở nhà cần:
+**Không còn phải chờ mới được đi.** Mang laptop theo thì phải gập máy, mà muốn gập
+máy thì phải chờ mọi phiên đang chạy xong hết — hoặc cắt ngang việc đang làm dở. Có
+huba thì máy cứ ở nhà làm tiếp; muốn đi lúc nào thì đi, việc theo dõi từ điện thoại.
 
-- **Bật, có mạng và KHÔNG ngủ.** Máy ngủ thì không gì chạy — tắt chế độ tự ngủ (hoặc
-  giữ máy thức bằng `caffeinate`).
-- **Đã đăng nhập** tài khoản người dùng — huba chạy như một launchd agent của phiên
-  ấy. Màn hình **khoá cũng được**: gõ vào phiên và `/shot` đi qua Terminal nên vẫn
-  chạy khi khoá màn; chỉ `/anh` (chụp ảnh màn) và `/web` (lái Chrome) cần mở khoá.
+Cài một lần rồi quên: để máy **cắm sạc, có mạng, không ngủ** (tắt chế độ tự ngủ,
+hoặc dùng `caffeinate`) và **đã đăng nhập**. Khoá màn hình thoải mái — gõ vào phiên
+và `/shot` đi qua Terminal nên vẫn chạy khi khoá màn; chỉ `/anh` (chụp ảnh màn) và
+`/web` (lái Chrome) cần mở khoá.
 
 ## Telegram là kênh chính
 
