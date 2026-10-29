@@ -16,21 +16,26 @@ vào máy, không có địa chỉ nào trỏ về đây:
        └──── tin báo + nút bấm ◄──────┘   (chỉ khi có THAY ĐỔI, không báo trạng thái)
 ```
 
-## Chỉ cần điện thoại
+## Để máy ở nhà, cứ đi chơi
 
-Có huba thì **một chiếc điện thoại có Telegram là đủ để làm việc.** Cứ để máy tính
-ở nhà mà đi chơi: vẫn xem được từng phiên đã làm gì, bấm một nút để trả lời câu
-phiên đang hỏi, giao việc tiếp theo, mở phiên mới cho việc mới, và nhận tệp kết
-quả gửi thẳng vào buồng chat.
+**Chỉ cần điện thoại và Telegram.**
 
-**Không còn phải chờ mới được đi.** Mang laptop theo thì phải gập máy, mà muốn gập
-máy thì phải chờ mọi phiên đang chạy xong hết — hoặc cắt ngang việc đang làm dở. Có
-huba thì máy cứ ở nhà làm tiếp; muốn đi lúc nào thì đi, việc theo dõi từ điện thoại.
+Bình thường muốn ra ngoài là phải dọn máy: gập laptop lại — mà trước đó phải ngồi
+chờ mọi phiên Claude chạy xong, hoặc đành cắt ngang việc đang làm dở. Có huba thì
+chẳng phải dọn gì. Máy ở nhà cứ làm tiếp, còn bạn muốn đi lúc nào thì đi.
 
-Cài một lần rồi quên: để máy **cắm sạc, có mạng, không ngủ** (tắt chế độ tự ngủ,
-hoặc dùng `caffeinate`) và **đã đăng nhập**. Khoá màn hình thoải mái — gõ vào phiên
-và `/shot` đi qua Terminal nên vẫn chạy khi khoá màn; chỉ `/anh` (chụp ảnh màn) và
-`/web` (lái Chrome) cần mở khoá.
+Trên điện thoại, bạn vẫn:
+
+- biết ngay phiên nào vừa xong và nó đã làm gì;
+- trả lời câu phiên đang hỏi chỉ bằng một cú bấm;
+- giao việc tiếp theo, hoặc mở phiên mới cho việc mới;
+- nhận tệp kết quả gửi thẳng vào buồng chat.
+
+Ngồi quán cà phê, đi du lịch hay đi chơi với bạn bè — công việc vẫn chạy.
+
+**Cài một lần:** để máy cắm sạc, có mạng, đã đăng nhập và tắt chế độ tự ngủ (hoặc
+dùng `caffeinate`). Khoá màn hình thoải mái — gõ vào phiên và `/shot` vẫn chạy; chỉ
+`/anh` (chụp ảnh màn) và `/web` (lái Chrome) cần mở khoá.
 
 ## Telegram là kênh chính
 

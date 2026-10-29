@@ -24,23 +24,28 @@ opened on the machine, and no address points back to it:
 **Platform:** macOS (Terminal.app + AppleScript). A Windows port exists but has
 not yet run on a real Windows machine — see below.
 
-## All you need is your phone
+## Leave the laptop at home
 
-With huba running, **a phone with Telegram is enough to get the work done.** Leave
-the Mac at home and go out: you can still see what every session did, answer its
-questions with a tap, give it the next task, open a new session for a new job, and
-have the files it produces sent to you in the chat.
+**Your phone and Telegram are all you need.**
 
-**No more waiting before you can leave.** Carrying a laptop means closing it, and
-closing it means waiting for every running session to finish first — or killing
-work halfway. With huba the Mac simply stays at home and keeps working; you walk
-out the door whenever you like and pick the sessions up from your phone.
+Stepping out usually means packing up: close the lid — but first sit and wait for
+every Claude session to finish, or cut a job off halfway. With huba there is
+nothing to pack. The Mac stays at home and keeps working; you leave whenever you
+want.
 
-Set it up once and forget it: keep the Mac **plugged in, online and awake**
-(turn off automatic sleep, or use `caffeinate`) and **logged in**. Locking the
-screen is fine — typing into sessions and `/shot` go through Terminal and keep
-working on the lock screen; only `/anh` (screenshots) and `/web` (driving Chrome)
-need it unlocked.
+From your phone you can still:
+
+- know the moment a session finishes, and what it did;
+- answer a session's question with a single tap;
+- hand it the next task, or start a new session for a new job;
+- get the files it produces delivered straight to the chat.
+
+At a café, on a trip, out with friends — the work keeps moving.
+
+**One-time setup:** keep the Mac plugged in, online and logged in, with automatic
+sleep turned off (or use `caffeinate`). Locking the screen is fine — typing into
+sessions and `/shot` keep working; only `/anh` (screenshots) and `/web` (driving
+Chrome) need it unlocked.
 
 ## Telegram is the main channel
 
