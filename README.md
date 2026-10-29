@@ -1,292 +1,302 @@
-# huba — các phiên Claude CLI trên máy này, xem và điều khiển từ điện thoại
+# tele-sihub (huba) — watch and drive the Claude CLI sessions on your Mac from your phone
 
-Trên Mac lúc nào cũng có mươi phiên `claude` đang chạy trong các cửa sổ Terminal.
-`huba` đưa chúng vào **một buồng chat Telegram**: xem phiên nào đang làm gì, mở
-phiên mới, gõ thẳng vào một phiên đang chạy, hỏi chen ngang mà không phá việc nó
-đang làm, dừng nó, hoặc đóng sổ lấy bản bàn giao để làm tiếp trên máy.
+*Tiếng Việt: [README.vi.md](README.vi.md)*
 
-Đường đi hai chiều, và **máy này luôn là bên gọi ra ngoài** — không mở cổng nào
-vào máy, không có địa chỉ nào trỏ về đây:
+On a working Mac there are often a dozen `claude` sessions running in Terminal
+windows. `huba` (the program's name; this repository is its public home) puts
+them into **one Telegram chat**: see what each session is doing, open a new one,
+type straight into a running session, ask a side question without disturbing its
+work, stop it, or close it out with a handover so you can continue at the desk.
+
+Traffic goes both ways, and **the Mac is always the one calling out** — no port is
+opened on the machine, and no address points back to it:
 
 ```
-  điện thoại ──► Telegram ──► hubad (long-poll getUpdates) ──► claude CLI trên Mac
-       ▲                              │
-       └──── tin báo + nút bấm ◄──────┘   (chỉ khi có THAY ĐỔI, không báo trạng thái)
+  phone ──► Telegram ──► hubad (long-poll getUpdates) ──► claude CLI on the Mac
+    ▲                              │
+    └──── notifications + buttons ◄┘   (only on a CHANGE, never on a state)
 ```
 
-## Telegram là kênh chính
+> **Language note.** This README is in English. Code comments, the other docs
+> (`CLAUDE.md`, `PLAN.md`, `UC.md`, …) and the messages huba sends to Telegram are
+> in **Vietnamese** — it was built for a Vietnamese-speaking owner.
 
-Từ 2026-08-11 Telegram không còn là cái loa hai nút mà là **kênh ra lệnh đầy
-đủ**: mọi động từ ở bảng dưới gõ được từ đó, và phần lớn việc thường ngày không
-phải gõ gì cả — huba gắn sẵn nút.
+**Platform:** macOS (Terminal.app + AppleScript). A Windows port exists but has
+not yet run on a real Windows machine — see below.
 
-- **Chữ thường (không có dấu `/`) đi thẳng vào phiên đang theo.** Bấm một phiên
-  trong danh sách là coi như đang ngồi trong phiên ấy; sau đó gõ gì nó nhận nấy.
-  Chưa theo phiên nào thì huba **không đoán** một phiên để gõ vào — gõ nhầm cửa
-  sổ là thứ không lùi lại được.
-- **Nút thay cho việc nhớ cú pháp:** danh sách phiên (mỗi phiên một nút), từng
-  lựa chọn của một phiên đang dừng lại hỏi, `📄 Xem đầy đủ` (mở luôn phiên ấy),
-  `📎` lấy một tệp phiên vừa nhắc tới, `👁 Vào phiên`, `⏎ Gửi`.
-- **Cổng người:** biến `HUB_TELEGRAM_CHAT_ID` trong `huba.env`. Tin từ chat khác
-  bị **ghi log rồi bỏ**, không im lặng. Từ 2026-08-14 đây là cổng người **duy
-  nhất** — cổng thứ hai (`trust.tfl5_user_tids`, kiểm trong bộ phân tích lệnh)
-  đi cùng phòng chat, và nó đáng đi: sau khi phòng đóng, chỗ gọi phải tự bịa ra
-  "người gõ" để đi qua chính nó, nên nó không bao giờ từ chối được — trừ khi
-  danh sách rỗng, và khi ấy nó nuốt sạch mọi mệnh lệnh trong im lặng.
-- **Chỉ nói khi có thay đổi.** `watch.rs` so hai lượt ảnh chụp rồi báo đúng một
-  lần: phiên vừa xong, phiên dừng lại hỏi, phiên dừng vì lỗi, phiên đã tắt. Báo
-  theo *trạng thái* trên một vòng lặp 10 giây là cái điện thoại rung mãi không
-  thôi — và cái loa như thế thì người ta tắt, mất luôn những lần đáng nghe.
-- **Phiên chạy trong VS Code / Cursor không lên danh sách** (2026-08-13). Gõ vào
-  chúng phải qua Terminal.app, địa chỉ bằng tty, mà phiên editor không có cửa sổ
-  Terminal nào — một dòng chỉ xem được mà không lái được thì nó không phải cây
-  cầu, nó là một cái tên nữa để nhầm. Số phiên bị bỏ vẫn được đếm và nói ra.
+## Telegram is the main channel
 
-> **Kênh thứ hai đã đóng ngày 2026-08-14.** Tới hôm ấy còn một phòng chat trên
-> tfl5 và một trang điện thoại chạy song song với Telegram. Hà: *"tạm thời không
-> dùng tfl5 để xem cứ xóa hết đi"* — trang đã tắt thở từ hai ngày trước mà không
-> ai nhận ra, đúng cái giá của hai giao diện cho một sản phẩm một người dùng.
-> Đi theo nó: `portal.rs`, `live.rs` (socket `/ws/chat`), cả chặng hỏi vòng
-> (`/ingest`), `adapters.tfl5`, `trust`, và ba thư viện không còn ai gọi
-> (`tungstenite`, `axum`, `tokio`).
+Telegram is a **full command channel**: every verb in the tables below can be
+typed there, and most day-to-day work needs no typing at all — huba attaches the
+buttons.
 
-> **Trước đây huba là một hộp thư** (GitHub · devlog · email · Telegram → triage
-> bằng `claude -p` → duyệt/gửi). Nhánh đó đã **xoá hẳn ngày 2026-08-08**: 65%
-> hộp việc là thông báo CI, ngốn $5.89/$9.12 tổng chi, trong khi việc thật sự
-> cần — điều khiển phiên từ xa — mới chạy đúng một lần. Chi tiết trong
-> `CLAUDE.md`. Hệ quả thẳng thắn: **huba không còn tự tiêu hạn mức**; chỉ khi bạn
-> bấm nút mới có một lần gọi `claude`, đúng giá như gõ ở terminal.
+- **Plain text (no leading `/`) goes straight into the session you are following.**
+  Tapping a session in the list is like sitting down in it; after that, whatever
+  you type, it receives. If you are not following any session, huba **does not
+  guess** one to type into — typing into the wrong window cannot be undone.
+- **Buttons instead of remembering syntax:** the session list (one button per
+  session), each option of a session that stopped to ask a question,
+  `📄 Xem đầy đủ` (view in full, opens that session), `📎` to fetch a file the session
+  just mentioned, `👁 Vào phiên` (enter session), `⏎ Gửi` (send).
+- **The owner gate:** `HUB_TELEGRAM_CHAT_ID` in `huba.env`. Messages from any other
+  chat are **logged and dropped**, never silently ignored. This is the **only**
+  owner gate: a second one used to exist for a chat room that has since been
+  removed, and once the room was gone it could no longer refuse anyone — except
+  when its list was empty, where it silently swallowed every command.
+- **It speaks only on a change.** `watch.rs` compares two snapshots and announces
+  exactly once: a session finished, stopped to ask, stopped on an error, or ended.
+  Announcing *state* from a 10-second loop is a phone that buzzes forever — and a
+  phone like that gets muted, taking the messages that mattered with it.
+- **Sessions running inside VS Code / Cursor are not listed.** Typing into a
+  session goes through Terminal.app, addressed by tty, and an editor session has no
+  Terminal window — a row you can watch but not drive is not a bridge, just one
+  more name to confuse. The number of skipped sessions is still counted and reported.
 
-## Chạy trong 4 lệnh
+> **History.** huba once ran a second channel (a chat room plus a phone web page)
+> alongside Telegram; it was removed on 2026-08-14 after the page turned out to
+> have been dead for two days without anyone noticing — the price of two
+> interfaces for a one-user product.
+>
+> Before that, huba was an **inbox** (GitHub · devlogs · email · Telegram → triage
+> with `claude -p` → approve/send). That branch was **deleted on 2026-08-08**: 65%
+> of what it carried was CI notifications, which ate $5.89 of $9.12 total spend,
+> while the thing actually needed — driving sessions remotely — had run once.
+> The plain consequence: **huba consumes no quota on its own**; a `claude` call
+> happens only when you press a button, at the same cost as typing it in a terminal.
+
+## Up and running in 4 commands
 
 ```bash
-cd ~/projects/huba
-./huba setup           # trang cấu hình ở 127.0.0.1 → ghi huba.env (chmod 600)
-./huba doctor          # kiểm tra thật: claude CLI, Telegram, thư mục dự án
-./huba sessions        # mọi phiên claude đang sống, mọi tài khoản
-./huba once            # một vòng: chạy những lệnh đã tới → sổ sách → cái loa
+cd tele-sihub          # your clone
+./huba setup           # config page on 127.0.0.1 → writes huba.env (chmod 600)
+./huba doctor          # real checks: claude CLI, Telegram, project folders
+./huba sessions        # every live claude session, across all accounts
+./huba once            # one cycle: run the orders that arrived → books → notifications
 ```
 
-Bí mật (token bot Telegram + chat id) nằm trong `huba.env` (chmod 600), **chỉ tên
-biến** nằm trong `huba.config.json`. Xem `huba.env.example`.
+Secrets (the Telegram bot token + chat id) live in `huba.env` (chmod 600); only the
+**names** of the environment variables live in `huba.config.json`. See
+`huba.env.example`.
 
-`huba setup` chỉ nghe ở `127.0.0.1`, vào bằng vé một lần trong URL, và **không
-bao giờ hiện lại giá trị đã lưu** — nó chỉ nói khoá ấy *đã có* hay *chưa có*.
-Đọc một file 600 rồi bơm ngược ra HTTP là tự tay dựng đúng cái đường rò mà file
-600 sinh ra để chặn.
+`huba setup` listens on `127.0.0.1` only, is entered with a one-time ticket in the
+URL, and **never shows a stored value again** — it only says whether a key is
+*set* or *not set*. Reading a 600 file and pumping it back out over HTTP would
+build exactly the leak the 600 permission exists to prevent.
 
-Dựng chỗ làm việc từ đầu (thư mục, gốc workspace, ba câu hay hỏi ngược):
-`ARCHITECTURE.md`.
+Setting up the workspace from scratch (folders, workspace root, the three
+questions people usually ask): `ARCHITECTURE.md`.
 
-## Tự chạy cùng máy (launchd)
+## Start with the machine (launchd)
 
 ```bash
-./huba self-install                                  # build → ký → cài → khởi động lại
+./huba self-install                                  # build → sign → install → restart
 
-# plist là BẢN MẪU: ba dấu chỗ phải thay bằng đường tuyệt đối của máy này
-# (launchd không hiểu `~` hay `$HOME`, mà repo công khai thì không mang đường
-#  dẫn của máy ai cả)
+# The plist is a TEMPLATE: three placeholders must be replaced with absolute
+# paths for this machine (launchd does not understand `~` or `$HOME`, and a public
+# repository carries nobody's machine paths)
 sed -e "s|__HOME__|$HOME|g" \
     -e "s|__INSTALL_DIR__|$HOME/Library/Application Support/hub|g" \
     -e "s|__HUB_CONFIG__|$PWD/huba.config.json|g" \
     com.dipgle.hubd.plist > ~/Library/LaunchAgents/com.dipgle.hubd.plist
 
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.dipgle.hubd.plist
-launchctl list | grep hubd        # nhãn hệ thống VẪN là com.dipgle.hubd
+launchctl list | grep hubd        # the system label is still com.dipgle.hubd
 tail -f ~/Library/Logs/hubd.err
 ```
 
-`./huba self-install` làm đúng ba bước của `install_update.sh` (build → ký bằng
-chứng chỉ → cài ra đường riêng), **viết lại trong Rust** chứ không gọi script:
-huba phải tự cài được chính nó, không thì mỗi bản vá lại cần một người ngồi ở
-máy gõ một dòng — đúng thứ dự án này sinh ra để bỏ đi. Từ điện thoại: `/upgrade`.
-Hỏng ở bất kỳ bước nào thì **không đụng vào bản đang cài**.
+`./huba self-install` does exactly the three steps of `install_update.sh` (build →
+sign with a certificate → install to its own path), **rewritten in Rust** rather
+than calling the script: huba has to be able to install itself, or every fix
+needs someone sitting at the machine to type one line — exactly what this project
+exists to remove. From the phone: `/upgrade`. If any step fails, **the installed
+copy is left untouched**.
 
-launchd chạy **bản đã cài** `~/Library/Application Support/hub/bin/hubd`, không
-phải bản `cargo` trong `target/`. Lý do nằm ở `CLAUDE.md` §12, tóm tắt: macOS
-neo quyền theo chữ ký, `cargo` ký ad-hoc lại sau **mỗi** lệnh build/test, nên
-bản trong `target/` đổi danh tính liên tục và mất quyền ngay lần bật máy sau.
-Sửa mã xong mà quên `install_update.sh` thì daemon vẫn chạy mã cũ — tab **Sức
-khoẻ** có một hàng nói thẳng điều đó.
+launchd runs the **installed copy** `~/Library/Application Support/hub/bin/hubd`,
+not the `cargo` build in `target/`. In short (details in `CLAUDE.md`): macOS pins
+permissions to a binary's signature, and `cargo` ad-hoc re-signs after **every**
+build/test, so the copy in `target/` keeps changing identity and loses its grants
+on the next restart. If you change the code and forget `install_update.sh`, the
+daemon keeps running the old code — huba compares the newest source file with the
+installed binary to catch exactly that.
 
-`hubad` giữ một pid-lock (`data/hubd.lock`) nên hai daemon không cùng chạy; lỗi
-vòng chạy được đếm và backoff luỹ thừa (tối đa 10 phút), sau 5 lần liên tiếp thì
-ghi `logs/notify.log` + hiện thông báo macOS.
+`hubad` holds a pid lock (`data/hubd.lock`) so two daemons never run at once; cycle
+errors are counted with exponential backoff (up to 10 minutes), and after 5 in a
+row it writes `logs/notify.log` and shows a macOS notification.
 
-## Chạy trên Windows (30/09 — ⚠ CHƯA chạy thử trên máy Windows thật)
+## Running on Windows (⚠ NOT yet run on a real Windows machine)
 
-Bản Windows lái **Windows Terminal** (`wt.exe`) thay cho Terminal.app: gõ phím bằng
-`SendInput`, đọc màn bằng UI Automation (`rust/src/keys_win.rs`). Nó được dựng-kiểm
-chéo ở MỌI lượt `./gate.sh` (bước ②b, `x86_64-pc-windows-gnu`, clippy `-D warnings`),
-nhưng chưa từng chạy trên một máy Windows nào.
+The Windows build drives **Windows Terminal** (`wt.exe`) instead of Terminal.app:
+keystrokes via `SendInput`, screen reading via UI Automation
+(`rust/src/keys_win.rs`). It is cross-compiled and linted on EVERY `./gate.sh` run
+(step ②b, `x86_64-pc-windows-gnu`, clippy `-D warnings`), but has never run on a
+Windows machine.
 
-1. **Đo trước** (chỉ đọc, ~10 giây): `powershell -ExecutionPolicy Bypass -File scripts\do-windows.ps1`
-   ⟹ tệp `%TEMP%\huba-do-windows-*.txt`. Gửi tệp ấy về: nó trả lời những câu mà phần
-   nối-phiên-với-cửa-sổ còn thiếu (`claude agents --json` trên Windows in gì, `claude`
-   chạy dưới tiến trình nào, lớp cửa sổ Windows Terminal).
-2. **Cấu hình**: `huba.config.json` (các `claude_accounts` của MÁY ĐÓ) + `huba.env` —
-   `huba setup` mở trang để điền. ⚠ Dùng **bot Telegram riêng** cho máy Windows: hai
-   hubd cùng một bot thì giành `getUpdates` (409 Conflict).
-3. **Cài**: PowerShell THƯỜNG (không Run as Administrator — UIPI chặn gõ phím giữa hai
-   mức quyền): `powershell -ExecutionPolicy Bypass -File install_update.ps1`
-   (cần Rust), hoặc `… install_update.ps1 -BinDir <thư mục có hubad.exe + huba.exe>` với
-   bản dựng sẵn. Nó cài vào `%LOCALAPPDATA%\hub\bin`, thêm vào PATH, đặt `HUB_CONFIG`, và
-   đăng ký tác vụ `huba-hubd` (Task Scheduler, lúc đăng nhập, chết thì chạy lại).
-   Kiểm: `install_update.ps1 -Verify`.
+1. **Measure first** (read-only, ~10 seconds):
+   `powershell -ExecutionPolicy Bypass -File scripts\do-windows.ps1`
+   ⟹ a file `%TEMP%\huba-do-windows-*.txt`. It answers what the
+   session-to-window matching still needs to know (what `claude agents --json`
+   prints on Windows, which process `claude` runs under, the Windows Terminal
+   window class).
+2. **Configure**: `huba.config.json` (the `claude_accounts` of THAT machine) +
+   `huba.env` — `huba setup` opens a page to fill them in. ⚠ Use a **separate
+   Telegram bot** for the Windows machine: two hubd processes on one bot fight over
+   `getUpdates` (409 Conflict).
+3. **Install**: from a NORMAL PowerShell (not "Run as Administrator" — UIPI blocks
+   keystrokes across privilege levels):
+   `powershell -ExecutionPolicy Bypass -File install_update.ps1` (needs Rust), or
+   `… install_update.ps1 -BinDir <folder with hubad.exe + huba.exe>` with a prebuilt
+   copy. It installs into `%LOCALAPPDATA%\hub\bin`, adds it to PATH, sets
+   `HUB_CONFIG`, and registers the `huba-hubd` task (Task Scheduler, at logon,
+   restarted if it dies). Check: `install_update.ps1 -Verify`.
 
-**Đã biết là CHƯA chạy trên Windows**: nối phiên đang chạy với cửa sổ của nó (chờ số đo
-bước 1) · `/upgrade` (báo lệnh cài lại thay vì tự làm) · `/anh` chụp ảnh cửa sổ ·
-phát hiện màn khoá · `/web` lái Chrome (AppleScript) · thông báo hệ thống khi vòng chạy
-hỏng liên tiếp (chỉ ghi `logs/notify.log`).
+**Known NOT to work on Windows yet**: matching a running session to its window
+(waiting on the step-1 measurement) · `/upgrade` (prints the reinstall command
+instead of doing it) · `/anh` window screenshots · lock-screen detection · `/web`
+driving Chrome (AppleScript) · system notifications after repeated cycle failures
+(only `logs/notify.log`).
 
-## Lệnh
+## Commands
 
-Chỉ chủ máy ra lệnh được: Telegram gác bằng `chat_id` (`telegram::update_sender`
-đọc đúng ô cho từng hình dạng update), người khác gõ `/new` thì đó chỉ là chữ.
-Bộ phân tích (`verbs::parse_command`) là hàm thuần — vào là chữ, ra là một
-route — nên nó không biết và không cần biết lệnh tới từ kênh nào.
+Only the owner can give orders: Telegram is gated by `chat_id`
+(`telegram::update_sender` reads the right field for each update shape); anyone
+else typing `/new` is just typing text. The parser (`verbs::parse_command`) is a
+pure function — text in, a route out — so it neither knows nor needs to know which
+channel a command came from.
 
-**Phiên Claude**
+**Claude sessions**
 
-| Lệnh | Việc |
+| Command | What it does |
 |---|---|
-| `/sessions` (hay `/session` trống) | danh sách phiên đang sống, mỗi phiên một nút — bấm để theo (`/session -` để thôi theo) |
-| *(chữ thường, không dấu `/`)* | gõ thẳng vào phiên đang theo |
-| `/new [-a acc] [-s dự án] <việc>` | mở một **cửa sổ Terminal thật** chạy `claude` rồi gõ việc ấy vào; việc rỗng cũng được (mở cửa sổ rồi nói sau) |
-| `/ask <câu hỏi>` | hỏi bên lề phiên đang theo, **trên bản fork** — phiên gốc không thêm lượt nào |
-| `/tell <nội dung>` | nói tiếp vào phiên nền (phải `/stop` nó trước) |
-| `/stop [id]` | phiên nền: dừng, hội thoại vẫn giữ · phiên cửa sổ huba mở: **tắt hẳn** — `/exit` rồi đóng cửa sổ |
-| `/handover [id]` | đóng sổ: bản bàn giao + phiên mới giữ nguyên ngữ cảnh + lệnh `--resume` |
+| `/sessions` (or a bare `/session`) | list live sessions, one button each — tap to follow (`/session -` to stop following) |
+| *(plain text, no `/`)* | type straight into the session you follow |
+| `/new [-a acc] [-s project] <task>` | open a **real Terminal window** running `claude` and type the task into it; an empty task is fine (open the window, talk later) |
+| `/ask <question>` | side question to the followed session, **on a fork** — the original session gains no turn |
+| `/tell <text>` | continue a background session (`/stop` it first) |
+| `/stop [id]` | background session: stop, conversation kept · window session opened by huba: **shut down for good** — `/exit`, then close the window |
+| `/handover [id]` | close out: a handover note + a new session with the same context + the `--resume` command |
 
-**Gõ thẳng vào cửa sổ phiên** (chỉ phiên Terminal — xem mục Telegram ở trên)
+**Typing into a session window** (Terminal sessions only — see the Telegram section above)
 
-| Lệnh | Việc |
+| Command | What it does |
 |---|---|
-| `/type <chữ>` | gõ chữ vào phiên đang theo, kèm Enter khi đo được là chữ còn nằm trong ô |
-| `/key <up\|down\|left\|right\|enter\|esc\|tab\|space\|1-9>` | bấm một phím |
-| `/shot` | đọc chữ đang hiện trên màn của phiên |
+| `/type <text>` | type text into the followed session, plus Enter when it can measure that the text is still sitting in the input box |
+| `/key <up\|down\|left\|right\|enter\|esc\|tab\|space\|1-9>` | press one key |
+| `/shot` | read the text currently on the session's screen |
 
-**Vận hành**
+**Operations**
 
-| Lệnh | Việc |
+| Command | What it does |
 |---|---|
-| `/accounts` | các tài khoản: phiên nào của ai, còn bao nhiêu hạn mức, `/new` mặc định vào tài khoản nào, cái nào 🔒 đang khoá |
-| `/accounts detail <tên>` (hoặc `/accounts acc3`) | chi tiết MỘT tài khoản: email · tên · tổ chức · vai trò · gói · thư mục · hạn mức · phiên đang chạy · khoá — đọc sổ `.claude.json`, không chạy `claude` |
-| `/new -a <tài khoản khoá> …` | huba HỎI xác nhận trên Telegram; bấm đồng ý thì mở đúng lượt đó, khoá giữ nguyên |
-| `/accounts khoa <tên>` · `/accounts mo <tên>` | khoá / mở một tài khoản (`"locked": true` trong `claude_accounts`) — đang khoá thì huba không tự chọn, không mở phiên kể cả khi gõ `-a`, không dò `/usage` bằng nó |
-| `/terminal <dòng lệnh>` | mở cửa sổ Terminal thật (có tty) rồi chạy lệnh — cho `sudo`, `ssh -t`, `passwd`; cửa sổ ở lại để gõ mật khẩu |
-| `/upgrade` | huba tự dựng lại chính nó từ mã hiện tại rồi khởi động lại |
-| `/run` · `/doctor` | chạy một vòng ngay · kiểm tra thật |
-| `/set <khoá> <giá trị>` | sửa một trường cấu hình (validate + backup + ghi nguyên tử) |
-| `/help` | bảng này, đọc thẳng từ mã |
+| `/accounts` | the accounts: which session belongs to which, remaining quota, which account `/new` uses by default, which are 🔒 locked |
+| `/accounts detail <name>` (or `/accounts acc3`) | details of ONE account: email · name · organization · role · plan · folder · quota · running sessions · lock — read from `.claude.json`, without running `claude` |
+| `/new -a <locked account> …` | huba ASKS for confirmation on Telegram; approve and it opens that one session, the lock stays |
+| `/accounts khoa <name>` · `/accounts mo <name>` | lock / unlock an account (`"locked": true` in `claude_accounts`; *khoá* = lock, *mở* = unlock) — a locked account is never picked automatically, never used to open a session even with `-a`, never probed for `/usage` |
+| `/terminal <command line>` | open a real Terminal window (with a tty) and run the command — for `sudo`, `ssh -t`, `passwd`; the window stays open for typing the password |
+| `/upgrade` | huba rebuilds itself from the current code and restarts |
+| `/run` · `/doctor` | run one cycle now · real checks |
+| `/set <key> <value>` | change one config field (validated + backed up + written atomically) |
+| `/help` | this table, read straight from the code (`commands::ROUTES` is the source) |
 
-`/ask`, `/handover`, `/new`, `/tell` gọi `claude` thật nên **ăn vào hạn mức
-của gói** — đúng như khi bạn tự gõ ở terminal, không hơn.
+`/ask`, `/handover`, `/new`, `/tell` call the real `claude`, so they **use your
+plan's quota** — exactly as if you typed them in a terminal, no more.
 
-Máy này chạy gói **Max** (`claude auth status` → `subscriptionType: max`): không
-có hoá đơn tính theo từng lần gọi. Con số `total_cost_usd` mà CLI trả về được
-quy theo **giá API niêm yết**, nên nó là **thước đo một cú gọi TO cỡ nào**, không
-phải tiền bị trừ khỏi tài khoản. Sổ `spend` ghi thước đo ấy, im lặng; màn hình
-không hiện.
+On a **Max** plan (`claude auth status` → `subscriptionType: max`) there is no
+per-call bill. The `total_cost_usd` the CLI reports is computed at **API list
+price**, so read it as a **gauge of how big a call was**, not money taken from an
+account. The `spend` table records that gauge silently; nothing shows it on screen.
 
-## Hàng rào (vì sao thiết kế vậy)
+## Guard rails (why it is designed this way)
 
-- **Phiên nền chạy sau một danh sách cấm** (`sessions::DENIED_TOOLS`): không
-  push/merge/reset, không ssh/scp/sudo/rm/docker/launchctl/`*deploy*`, không
-  WebFetch/WebSearch. Ghi file trong cây làm việc thì được — đó là công việc.
-- **Hỏi/bàn giao chạy trên bản fork** với allowlist `Read,Grep,Glob`: một câu
-  hỏi gõ trên điện thoại **không có tay để ghi**. Nghiệm thu của UC này là tệp
-  nhật ký GỐC: y nguyên số byte, y nguyên mtime.
-- **Xem trước nội dung phiên bị quét rò rỉ** trước khi lên ảnh chụp
-  (`redaction::leak_scan`) — lần chạy thật đầu tiên đã in ra một phiên có mật
-  khẩu trong lượt cuối. Cổng đặt ở NGUỒN (`sessions::snapshot`), không ở từng
-  chỗ gửi — nên một kênh mọc thêm sau này cũng không đi vòng qua được.
-- **Bấm phím thì phải NHÌN trước.** Một mũi tên trong `claude` vừa di chuyển vừa
-  xác nhận, nên huba chỉ gửi khi **chứng minh được** màn không có hộp chọn —
-  `keys::look` trả `Saw`/`Withheld`/`Blind` chứ không gộp cả ba vào `None`, vì
-  gộp là fail OPEN đúng lúc huba mù nhất (kể cả lúc trên màn đang có mật khẩu).
-- **Một đường vào, một cuốn sổ**: mọi thứ đổi trạng thái đều đi qua Telegram
-  dưới dạng LỆNH, nên luôn có dấu vết ở nơi người đọc được.
+- **Background sessions run behind a deny list** (`sessions::DENIED_TOOLS`): no
+  push/merge/reset, no ssh/scp/sudo/rm/docker/launchctl/`*deploy*`, no
+  WebFetch/WebSearch. Writing files inside the working tree is allowed — that is
+  the work.
+- **Ask/handover run on a fork** with an allowlist of `Read,Grep,Glob`: a question
+  typed on a phone **has no hand to write with**. The acceptance test is the
+  ORIGINAL transcript file: same bytes, same mtime.
+- **Pressing keys requires LOOKING first.** In `claude`, an arrow key both moves
+  and confirms, so huba sends one only when it can **prove** there is no choice
+  dialog on screen — `keys::look` returns `Saw`/`Withheld`/`Blind` instead of
+  folding all three into `None`, because folding them fails OPEN exactly when huba
+  is blindest.
+- **One way in, one set of books**: everything that changes state goes through
+  Telegram as an ORDER, so there is always a trace where a person can read it.
+- **huba does not hide text from the owner.** The destination is the owner's own
+  private chat, so session text is passed through as-is; a possible secret is
+  *logged* (`preview_risk_noted`), not blanked out. huba's own secrets (bot token,
+  `huba.env`) are never logged — only key names are.
 
-## Cấu hình
+## Configuration
 
-`huba.config.json` — không có bí mật, chỉ có TÊN biến môi trường:
+`huba.config.json` — no secrets, only the NAMES of environment variables:
 
 ```jsonc
 {
   "poll_interval_sec": 120,
-  "call": { "max_budget_usd": 0.5, "timeout_sec": 240 },  // trần MỘT lần gọi
-  // Kênh Telegram. Tên khoá là `confirm` vì thời nó mới sinh ra chỉ có hai nút
-  // Xác nhận/Huỷ; nay đây là kênh ra lệnh chính. Chỉ TÊN biến, không có giá trị.
+  "call": { "max_budget_usd": 0.5, "timeout_sec": 240 },  // cap for ONE call
+  // The Telegram channel. The key is called `confirm` because it started life as
+  // two Confirm/Cancel buttons; it is now the main command channel. NAMES only.
   "confirm": { "enabled": true,
                "bot_token_env": "HUB_TELEGRAM_BOT_TOKEN",
-               "chat_id_env": "HUB_TELEGRAM_CHAT_ID",   // đây là cổng người
+               "chat_id_env": "HUB_TELEGRAM_CHAT_ID",   // this is the owner gate
                "timeout_sec": 90 },
   "auto_handover": { "enabled": true, "at_percent": 60, "idle_sec": 120 },
-  "projects": { "dwork": {}, "sdvi": {} },                 // tên thư mục
+  "projects": { "dwork": {}, "sdvi": {} },                 // folder names
   "claude_accounts": [{ "name": "acc1" }, { "name": "acc2", "config_dir": "~/.claude-acc2" }]
 }
 ```
 
-Khoá cũ của thời hộp thư (`triage`, `act`, `autonomy`, `routing`,
-`daily_budget_usd`, `max_triage_per_cycle`, `web`, `leak_patterns`) nay là khoá
-lạ, và từ 2026-08-14 có thêm `adapters` + `trust` (phòng chat tfl5): tệp cũ vẫn
-nạp được, lần ghi kế tiếp thì rụng. Đó không phải chuyện lý thuyết — tệp thật
-trên máy đang mang cả hai, và một huba từ chối khởi động vì một khoá cũ là một
-huba cắt đứt chủ máy khỏi kênh duy nhất của mình.
+Keys left over from the inbox era (`triage`, `act`, `autonomy`, `routing`,
+`daily_budget_usd`, `max_triage_per_cycle`, `web`, `leak_patterns`, and later
+`adapters` + `trust`) are now unknown keys: an old file still loads, and they drop
+off on the next write. A huba that refused to start because of a stale key would
+cut the owner off from their only channel.
 
-## Dữ liệu
+## Data
 
-`data/huba.sqlite` (WAL) — ba bảng:
+`data/huba.sqlite` (WAL) — three tables:
 
-| bảng | giữ gì |
+| table | what it holds |
 |---|---|
-| `runs` | mỗi **vòng** (`run_once`): ok/lỗi, để `/doctor` không phải đoán. Tới 2026-08-14 đây là mỗi lượt ĐỌC KÊNH; chặng ấy đi cùng tfl5, và bảng phải đổi người ghi chứ không được bỏ trống — một khối "lỗi gần đây" luôn rỗng là phép đo mù, tệ hơn không có |
-| `cursors` | phiên đang theo, sổ `watch:sessions`, ghim dự án, bản bàn giao/hỏi-bên-lề gần nhất |
-| `spend` | mỗi lần gọi `claude` do bạn bấm, kèm thước đo độ lớn — ghi để trả lời được, không để trưng |
+| `runs` | one row per **cycle** (`run_once`): ok/error, so `/doctor` does not have to guess. A cycle is judged by the error lines it logged, not by its own return value — otherwise every row would read "ok" and the panel would be blind |
+| `cursors` | the followed session, the `watch:sessions` book, the project pin, the latest handover/side answer |
+| `spend` | each `claude` call you pressed for, with its size gauge — recorded so the question can be answered, not to be displayed |
 
-(cộng `schema_meta`.) Bốn bảng của thời hộp thư đã đi hẳn ở bước schema 4
-(2026-08-10) — chúng sống thừa hai ngày sau khi sản phẩm ấy bị xoá và giữ 379
-dòng không truy vấn nào với tới. Migration ấy chạy với `foreign_keys` TẮT (bốn
-bảng tham chiếu lẫn nhau; bản đầu chết ngay lúc khởi động, exit 70) và **log
-từng bảng kèm số dòng** chứ không "đã dọn xong" một câu.
+(plus `schema_meta`.) Telegram updates are also written to a `tin_den` table
+**before** the long-poll offset moves, so a power cut or a dead daemon cannot lose
+an order; rows are kept for 7 days.
 
-## Trang trên điện thoại — ĐÃ GỠ (2026-08-14)
-
-`fe/index.html` (bốn tab: Phiên · Trao đổi · Sức khoẻ · Cấu hình), `fe-deploy.mjs`
-và 18 kịch bản nghiệm thu `fe-*.mjs` chạy Playwright trên bundle đã deploy — tất
-cả đi cùng phòng chat tfl5.
-
-Vì sao đáng ghi lại chứ không xoá lặng: bản rà soát 2026-08-14 đo được trang ấy
-**đã tắt thở hai ngày** mà không ai nhận ra. Một sản phẩm một người dùng nuôi hai
-giao diện thì cái ít dùng hơn sẽ hỏng âm thầm, và bộ nghiệm thu của nó — vốn là
-thứ phải phát hiện ra điều đó — lại là thứ ít được chạy nhất. Lịch sử đầy đủ:
-`memory/ra-soat-2026-08-14.md`; mã còn nguyên trong git trước `cf20874`.
-
-## Test
+## Tests
 
 ```bash
-cd rust && cargo test --offline --no-fail-fast   # 922 test / 146 target
+./gate.sh      # full gate: fmt · clippy (+ Windows target) · build · EVERY test binary · doctests
+# or, plainly:
+cd rust && cargo test --offline --no-fail-fast
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-Test xanh là điều kiện cần, không phải đủ: đường thật phải chạy ít nhất một lần
-(`./huba once`, rồi một mệnh lệnh gõ THẬT trong buồng Telegram).
+`--no-fail-fast` matters: plain `cargo test` stops at the first red target, and a
+partial run reads like a verdict. `gate.sh` also copies the test binaries out of
+`target/debug/deps/` before running them — on the machine this was built on, a
+fresh binary's first run inside that (huge) directory stalled ~2 minutes each.
 
-## Bản Node cũ
+A few tests read real folders under `~/projects` on the author's machine and will
+fail elsewhere (for example `rust/tests/session_label_declared.rs`, which says so in
+its doc comment).
 
-`legacy-node/` là bản mẫu đầu tiên, giữ làm đối chiếu. Không chạy nữa.
+Green tests are necessary, not sufficient: the real path must run at least once
+(`./huba once`, then a REAL command typed in the Telegram chat).
 
-## Liên hệ
+## Contact
 
 - Email: [info@dipgle.com](mailto:info@dipgle.com)
 
-## Ủng hộ
+## Support the project
 
-Thấy dự án có ích thì có thể ủng hộ qua **Binance Pay** — quét mã bằng app Binance
-hoặc mở liên kết; người gửi tự chọn loại tiền và số tiền.
+If you find this useful, you can support it via **Binance Pay** — scan the code
+with the Binance app or open the link; you choose the currency and the amount.
 
-- Liên kết: <https://app.binance.com/uni-qr/XjaYe6fE>
+- Link: <https://app.binance.com/uni-qr/XjaYe6fE>
 
-<img src="docs/donate-binance-qr.png" alt="Mã QR Binance Pay để ủng hộ" width="220">
+<img src="docs/donate-binance-qr.png" alt="Binance Pay QR code for donations" width="220">
