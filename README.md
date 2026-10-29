@@ -277,3 +277,7 @@ Test xanh là điều kiện cần, không phải đủ: đường thật phải
 ## Bản Node cũ
 
 `legacy-node/` là bản mẫu đầu tiên, giữ làm đối chiếu. Không chạy nữa.
+
+## Liên hệ
+
+- Email: [info@dipgle.com](mailto:info@dipgle.com)
