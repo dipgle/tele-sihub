@@ -3674,6 +3674,59 @@ pub fn press(window: i64, keyname: &str) -> Result<()> {
     press_writes(window, &[vec![keyname.to_string()]])
 }
 
+/// Một dãy phím đi vào màn bằng đường nào.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyWay {
+    /// Phím RỜI qua [`crate::cgkeys`] — mỗi phím một sự kiện, không kèm gì.
+    Bare,
+    /// `do script` — cả dãy trong MỘT lượt ghi, kèm một CR không tắt được.
+    Written,
+}
+
+/// 🔴 BẢNG HỎI NHIỀU CÂU: phím số (và mũi tên ngang đi cùng nó) PHẢI đi phím RỜI.
+///
+/// Quang 2026-11-04, ảnh Telegram 14:54: *"Cứ có nhiều tab lựa chọn, lựa xong là
+/// bị treo không thể thao tác được gì"*. Ca sống `[bts/check-list]`: bảng
+/// `☒ Gán TK  ☒ Mật khẩu  ☐ Đẩy B1  ✔ Submit`, bấm `1` ở câu cuối ⟹ màn trống
+/// trơn, không ô nhập, sổ CLI đứng `waiting · input needed`, tiến trình 0 % CPU.
+///
+/// Gốc đọc trong mã của chính CLI (`claude` 2.1.280): bảng vẽ
+/// `câu đang mở ? câu : (chỉ số == số câu) ? trang Submit : null`, và chốt một câu
+/// là `set-answer` kèm `shouldAdvance` (chỉ số +1). `do script` đẩy `1` và CR vào
+/// CÙNG một lượt ghi ⟹ TUI đọc cả hai trong cùng một nhịp, trước khi kịp vẽ lại
+/// ⟹ CR rơi vào bộ xử lý của câu CŨ ⟹ chốt lần hai, +1 lần hai:
+/// * câu giữa: nhảy CÓC một câu (14:51 bấm `3` ở câu 1 ⟹ màn sang câu 3, câu 2
+///   vẫn `☐`), và câu vừa bấm có thể bị ghi đè bằng mục con trỏ đang đứng;
+/// * câu CUỐI: chỉ số vượt qua trang Submit ⟹ vẽ `null` ⟹ bảng vẫn chờ mà không
+///   còn gì để bấm — TREO. Mẫu số: 7/11 bảng nhiều câu từng đi qua huba kết thúc
+///   bằng *"rejected"* (chủ máy /ctrlc thoát ra, mất hết câu trả lời).
+///
+/// Phím rời thì mỗi phím một sự kiện, TUI vẽ lại giữa hai phím (`cgkeys` nghỉ
+/// giữa các phím), và không có CR nào đi kèm. Đúng đường `/tab` đã đi từ 19/08.
+///
+/// Chỉ nhận dãy toàn chữ số `1`–`9` và `left`/`right` — đúng thứ `/key <số>` và
+/// `/pick` gửi. Phím khác (`enter`, `esc`, `↑`/`↓`) giữ nguyên đường cũ: các kế
+/// hoạch `submit_plan`/`checkbox_plan` được đo và xếp DỰA TRÊN cái CR ấy.
+/// Phải thấy CẢ thanh tab lẫn hộp chọn: một dòng lời phiên nhắc lại thanh tab
+/// (như chính sổ này) không đủ để đổi đường. Nhận nhầm thì cũng chỉ là thiếu
+/// một CR — hộp chọn một câu tự gửi ngay khi bấm số.
+pub fn key_way(screen: &str, keys: &[String]) -> KeyWay {
+    let so_hoac_ngang = |k: &String| {
+        matches!(k.as_str(), "left" | "right")
+            || (k.len() == 1 && matches!(k.as_bytes()[0], b'1'..=b'9'))
+    };
+    let co_so = keys.iter().any(|k| k != "left" && k != "right");
+    if co_so
+        && keys.iter().all(so_hoac_ngang)
+        && ask_table(screen).is_some()
+        && !parse_choices(screen).is_empty()
+    {
+        KeyWay::Bare
+    } else {
+        KeyWay::Written
+    }
+}
+
 /// Chữ này có phải TÊN MỘT PHÍM không — hỏi chính bảng phím, không chép lại.
 ///
 /// Dùng cho `/type <nút> [id phiên]` (Hà 2026-08-16). Một bản danh sách thứ hai

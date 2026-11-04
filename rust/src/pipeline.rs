@@ -13011,14 +13011,36 @@ pub fn press_ack_from_screen(
     (ack, choices, submit)
 }
 
+/// Dãy `/pick` trên bảng nhiều câu, bằng PHÍM RỜI: mũi tên trước, chờ TUI vẽ
+/// sang câu đích, rồi mới con số.
+///
+/// Chờ là phần của bản vá, không phải cho chắc: hai phím rời tới gần nhau quá
+/// thì TUI vẫn có thể đọc chung một nhịp, và con số lại rơi vào câu cũ — đúng
+/// cái hỏng của đường `do script` (xem `keys::key_way`). Mũi tên thì không sợ
+/// điều ấy: bảng dời tab theo chỉ số HIỆN HÀNH, nên đọc chung nhịp vẫn đi đủ.
+fn pick_send_bare(w: i64, keys: &[String]) -> anyhow::Result<()> {
+    let Some((so, mui_ten)) = keys.split_last() else {
+        return Err(anyhow::anyhow!("không có phím nào để gửi"));
+    };
+    if !mui_ten.is_empty() {
+        crate::keys::send_bare(w, mui_ten)?;
+        std::thread::sleep(std::time::Duration::from_millis(PICK_ARROW_SETTLE_MS));
+    }
+    crate::keys::send_bare(w, std::slice::from_ref(so))
+}
+
+/// Nghỉ giữa mũi tên và con số của `/pick` — đủ một lượt vẽ lại của TUI kể cả
+/// khi máy đang tải nặng (cùng bậc với nhịp 1200 ms sau `/tab`).
+const PICK_ARROW_SETTLE_MS: u64 = 600;
+
 /// `/pick <câu>.<lựa chọn>` — trả lời MỘT câu bất kỳ của bảng hỏi nhiều câu.
 ///
 /// 🔴 Hà 2026-08-13: *"chọn option xong thì vẫn còn bước nữa nên không pass qua
 /// được"*. Đường cũ (`/key <số>`) gửi số vào câu ĐANG MỞ; bảng nhiều câu thì
 /// các câu sau nằm sau một phím mũi tên, mà mũi tên trần bị `arrow_verdict` từ
 /// chối — đúng luật, vì `do script` kèm dấu xuống dòng nên mũi tên vừa di vừa
-/// CHỐT. Ở đây cả dãy đi trong MỘT `do script`, nên dấu xuống dòng chỉ có một,
-/// nằm sau con số — tức nó chốt đúng cái vừa chọn, không chốt hộ dọc đường.
+/// CHỐT. Bản 13/08 gộp cả dãy vào MỘT `do script`; từ 04/11 bảng nhiều câu đi
+/// PHÍM RỜI (`pick_send_bare`) vì chính cái gộp ấy làm CLI chốt nhầm câu rồi treo.
 ///
 /// Ba điều hàm này KHÔNG làm, và mỗi điều là một cái bẫy đã biết:
 /// * **Không đếm phím đã bấm để đoán vị trí** — chủ máy có thể vừa tự bấm một
@@ -13168,13 +13190,23 @@ fn pick_answer(s: &crate::sessions::LiveSession, w: i64, arg: &str) -> String {
     };
 
     let before = table.as_ref().map(|t| t.left());
-    // 🔴 CẢ DÃY VÀO **MỘT** LƯỢT GHI, và đây là chỗ luật ấy sinh ra (13/08):
-    // bảng nhiều câu đi bằng mũi tên + số, mà mỗi lượt ghi tự kèm một CR — nên
-    // tách ra nhiều lượt là rải Enter vào giữa đường, tức CHỐT hộ chủ máy đúng
-    // cái câu con trỏ đang đứng trước khi tới được câu anh bấm. Gộp lại thì cả
-    // dãy chỉ còn đúng một dấu, và nó nằm sau con số.
+    // 🔴 BẢNG NHIỀU CÂU: PHÍM RỜI, KHÔNG CÒN "CẢ DÃY VÀO MỘT LƯỢT GHI" (04/11).
+    //
+    // Luật 13/08 gộp mũi tên + số vào MỘT `do script` để chỉ còn một CR, nằm
+    // sau con số. Với CLI 2.1.280 thì chính cái gộp ấy hỏng: TUI đọc cả dãy
+    // trong một nhịp, trước khi vẽ lại, nên mũi tên dời đúng câu (bảng tính
+    // theo chỉ số hiện hành) mà con số + CR lại rơi vào bộ xử lý của câu CŨ —
+    // tức chốt câu chủ máy KHÔNG bấm, rồi CR chốt thêm lần nữa và nhảy cóc / vượt
+    // trang Submit rồi treo. Xem `keys::key_way`.
+    //
+    // Nên: mũi tên rời trước, chờ màn vẽ sang câu đích, rồi mới tới con số — cũng
+    // rời. Bảng MỘT câu (không thanh tab) giữ đường cũ: `/pick 1.x` = `/key x`.
     let keys = pick_keys(cursor, q - 1, opt);
-    if let Err(e) = crate::keys::press_writes(w, std::slice::from_ref(&keys)) {
+    let gui = match crate::keys::key_way(&body, &keys) {
+        crate::keys::KeyWay::Bare => pick_send_bare(w, &keys),
+        crate::keys::KeyWay::Written => crate::keys::press_writes(w, std::slice::from_ref(&keys)),
+    };
+    if let Err(e) = gui {
         logging::warn(
             "pick_send_failed",
             json!({ "session": s.session_id, "keys": keys, "err": e.to_string() }),
@@ -16466,7 +16498,47 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                                                 }
                                             }
                                         }
-                                        None => crate::keys::press(w, typed.trim()),
+                                        // 🔴 SỐ VÀO BẢNG NHIỀU CÂU ĐI PHÍM RỜI —
+                                        // Quang 2026-11-04: *"Cứ có nhiều tab lựa
+                                        // chọn, lựa xong là bị treo"*. Số + CR
+                                        // trong một lượt `do script` làm CLI chốt
+                                        // HAI lần: câu giữa thì nhảy cóc, câu
+                                        // cuối thì vượt trang Submit rồi treo.
+                                        // Xem `keys::key_way`.
+                                        //
+                                        // Đọc TRỌN màn để quyết: `before` chỉ giữ
+                                        // 24 dòng cuối, mà bảng có mô tả dài đẩy
+                                        // thanh tab lên quá đó — trượt thanh tab
+                                        // là rơi lại đúng đường gây treo.
+                                        None => {
+                                            let phim = vec![typed.trim().to_string()];
+                                            let man = crate::keys::screen_text(w)
+                                                .ok()
+                                                .or_else(|| before.clone());
+                                            match man
+                                                .as_deref()
+                                                .map(|m| crate::keys::key_way(m, &phim))
+                                            {
+                                                Some(crate::keys::KeyWay::Bare) => {
+                                                    logging::info(
+                                                        "keys_bare_on_table",
+                                                        json!({ "session": s.session_id,
+                                                                "key": typed.trim(),
+                                                                "why": "bảng nhiều câu — số + CR một lượt ghi làm CLI chốt hai lần" }),
+                                                    );
+                                                    // Hụt phím rời thì TỪ CHỐI, không lùi
+                                                    // về `press`: đường ấy chính là cái treo.
+                                                    crate::keys::send_bare(w, &phim).map_err(|e| {
+                                                        anyhow::anyhow!(
+                                                            "bảng nhiều câu cần phím RỜI mà phím rời không đi được ({e}). \
+                                                             Tôi KHÔNG gõ kèm Enter thay vào: đường ấy làm bảng nhảy cóc \
+                                                             một câu, hoặc vượt trang Submit rồi treo."
+                                                        )
+                                                    })
+                                                }
+                                                _ => crate::keys::press(w, typed.trim()),
+                                            }
+                                        }
                                     }
                                 }
                             } else {

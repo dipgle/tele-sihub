@@ -1,0 +1,23 @@
+⏺ [bts/check-list] Việc 1 đã xong. B1 xong ở nguồn nhưng chưa đẩy: classifier chặn bước lên trang thật.
+  Trong lúc chờ, tôi làm NB-007 ở nguồn, không đẩy.
+
+✻ Sautéed for 44m 43s · done 2:44 PM
+
+❯ Dùng tài khoản thử A, B và C
+
+  Listed 1 directory, ran 3 shell commands
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Gán TK  ☒ Mật khẩu  ☐ Đẩy B1  ✔ Submit  →
+
+│ Đẩy B1 (loại ghi chú) lên trang thật: dựng lại nền + Áp quyền, xem trước, rồi đẩy giao diện. Duyệt thì tôi gửi huba chạy hộ?
+
+❯ 1. Duyệt, gửi huba
+     Nửa A qua huba ⇒ tôi soát ảnh ⇒ nửa B
+  2. Chưa đẩy
+     Giữ B1 ở nguồn; gom đẩy một lượt sau
+  3. Type something.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+› Message from @projects-2f: [bts] Nhận B1 (chưa đẩy). Hỏi thẳng chủ máy khi bị chặn… (ctrl+o to expand)
