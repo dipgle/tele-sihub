@@ -140,7 +140,7 @@ fn doi_so_qua_shell_di_nguyen_van() {
     let m = may();
     let doc = m.tmp.path().join("khong-duoc-tao");
     let ac = format!("it's \"x\" $HOME $(touch {}) `id`", doc.display());
-    let (prog, argv) = sessions::model_call(&m.cfg, Some("acc8"), &["--bg", &ac]);
+    let (prog, argv) = sessions::account_call(&m.cfg, Some("acc8"), &["--bg", &ac]);
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
     let out = huba::exec::run(&prog, &argv, Default::default()).expect("chạy");
     assert_eq!(out.code, Some(0), "{}", out.stderr);
@@ -152,12 +152,67 @@ fn doi_so_qua_shell_di_nguyen_van() {
     assert!(!doc.exists(), "$(…) trong đối số đã bị CHẠY");
 }
 
+// ── Cùng lớp: `auth status` (`/accounts -k` + khối tài khoản) · dò `/usage` ────
+//
+// 🔴 07/11 (Quang: *"Nối luôn /usage và /accounts -k qua launch đi"*). Đo trên CLI
+// thật cùng ngày: acc8 đường TRỰC TIẾP ⟹ `auth status` = `loggedIn:false
+// authMethod:none`; qua `launch` ⟹ `loggedIn:true · api_key · ANTHROPIC_API_KEY`.
+// `-p /usage` qua `launch`: mã 0, `num_turns 0`, `total_cost_usd 0` (không tốn).
+
+fn acc8(m: &May) -> ClaudeAccountCfg {
+    m.cfg
+        .claude_accounts
+        .iter()
+        .find(|a| a.name == "acc8")
+        .unwrap()
+        .clone()
+}
+
+#[test]
+fn auth_status_cua_accounts_k_di_qua_launch() {
+    let m = may();
+    let v = huba::api_key::auth_status(&m.cfg, &acc8(&m)).expect("auth status");
+    let goi = da_goi(&m);
+    assert_eq!(
+        goi[0], "env=launch-acc8",
+        "biến của launch rơi mất: {goi:?}"
+    );
+    assert_eq!(
+        goi[1..],
+        [
+            "arg=--model".to_string(),
+            "arg=mo-hinh-acc8".to_string(),
+            "arg=auth".to_string(),
+            "arg=status".to_string()
+        ],
+        "{goi:?}"
+    );
+    assert!(v.is_object(), "{v}");
+}
+
+#[test]
+fn do_usage_di_qua_launch() {
+    let m = may();
+    let db = huba::db::Db::open(&m.tmp.path().join("huba.sqlite")).unwrap();
+    huba::runtime::usage_lam_moi_mot(&m.cfg, &db, "acc8", 0);
+    let goi = da_goi(&m);
+    assert_eq!(
+        goi[0], "env=launch-acc8",
+        "biến của launch rơi mất: {goi:?}"
+    );
+    assert!(
+        goi.windows(2)
+            .any(|w| w == ["arg=-p".to_string(), "arg=/usage".to_string()]),
+        "{goi:?}"
+    );
+}
+
 // ── Đối chứng: launch MỘT TỪ (alias) giữ đường trực tiếp ──────────────────────
 
 #[test]
 fn launch_mot_tu_giu_duong_truc_tiep() {
     let m = may();
-    let (prog, argv) = sessions::model_call(&m.cfg, Some("acc3"), &["-p", "x"]);
+    let (prog, argv) = sessions::account_call(&m.cfg, Some("acc3"), &["-p", "x"]);
     assert_eq!(prog, m.cfg.claude_cli);
     assert_eq!(argv, vec!["-p".to_string(), "x".to_string()]);
     let h = sessions::handover(&m.cfg, &phien(&m, "acc3")).expect("handover");

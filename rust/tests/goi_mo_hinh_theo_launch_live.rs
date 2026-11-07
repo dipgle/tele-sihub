@@ -1,5 +1,5 @@
 //! THĂM DÒ trên máy thật: dòng `launch` THẬT của từng tài khoản nhiều từ có
-//! chạy được qua `sessions::model_call` không — bằng `claude --version` (không
+//! chạy được qua `sessions::account_call` không — bằng `claude --version` (không
 //! gọi mô hình, không tốn hạn mức, không in khoá).
 //!
 //! `cargo test --offline --test goi_mo_hinh_theo_launch_live -- --ignored --nocapture`
@@ -12,12 +12,12 @@ use huba::sessions;
 
 #[test]
 #[ignore]
-fn dong_launch_that_chay_duoc_qua_model_call() {
+fn dong_launch_that_chay_duoc_qua_account_call() {
     let cfg = huba::config::load(None).expect("đọc huba.config.json");
     let mut mau = 0usize;
     let mut hong = Vec::new();
     for a in &cfg.claude_accounts {
-        let (prog, argv) = sessions::model_call(&cfg, Some(&a.name), &["--version"]);
+        let (prog, argv) = sessions::account_call(&cfg, Some(&a.name), &["--version"]);
         if prog == cfg.claude_cli {
             continue;
         }
@@ -28,6 +28,27 @@ fn dong_launch_that_chay_duoc_qua_model_call() {
         println!("{} ⟹ {prog} · mã {:?} · «{dong}»", a.name, out.code);
         if out.code != Some(0) || !dong.contains("Claude Code") {
             hong.push(a.name.clone());
+        }
+        // `auth status` qua CÙNG cửa `/accounts -k` dùng — chỉ in các trường xác
+        // thực, không in email/khoá.
+        match huba::api_key::auth_status(&cfg, a) {
+            Ok(v) => {
+                let truong = |k: &str| v.get(k).cloned().unwrap_or_default();
+                println!(
+                    "{} auth status ⟹ loggedIn {} · authMethod {} · apiKeySource {}",
+                    a.name,
+                    truong("loggedIn"),
+                    truong("authMethod"),
+                    truong("apiKeySource")
+                );
+                if v.get("loggedIn").and_then(|x| x.as_bool()) != Some(true) {
+                    hong.push(format!("{} (auth)", a.name));
+                }
+            }
+            Err(e) => {
+                println!("{} auth status ⟹ HỎNG {e}", a.name);
+                hong.push(format!("{} (auth)", a.name));
+            }
         }
     }
     println!("MAU_SO={mau} HONG={}", hong.len());

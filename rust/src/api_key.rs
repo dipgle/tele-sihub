@@ -281,16 +281,8 @@ fn tra_lai(dir: &Path, t: &TruocKhi) -> Vec<String> {
 
 /// `claude auth status` bằng ĐÚNG tài khoản ấy — CLI tự khai nó đang xác thực bằng gì.
 pub fn auth_status(cfg: &Config, acc: &ClaudeAccountCfg) -> Result<Value, String> {
-    let out = crate::exec::run(
-        &cfg.claude_cli,
-        &["auth", "status"],
-        crate::exec::RunOpts {
-            timeout: Some(Duration::from_secs(40)),
-            env: crate::runtime::account_env(acc),
-            ..Default::default()
-        },
-    )
-    .map_err(|e| format!("không chạy được `claude auth status`: {e}"))?;
+    let out = crate::runtime::auth_status_run(cfg, acc, Duration::from_secs(40))
+        .map_err(|e| format!("không chạy được `claude auth status`: {e}"))?;
     if out.timed_out {
         return Err("`claude auth status` quá 40 s".into());
     }

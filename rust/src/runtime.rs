@@ -1078,9 +1078,17 @@ fn usage_one(cfg: &Config, acc: &crate::config::ClaudeAccountCfg) -> Value {
     // cũng là thư mục launchd đặt hubad nên không đổi gì; trên Windows hubd đứng
     // ở thư mục gói, nên phải chỉ tay. Thư mục chưa có ⟹ để nguyên chỗ thừa hưởng.
     let noi_do = crate::sessions::hubd_runtime_dir();
-    let out = run(
-        &cfg.claude_cli,
+    // Qua `launch` của tài khoản (`sessions::account_call`): acc8/acc9 mang máy
+    // chủ + khoá trong dòng ấy, đường trực tiếp hỏi nhầm chỗ.
+    let (prog, argv) = crate::sessions::account_call(
+        cfg,
+        Some(&acc.name),
         &["-p", "/usage", "--output-format", "json"],
+    );
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let out = run(
+        &prog,
+        &argv,
         RunOpts {
             timeout: Some(Duration::from_secs(60)),
             env,
@@ -1230,6 +1238,29 @@ pub fn account_env(acc: &crate::config::ClaudeAccountCfg) -> Vec<(String, Option
     }
 }
 
+/// `claude auth status` bằng ĐÚNG tài khoản ấy, qua `launch` của nó — MỘT chỗ chạy
+/// cho cả khối tài khoản ([`auth_block`]) lẫn `/accounts -k`
+/// (`api_key::auth_status`). Đo 07/11: acc8 trực tiếp ⟹ `loggedIn:false`, qua
+/// `launch` ⟹ `loggedIn:true · ANTHROPIC_API_KEY` — hai bản chép tay thì một bản
+/// sẽ quên.
+pub fn auth_status_run(
+    cfg: &Config,
+    acc: &crate::config::ClaudeAccountCfg,
+    timeout: Duration,
+) -> anyhow::Result<crate::exec::RunOut> {
+    let (prog, argv) = crate::sessions::account_call(cfg, Some(&acc.name), &["auth", "status"]);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    run(
+        &prog,
+        &argv,
+        RunOpts {
+            timeout: Some(timeout),
+            env: account_env(acc),
+            ..Default::default()
+        },
+    )
+}
+
 /// **Tài khoản này là AI** — hỏi `claude auth status` cho từng cấu hình.
 ///
 /// Hà, 2026-08-10, nhìn màn: *"danh sách acc đang thiếu nhiều thông tin"*. Đúng:
@@ -1248,16 +1279,7 @@ pub fn account_env(acc: &crate::config::ClaudeAccountCfg) -> Vec<(String, Option
 fn auth_block(cfg: &Config) -> Value {
     let mut map = serde_json::Map::new();
     for acc in cfg.claude_accounts_or_ambient() {
-        let env = account_env(&acc);
-        let out = run(
-            &cfg.claude_cli,
-            &["auth", "status"],
-            RunOpts {
-                timeout: Some(Duration::from_secs(20)),
-                env,
-                ..Default::default()
-            },
-        );
+        let out = auth_status_run(cfg, &acc, Duration::from_secs(20));
         let row = match out {
             Ok(r) => match serde_json::from_str::<Value>(r.stdout.trim()) {
                 Ok(j) => json!({

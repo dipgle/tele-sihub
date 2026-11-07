@@ -6551,7 +6551,7 @@ fn fork_call(cfg: &Config, session: &LiveSession, prompt: &str) -> Result<ForkRe
     // against the work being asked about rather than wherever `hubad` was
     // started from.
     let cwd = crate::config::expand_home(Path::new(&session.cwd));
-    let (prog, argv) = model_call(
+    let (prog, argv) = account_call(
         cfg,
         Some(&session.account),
         &[
@@ -8907,7 +8907,7 @@ pub fn start_background(
     }
     let mut args: Vec<&str> = vec!["--bg", &task_with_project, "--disallowedTools"];
     args.extend_from_slice(&DENIED_TOOLS);
-    let (prog, argv) = model_call(cfg, account, &args);
+    let (prog, argv) = account_call(cfg, account, &args);
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
 
     let out = run(
@@ -9238,10 +9238,14 @@ pub fn stop_background(cfg: &Config, session: &LiveSession) -> Result<()> {
 // ngồi ở máy thì chủ máy mở cửa sổ rồi gõ `claude --resume`, không ai chạy một
 // lượt `-p` rồi đọc kết quả trong stdout.
 
-/// Chương trình + đối số cho một lượt gọi `claude` CÓ DÙNG MÔ HÌNH (`-p` của
-/// fork, `--bg`) trên một tài khoản.
+/// Chương trình + đối số cho một lượt gọi `claude` THEO TÀI KHOẢN — `-p` của
+/// fork, `--bg`, dò `-p /usage`, `auth status`. MỘT cửa: chỗ gọi mới nào cần
+/// "đúng tài khoản ấy" thì đi qua đây, không tự dựng `cfg.claude_cli` + biến.
 ///
-/// 🔴 07/11 (Quang: *"Vá luôn nợ fork thiếu env acc8/acc9 đi"*): `launch` của
+/// 🔴 07/11 (Quang: *"Vá luôn nợ fork thiếu env acc8/acc9 đi"*, rồi *"Nối luôn
+/// /usage và /accounts -k qua launch đi"*). Đo `auth status` acc8 cùng ngày:
+/// trực tiếp ⟹ `loggedIn:false authMethod:none`; qua `launch` ⟹ `loggedIn:true
+/// api_key · ANTHROPIC_API_KEY` — đường cũ khai SAI cả danh tính. `launch` của
 /// acc8/acc9 là một DÒNG LỆNH đủ — `ANTHROPIC_BASE_URL=… ANTHROPIC_API_KEY=…
 /// claude --model …`, `env $(cat …env | xargs) …`. Cửa sổ thật gõ nguyên dòng
 /// ấy nên chạy đúng; còn fork và `--bg` gọi thẳng `cfg.claude_cli` với mỗi
@@ -9253,7 +9257,7 @@ pub fn stop_background(cfg: &Config, session: &LiveSession) -> Result<()> {
 /// VĂN — không trích dẫn tay, không giãn `$(…)`. Dòng MỘT từ (`claude3`) là
 /// alias trong `~/.zshrc`, mà `zsh -c` không nạp alias ⟹ giữ đường trực tiếp
 /// như cũ (`CLAUDE_CONFIG_DIR` vẫn do chỗ gọi đặt). Windows giữ đường trực tiếp.
-pub fn model_call(cfg: &Config, account: Option<&str>, args: &[&str]) -> (String, Vec<String>) {
+pub fn account_call(cfg: &Config, account: Option<&str>, args: &[&str]) -> (String, Vec<String>) {
     let line = account.and_then(|a| {
         cfg.claude_accounts
             .iter()
@@ -9270,7 +9274,7 @@ pub fn model_call(cfg: &Config, account: Option<&str>, args: &[&str]) -> (String
     };
     // Luật 4: dòng `launch` có thể mang khoá ⟹ chỉ ghi TÊN tài khoản.
     logging::info(
-        "model_call_via_launch",
+        "account_call_via_launch",
         json!({ "account": account, "shell": "/bin/zsh" }),
     );
     let mut argv = vec![
