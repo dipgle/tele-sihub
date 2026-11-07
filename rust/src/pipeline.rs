@@ -3608,9 +3608,8 @@ fn auto_unstick_box(cfg: &Config, live: &crate::sessions::SessionsSnapshot, now_
         );
         // Mốc nhật ký ĐẶT TRƯỚC cú bấm: chỉ phần ghi thêm sau mốc này mới là bằng
         // chứng cho cú Enter NÀY (cùng khuôn `dan_vao_phien`).
-        let moc_nhat_ky =
-            crate::sessions::find_transcript(&cfg.claude_transcript_root(), &s.session_id)
-                .and_then(|p| std::fs::metadata(&p).ok().map(|m| (p, m.len())));
+        let moc_nhat_ky = crate::sessions::find_transcript_any(cfg, &s.session_id)
+            .and_then(|p| std::fs::metadata(&p).ok().map(|m| (p, m.len())));
         // Phím RỜI trước, byte chỉ là đường lùi — `keys::press_enter` giữ cả
         // luật ấy lẫn số đo 30/31 lượt hụt của đường byte.
         let how = crate::keys::press_enter(window);
@@ -7976,7 +7975,7 @@ fn dan_vao_phien(
     let _lane = crate::exec::urgent();
     // Mốc nhật ký ĐẶT TRƯỚC khi gõ: mọi thứ ghi thêm sau mốc này mới là bằng chứng
     // cho lượt dán NÀY, không phải một lượt cũ cùng lệnh.
-    let nhat_ky = crate::sessions::find_transcript(&cfg.claude_transcript_root(), &s.session_id)
+    let nhat_ky = crate::sessions::find_transcript_any(cfg, &s.session_id)
         .and_then(|p| std::fs::metadata(&p).ok().map(|m| (p, m.len())));
     match crate::keys::window_of(&s.tty) {
         // Cú Enter rời nằm ở MỘT chỗ (`keys::type_and_send`) — bản chép tay cũ

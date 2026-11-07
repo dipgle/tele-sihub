@@ -1903,7 +1903,7 @@ impl TranscriptTail {
 /// đúng trạng thái lúc nó chết — thứ sổ `watch` (chụp mỗi ~2 phút) không có.
 /// `None` khi không tìm thấy / không đọc được nhật ký; chỗ gọi giữ câu cũ.
 pub fn turn_open_at_death(cfg: &Config, session_id: &str) -> Option<bool> {
-    let path = find_transcript(&cfg.claude_transcript_root(), session_id)?;
+    let path = find_transcript_any(cfg, session_id)?;
     let tail = match read_tail(&path) {
         Ok(t) => t,
         Err(e) => {
@@ -3269,11 +3269,7 @@ pub fn said_missing_head(said: &str, screen: &str) -> Option<String> {
 /// vòng, vì ảnh chụp đi lên mạng 10 giây một lần còn thứ này chỉ cần đúng lúc
 /// huba sắp mở miệng.
 pub fn last_say(cfg: &Config, session: &LiveSession, max_chars: usize) -> Option<String> {
-    let path = transcript_path(
-        &cfg.claude_transcript_root(),
-        &session.cwd,
-        &session.session_id,
-    );
+    let path = locate_transcript(cfg, &session.cwd, &session.session_id)?;
     let tail = read_tail(&path).ok()?;
     last_prose(&tail, max_chars)
 }
@@ -3306,7 +3302,7 @@ pub fn last_say_at_by_id(
     if session_id.is_empty() || is_shell_id(session_id) {
         return None;
     }
-    let path = find_transcript(&cfg.claude_transcript_root(), session_id)?;
+    let path = find_transcript_any(cfg, session_id)?;
     last_prose_of_file_at(&path, max_chars)
 }
 
@@ -3652,7 +3648,7 @@ pub fn commands_of(cfg: &Config, session_id: &str, max: usize) -> Vec<Cmd> {
     if session_id.is_empty() || is_shell_id(session_id) {
         return Vec::new();
     }
-    let Some(path) = find_transcript(&cfg.claude_transcript_root(), session_id) else {
+    let Some(path) = find_transcript_any(cfg, session_id) else {
         // KHÔNG rơi về màn: màn là thứ vừa bị thay. Nhưng cũng không im — "0
         // nút vì phiên chưa nói gì" và "0 nút vì huba không tìm ra sổ" đọc lên y
         // hệt nhau nếu chỗ này không ghi một dòng (luật 3).
@@ -4024,7 +4020,7 @@ pub struct Question {
 /// đang swap); chỗ này chỉ trả tiền một lần đọc tệp KHI đã biết là cần —
 /// tức đúng lúc dựng nút cho một phiên, không phải mỗi vòng cho mọi phiên.
 pub fn asking_of(cfg: &crate::config::Config, session_id: &str) -> Option<Asking> {
-    let path = find_transcript(&cfg.claude_transcript_root(), session_id)?;
+    let path = find_transcript_any(cfg, session_id)?;
     let tail = read_tail(&path).ok()?;
     pending_question(&tail)
 }
@@ -5566,7 +5562,7 @@ pub fn is_orphan(s: &LiveSession) -> bool {
 pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
     let snap_started = std::time::Instant::now();
     let mut out = SessionsSnapshot::default();
-    let root = cfg.claude_transcript_root();
+    let roots = transcript_roots(cfg);
     let mut hidden_editor = 0usize;
 
     // Một lượt `ps` cho CẢ ảnh chụp: ai còn sống, ngồi ở cửa sổ nào, con của ai.
@@ -5820,13 +5816,12 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
                 continue;
             }
 
-            let path = transcript_path(&root, &cwd, &session_id);
-            if !path.exists() {
+            let Some(path) = transcript_by_cwd(&roots, &cwd, &session_id) else {
                 // Seen for real: 1 of 14 sessions had no transcript yet.
                 row.note = Some("chưa có nhật ký phiên".into());
                 out.sessions.push(row);
                 continue;
-            }
+            };
             // Đọc được thì lấy; đọc không được thì GIỮ mốc của sổ, đừng xoá —
             // một phép đo hỏng không phải một sự thật về thế giới (luật 11b).
             if let Some(t) = mtime_rfc3339(&path) {
@@ -6286,6 +6281,63 @@ pub fn find_transcript(root: &Path, session_id: &str) -> Option<PathBuf> {
     None
 }
 
+/// Mọi gốc nhật ký huba phải hỏi — gốc chung đứng đầu, rồi thư mục cấu hình
+/// của từng tài khoản có khai `config_dir`.
+///
+/// 🔴 07/11 ([dwork/dhub] chuyển lời Quang): `huba sessions` báo *"chưa có nhật
+/// ký phiên"* cho MỌI phiên của acc8 và acc9. Đo: `projects` của acc2–acc7 là
+/// liên kết về `~/.claude/projects`, nên một gốc chung từng đủ; acc8/acc9 có
+/// `projects` THẬT (60 và 15 nhật ký) không có mặt ở gốc chung. Tiền đề *"mọi
+/// tài khoản dùng chung một gốc"* chỉ đúng do cách các tài khoản CŨ được dựng —
+/// CLI không hứa thế, nên mọi chỗ tìm nhật ký đi qua danh sách này.
+///
+/// Chỉ thêm tài khoản KHAI `config_dir`: tài khoản mặc định chính là gốc chung,
+/// và lấy nó theo `$CLAUDE_CONFIG_DIR`/`~/.claude` thì một cấu hình thử trỏ gốc
+/// tạm sẽ đi quét `~/.claude` thật. Hai gốc trỏ về CÙNG một `projects` (liên
+/// kết) chỉ hỏi một lần — so theo đường thật, không theo chữ.
+pub fn transcript_roots(cfg: &Config) -> Vec<PathBuf> {
+    let accounts = cfg
+        .claude_accounts
+        .iter()
+        .filter_map(|a| a.config_dir.as_deref().filter(|d| !d.is_empty()))
+        .map(|d| crate::config::expand_home(Path::new(d)));
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut out = Vec::new();
+    for root in std::iter::once(cfg.claude_transcript_root()).chain(accounts) {
+        let projects = root.join("projects");
+        let key = std::fs::canonicalize(&projects).unwrap_or(projects);
+        if seen.insert(key) {
+            out.push(root);
+        }
+    }
+    out
+}
+
+/// [`find_transcript`] trên MỌI gốc của [`transcript_roots`] — cho chỗ gọi chỉ
+/// có `session_id`. Id là uuid nên thứ tự gốc không đổi kết quả.
+pub fn find_transcript_any(cfg: &Config, session_id: &str) -> Option<PathBuf> {
+    transcript_roots(cfg)
+        .iter()
+        .find_map(|r| find_transcript(r, session_id))
+}
+
+/// Đường thẳng `<gốc>/projects/<slug>/<id>.jsonl` ở từng gốc — chỉ `stat`,
+/// không quét. Cho ảnh chụp mỗi vòng, nơi `roots` được tính MỘT lần.
+pub fn transcript_by_cwd(roots: &[PathBuf], cwd: &str, session_id: &str) -> Option<PathBuf> {
+    roots
+        .iter()
+        .map(|r| transcript_path(r, cwd, session_id))
+        .find(|p| p.exists())
+}
+
+/// Nhật ký của một phiên đã biết `cwd`: đường thẳng ở mọi gốc trước, quét theo
+/// id sau (sống sót cả khi `cwd` chỗ gọi đưa vào bị lệch).
+pub fn locate_transcript(cfg: &Config, cwd: &str, session_id: &str) -> Option<PathBuf> {
+    let roots = transcript_roots(cfg);
+    transcript_by_cwd(&roots, cwd, session_id)
+        .or_else(|| roots.iter().find_map(|r| find_transcript(r, session_id)))
+}
+
 /// When the transcript last changed — the signal the follow loop watches.
 pub fn transcript_mtime(path: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).ok()?.modified().ok()
@@ -6302,7 +6354,7 @@ pub fn transcript_mtime(path: &Path) -> Option<std::time::SystemTime> {
 /// khi không tìm được nhật ký — chỗ gọi giữ câu cũ, đây là phần LÀM RÕ THÊM,
 /// không phải điều kiện để có câu trả lời.
 pub fn transcript_idle_seconds(cfg: &Config, session_id: &str) -> Option<i64> {
-    let path = find_transcript(&cfg.claude_transcript_root(), session_id)?;
+    let path = find_transcript_any(cfg, session_id)?;
     let mtime = transcript_mtime(&path)?;
     Some(mtime.elapsed().ok()?.as_secs() as i64)
 }
@@ -6313,18 +6365,9 @@ pub fn stream(cfg: &Config, session_id: &str, cwd: &str, limit: usize) -> Sessio
         session_id: session_id.to_string(),
         ..Default::default()
     };
-    let root = cfg.claude_transcript_root();
-    let by_cwd = transcript_path(&root, cwd, session_id);
-    let path = if by_cwd.exists() {
-        by_cwd
-    } else {
-        match find_transcript(&root, session_id) {
-            Some(p) => p,
-            None => {
-                out.note = Some("chưa có nhật ký phiên".into());
-                return out;
-            }
-        }
+    let Some(path) = locate_transcript(cfg, cwd, session_id) else {
+        out.note = Some("chưa có nhật ký phiên".into());
+        return out;
     };
     match read_tail(&path) {
         Ok(tail) => {
@@ -6431,13 +6474,7 @@ const USD_PER_MB: f64 = 1.75;
 /// ceiling is still BILLED, so a flat cap would have meant paying for nothing,
 /// repeatedly, on exactly the big sessions worth asking about.
 pub fn fork_cost_estimate(cfg: &Config, session: &LiveSession) -> f64 {
-    let root = cfg.claude_transcript_root();
-    let by_cwd = transcript_path(&root, &session.cwd, &session.session_id);
-    let path = if by_cwd.exists() {
-        Some(by_cwd)
-    } else {
-        find_transcript(&root, &session.session_id)
-    };
+    let path = locate_transcript(cfg, &session.cwd, &session.session_id);
     // No transcript found means no estimate — return 0 so the caller falls back
     // to its floor rather than inventing a ceiling out of a missing file.
     let bytes = path
@@ -7233,15 +7270,14 @@ pub fn ask_aside(cfg: &Config, session: &LiveSession, question: &str) -> Result<
     // conversation found with session ID: …"*, exit 1, sau khi đã tính tiền
     // khởi động. Đo 2026-08-11. Nói thẳng trước khi gọi thì rẻ hơn, và câu trả
     // lời nói được việc cần làm thay vì một mã lỗi.
-    let path = transcript_path(
-        &cfg.claude_transcript_root(),
-        &session.cwd,
-        &session.session_id,
-    );
-    if !path.exists() {
+    if locate_transcript(cfg, &session.cwd, &session.session_id).is_none() {
+        let roots: Vec<String> = transcript_roots(cfg)
+            .iter()
+            .map(|r| r.display().to_string())
+            .collect();
         logging::info(
             "aside_no_transcript",
-            json!({ "session": session.session_id, "path": path.display().to_string() }),
+            json!({ "session": session.session_id, "cwd": session.cwd, "roots": roots }),
         );
         anyhow::bail!(
             "phiên này chưa nói lượt nào nên không có bản sao để hỏi. Mở cửa sổ của nó rồi \
@@ -7657,7 +7693,7 @@ fn wait_for_new_session_id(
                 );
             })
             .or_else(|| {
-                newest_transcript_since(&cfg.claude_transcript_root(), root, opened_at)
+                newest_transcript_since(&transcript_roots(cfg), root, opened_at)
                     .filter(|id| exclude.is_none_or(|old| id != old))
                     // 🔴 Cửa thêm 12/09 — xem `id_bound_elsewhere`. Lượt đoán
                     // này hỏi *"tệp nào vừa được ghi"*, mà mọi tài khoản dùng
@@ -7982,15 +8018,17 @@ pub fn answer_exit_dialog(window: i64) -> ExitBox {
 /// `claude agents` (ba lần spawn một binary 279 MB). Chỉ nhận tệp sinh SAU lúc
 /// mở cửa sổ, nên phiên cũ trong cùng thư mục không lọt vào.
 fn newest_transcript_since(
-    root: &Path,
+    roots: &[PathBuf],
     cwd: &Path,
     since: std::time::SystemTime,
 ) -> Option<String> {
-    let dir = root
-        .join("projects")
-        .join(transcript_slug(&cwd.to_string_lossy()));
+    let slug = transcript_slug(&cwd.to_string_lossy());
     let mut best: Option<(std::time::SystemTime, String)> = None;
-    for e in std::fs::read_dir(&dir).ok()?.flatten() {
+    let entries = roots
+        .iter()
+        .filter_map(|r| std::fs::read_dir(r.join("projects").join(&slug)).ok())
+        .flat_map(|d| d.flatten());
+    for e in entries {
         let p = e.path();
         if p.extension().and_then(|x| x.to_str()) != Some("jsonl") {
             continue;
@@ -8216,7 +8254,7 @@ pub fn self_opened_successor(
     s: &LiveSession,
     live: &[LiveSession],
 ) -> Option<(String, String)> {
-    let Some(path) = find_transcript(&cfg.claude_transcript_root(), &s.session_id) else {
+    let Some(path) = find_transcript_any(cfg, &s.session_id) else {
         logging::info(
             "self_handover_check_skipped",
             json!({ "session": s.session_id, "why": "không tìm thấy nhật ký" }),
@@ -8948,7 +8986,7 @@ pub fn start_background(
             break;
         }
         // Any transcript at all means it got past the dialog and is working.
-        if find_transcript(&cfg.claude_transcript_root(), &full).is_some() {
+        if find_transcript_any(cfg, &full).is_some() {
             break;
         }
     }
