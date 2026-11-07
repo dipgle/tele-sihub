@@ -2885,10 +2885,7 @@ fn auto_run(db: &Db, cfg: &Config, live: &crate::sessions::SessionsSnapshot) -> 
     //
     // Nay khoá theo phiên và dọn theo SỰ SỐNG: phiên còn thì sổ của nó còn
     // nguyên; phiên chết thì cả mục biến mất cùng lúc với thứ sinh ra nó.
-    let mut done: std::collections::BTreeMap<String, Vec<String>> = db
-        .cursor_or_log(AUTORUN_DONE_KEY)
-        .and_then(|v| serde_json::from_str(&v).ok())
-        .unwrap_or_default();
+    let mut done = doc_so_da_chay(db);
     let alive: std::collections::BTreeSet<&str> = live
         .sessions
         .iter()
@@ -2915,10 +2912,7 @@ fn auto_run(db: &Db, cfg: &Config, live: &crate::sessions::SessionsSnapshot) -> 
             continue;
         };
         let seen = done.entry(s.session_id.clone()).or_default();
-        let Some(line) = crate::keys::marked_commands(text, 3)
-            .into_iter()
-            .find(|l| !seen.contains(&quick_token(&s.session_id, l)))
-        else {
+        let Some(line) = lenh_danh_dau_chua_chay(text, &s.session_id, seen) else {
             continue;
         };
         // 🔴 GHI SỔ LỆNH TRƯỚC KHI XẾP HÀNG — nhưng là cuốn sổ `QUICK_KEY`, thứ
@@ -2937,6 +2931,7 @@ fn auto_run(db: &Db, cfg: &Config, live: &crate::sessions::SessionsSnapshot) -> 
                 logging::info(
                     "auto_run_firing",
                     json!({ "session": s.session_id, "name": s.name, "cwd": cmd.cwd,
+                            "nguon": "dau_tren_man",
                             "cmd": crate::exec::truncate(&line, 120) }),
                 );
                 // 🔴 KHÔNG `quiet`. Bản đầu dùng `push_text_quiet`, và
@@ -2981,9 +2976,7 @@ fn auto_run(db: &Db, cfg: &Config, live: &crate::sessions::SessionsSnapshot) -> 
         }
     }
     if done != before {
-        if let Ok(v) = serde_json::to_string(&done) {
-            let _ = db.set_cursor(AUTORUN_DONE_KEY, &v);
-        }
+        ghi_so_da_chay(db, &done);
     }
     fired
 }
@@ -7441,7 +7434,6 @@ const SCRATCH_ROOT: &str = "/private/tmp";
 /// vòng sau đọc lại tệp, sổ trả "đã nhận rồi", và chỉ còn bước đổi tên — không
 /// mất, không chạy lặp. Redis không với tới ⟹ về lại đúng đường cũ ở dưới.
 fn runin_inbox_tick(db: &Db, cfg: &Config) -> usize {
-    let _ = db;
     let mut taken = 0usize;
     let mut vao_so = 0usize;
     for (sid, cmd, path) in scan_session_inboxes(std::path::Path::new(SCRATCH_ROOT)) {
@@ -7459,9 +7451,16 @@ fn runin_inbox_tick(db: &Db, cfg: &Config) -> usize {
                 );
             }
             if let Some(id) = nhan {
+                // Hòm thư đã nhận ⟹ đóng dấu vào cuốn sổ CHUNG với `auto_run`,
+                // để dấu `#huba-run` của chính dòng này (nếu phiên cũng in nó
+                // ra màn — quy ước bảo in) không sinh lượt chạy thứ hai.
+                ghi_da_chay(db, &sid, &cmd);
                 logging::info(
                     "runin_inbox_queued",
                     json!({ "session": sid, "viec": id,
+                            "file": path.display().to_string(),
+                            "moved": moved.display().to_string(),
+                            "nguon": "hom_thu",
                             "cmd": crate::exec::truncate(&cmd, 120) }),
                 );
                 vao_so += 1;
@@ -7486,9 +7485,16 @@ fn runin_inbox_tick(db: &Db, cfg: &Config) -> usize {
         // máy. Nhánh `RunIn` tự tra phiên ngay sau đó (sổ trước, ảnh chụp chỉ
         // khi sổ không biết) và tự ghi `runin_inbox_session_gone` khi không
         // thấy — tra hai lần là trả tiền hai lần cho cùng một câu hỏi.
+        //
+        // Cùng cuốn sổ chống-chạy-lặp với nhánh trên, cùng lý do.
+        ghi_da_chay(db, &sid, &cmd);
         logging::info(
             "runin_inbox_queued",
-            json!({ "session": sid, "cmd": crate::exec::truncate(&cmd, 120) }),
+            json!({ "session": sid,
+                    "file": path.display().to_string(),
+                    "moved": moved.display().to_string(),
+                    "nguon": "hom_thu",
+                    "cmd": crate::exec::truncate(&cmd, 120) }),
         );
         // Hàng THỨ HAI, không phải hàng Telegram — xem `SESSION_RUNS`. Lệnh
         // vẫn chạy `quiet`: phiên tự nhờ thì kết quả vào phiên là đủ (21 lượt
@@ -9440,6 +9446,71 @@ pub fn quick_token(session_id: &str, line: &str) -> String {
     format!("{h:08x}")
 }
 
+/// Sổ "dòng này đã có người chạy hộ phiên ấy": phiên → các [`quick_token`].
+///
+/// Một cuốn, HAI đường ghi — [`auto_run`] khi nó bắn một dấu trên màn, và
+/// [`ghi_da_chay`] khi HÒM THƯ nhận một dòng. Vì sao phải chung (Quang 07/11,
+/// ca thật đo được): quy ước workspace bảo phiên vừa ghi `huba-run.txt` vừa
+/// đánh dấu `#huba-run` trong câu trả lời, nên mỗi yêu cầu hợp lệ xuất hiện ở
+/// HAI nơi. Trước bản này hai nơi ấy là hai cỗ máy nhận lệnh độc lập: hòm thư
+/// chạy một lượt, `auto_run` đọc cái dấu ấy trên màn rồi bắn thêm một lượt.
+/// Đo ở phiên `[ido-pm/d23]` 2026-11-07T11:27:35Z — MỘT mục hòm thư (viec
+/// 2924) sinh HAI tiến trình (`long_job_started` n=58 pid 88490 · n=59 pid
+/// 88491) chạy song song đúng một dòng lệnh, cách nhau 6 ms.
+///
+/// Chiều chặn là MỘT CHIỀU có chủ ý: hòm thư ghi vào sổ thì `auto_run` thôi
+/// bắn dấu ấy nữa; còn hòm thư KHÔNG đọc cuốn này, nên phiên nhờ lại đúng
+/// dòng ấy qua hòm thư vẫn chạy lại được. Mất một chiều thì mất một lần chạy
+/// THẬT (im lặng), được một chiều thì chỉ mất một lần chạy THỪA (nhìn thấy).
+pub fn doc_so_da_chay(db: &Db) -> std::collections::BTreeMap<String, Vec<String>> {
+    db.cursor_or_log(AUTORUN_DONE_KEY)
+        .and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or_default()
+}
+
+/// Ghi sổ; hỏng thì NÓI (luật 3) — sổ này hỏng nghĩa là lượt sau bắn lại một
+/// dòng đã chạy, đúng thứ cuốn sổ sinh ra để chặn.
+fn ghi_so_da_chay(db: &Db, book: &std::collections::BTreeMap<String, Vec<String>>) {
+    if let Ok(v) = serde_json::to_string(book) {
+        if let Err(e) = db.set_cursor(AUTORUN_DONE_KEY, &v) {
+            logging::error(
+                "auto_run_book_write_failed",
+                json!({ "err": e.to_string(),
+                        "effect": "lượt sau có thể bắn LẠI một dòng vừa chạy" }),
+            );
+        }
+    }
+}
+
+/// Dòng ĐÁNH DẤU đầu tiên trên màn mà phiên này **chưa** được chạy hộ — `None`
+/// khi mọi dấu trên màn đều đã chạy rồi.
+///
+/// Tách khỏi [`auto_run`] để đo được mà không cần Terminal: cổng
+/// chống-chạy-lặp là hành vi, không phải chú thích, và nó phải ĐỎ được khi ai
+/// bỏ mất một trong hai đường ghi sổ.
+pub fn lenh_danh_dau_chua_chay(text: &str, session_id: &str, seen: &[String]) -> Option<String> {
+    crate::keys::marked_commands(text, 3)
+        .into_iter()
+        .find(|l| !seen.contains(&quick_token(session_id, l)))
+}
+
+/// Ghi vào cuốn sổ chống-chạy-lặp của [`auto_run`] rằng một dòng ĐÃ có người
+/// chạy hộ phiên này.
+pub fn ghi_da_chay(db: &Db, session_id: &str, line: &str) {
+    let mut book = doc_so_da_chay(db);
+    let v = book.entry(session_id.to_string()).or_default();
+    let tok = quick_token(session_id, line);
+    if v.contains(&tok) {
+        return;
+    }
+    v.push(tok);
+    if v.len() > 50 {
+        let cut = v.len() - 50;
+        v.drain(..cut);
+    }
+    ghi_so_da_chay(db, &book);
+}
+
 /// Sổ nút hiện tại, đọc được cả hình dạng cũ lẫn mới.
 fn quick_book(db: &Db) -> serde_json::Map<String, Value> {
     db.cursor_or_log(QUICK_KEY)
@@ -11014,7 +11085,7 @@ fn watch_long_job(job: LongJob) {
                             // mật khẩu, và `fields` đã làm lộ một token một lần.
                             logging::info(
                                 "long_job_started",
-                                json!({ "n": n, "pid": pid,
+                                json!({ "n": n, "pid": pid, "viec": viec,
                                         "session": session, "label": label }),
                             );
                             jobs.push(Job {
@@ -11095,6 +11166,7 @@ fn watch_long_job(job: LongJob) {
                         "runin_ran",
                         json!({ "session": s.session_id, "code": r.code,
                                 "timed_out": r.timed_out, "ms": r.ms, "n": n,
+                                "viec": viec,
                                 "cmd": crate::exec::truncate(&line, 120) }),
                     );
                     // Vào sổ ở ĐÂY, không ở nhánh trả lời: nhánh trả lời chia
