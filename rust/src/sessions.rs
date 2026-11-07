@@ -4336,16 +4336,20 @@ pub fn book_updated_at(row: &Value) -> Option<String> {
 /// Thư mục cấu hình của một tài khoản — nơi CLI để sổ sách của chính nó.
 ///
 /// Khai `config_dir` thì dùng đúng đường ấy; không khai là tài khoản MẶC ĐỊNH,
-/// và khi ấy thư mục là `$CLAUDE_CONFIG_DIR` (nếu môi trường đang đặt) rồi mới
-/// tới `~/.claude`. Lưu ý sự bất đối xứng đã ghi ở đầu tệp: lúc **gọi** CLI thì
-/// tài khoản mặc định phải XOÁ biến ấy, còn lúc **đọc tệp** thì vẫn cần biết
-/// thư mục — hai câu hỏi khác nhau về cùng một tài khoản.
+/// và khi ấy thư mục là `~/.claude`.
+///
+/// 🔴 KHÔNG đọc `$CLAUDE_CONFIG_DIR` đang có trong môi trường (vá 2026-11-07).
+/// Cùng một lý do với phía GỌI CLI (`list_account_cli`: tài khoản mặc định phải
+/// XOÁ biến ấy): biến đó CHỌN tài khoản, nên nó nói về **phiên đang chạy**, không
+/// nói gì về tài khoản mặc định. Gõ `huba …` trong một phiên acc2 thì tiến trình
+/// con thừa hưởng biến ấy, `~/.claude` bị thay bằng `~/.claude-acc2`, và sổ của
+/// acc2 bị đọc HAI lần — mỗi phiên hiện hai hàng, một dưới tên acc2, một dưới
+/// tên tài khoản mặc định (đang khoá). Lách tạm trước bản vá:
+/// `env -u CLAUDE_CONFIG_DIR ./huba …`.
+/// Bài kiểm: `tests/sach_mac_dinh_khong_theo_bien_phien.rs`.
 fn account_book_dir(account: &ClaudeAccountCfg) -> PathBuf {
     if let Some(d) = account.config_dir.as_deref().filter(|d| !d.is_empty()) {
         return crate::config::expand_home(Path::new(d));
-    }
-    if let Some(d) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
-        return PathBuf::from(d);
     }
     match crate::config::home_dir() {
         Some(home) => home.join(".claude"),
