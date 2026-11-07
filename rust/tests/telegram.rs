@@ -330,6 +330,13 @@ fn each_row_carries_the_same_facts_as_the_card_on_the_page() {
         false,
     );
     s.permission_mode = Some("auto".into());
+    // 🔴 MODEL PHẢI KHAI — 07/11. Fixture cũ để `model = None` và vẫn ra 46% chỉ
+    // vì hồi ấy MỌI model không phải haiku đều được đoán cửa sổ 1M; con số 46%
+    // trong bài này chưa bao giờ là số đo của `sess()` mà là hệ quả của một phép
+    // đoán. Nay `sessions::context_window(None)` trả 180k (đúng số CLI dùng cho
+    // model nó không biết), nên để nguyên thì bài kiểm đo phép đoán, không đo
+    // hàng-vs-thẻ. Khai model thật ⇒ 460k/1M = 46%, đúng thứ bài này canh.
+    s.model = Some("claude-opus-5-5".into());
     s.context_tokens = 460_000;
     s.pending_subagents = 2;
     // 12 phút trước NOW.
@@ -386,6 +393,36 @@ fn each_row_carries_the_same_facts_as_the_card_on_the_page() {
     // Xuống dòng trong câu cuối phải bị dẹp: một dòng 💬 vỡ làm ba dòng thì
     // danh sách năm phiên trông như mười lăm.
     assert!(!text.contains("Đã sửa xong\n"), "còn xuống dòng: {text}");
+}
+
+/// `%` ngữ cảnh KHÔNG BAO GIỜ vượt 100 — và đây là khoá hồi quy cho một hệ quả
+/// của bản vá 07/11 (`sessions::context_window`).
+///
+/// Ca sinh ra nó: `last_usage` không đọc ra model ⇒ `context_window(None)` = 180k
+/// (đúng số CLI dùng cho model nó không biết), trong khi phiên thật có thể là một
+/// phiên Claude 460k token. Không kẹp thì hàng điện thoại in **256%** — đọc lên
+/// như lỗi hiển thị, và nó nằm ngay cạnh tên phiên nên là thứ đầu tiên người đọc
+/// nhìn thấy.
+///
+/// Đối chứng ngược nằm trong CÙNG bài: 90k token phải ra đúng `50%`, không phải
+/// một hằng số 100 nào cũng được — nếu ai thay `.min(100)` bằng `100` thì vế này đỏ.
+#[test]
+fn phan_tram_ngu_canh_khong_bao_gio_vuot_100() {
+    let mut qua = sess("cccccccc-0000-0000-0000-000000000000", "huba", "acc9", true);
+    qua.model = None; // model không đọc được
+    qua.context_tokens = 460_000; // 460k/180k = 256% nếu không kẹp
+    let text = session_list_text(&[qua], "", NOW);
+    assert!(text.contains("· 100% ·"), "phải kẹp ở 100: {text}");
+    assert!(!text.contains("256%"), "in quá 100 phần trăm: {text}");
+
+    let mut vua = sess("dddddddd-0000-0000-0000-000000000000", "huba", "acc9", true);
+    vua.model = None;
+    vua.context_tokens = 90_000; // 90k/180k = 50%
+    let text = session_list_text(&[vua], "", NOW);
+    assert!(
+        text.contains("· 50% ·"),
+        "kẹp không được ăn mất số thật: {text}"
+    );
 }
 
 /// Dựng lại NGUYÊN VĂN lượt `/session` lúc 21:09 ngày 22/08 và ghim hai chỗ bản

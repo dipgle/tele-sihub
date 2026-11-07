@@ -2240,12 +2240,10 @@ fn auto_handover(db: &Db, cfg: &Config, live: &crate::sessions::SessionsSnapshot
         if s.limited.is_some() {
             continue;
         }
-        // Cửa sổ ngữ cảnh theo model; không biết model thì lấy mức phổ biến.
-        let window: u64 = if s.model.as_deref().is_some_and(|m| m.contains("haiku")) {
-            200_000
-        } else {
-            1_000_000
-        };
+        // Cửa sổ ngữ cảnh: MỘT nguồn duy nhất, và đó là số CLI dùng
+        // (`sessions::context_window` — đo 07/11: model lạ với CLI là 180k, không
+        // phải 1M; đoán 1M làm huba bàn giao muộn trong khi CLI đã nén xong).
+        let window: u64 = crate::sessions::context_window(s.model.as_deref());
         let pct = ((s.context_tokens * 100) / window).min(100) as u8;
         // Chỉ đọc màn khi phiên ĐÃ đủ đầy. Mỗi lần đọc là một lần gọi
         // AppleScript vào Terminal, và đọc cho mọi phiên mỗi vòng đã kéo một
@@ -13632,14 +13630,20 @@ fn session_meta(
     } else {
         String::new()
     };
-    // Cùng cửa sổ ngữ cảnh với trang: haiku 200k, còn lại 1M.
-    let win: u64 = if s.model.as_deref().is_some_and(|m| m.contains("haiku")) {
-        200_000
-    } else {
-        1_000_000
-    };
+    // Cùng cửa sổ ngữ cảnh với quyết định bàn giao — một nguồn duy nhất:
+    // `sessions::context_window`. Hai hằng số chép tay là chỗ bản trước lệch
+    // khỏi CLI (07/11).
+    let win: u64 = crate::sessions::context_window(s.model.as_deref());
+    // 🔴 KẸP 100% — cùng luật với `auto_handover` (`.min(100)`).
+    //
+    // Trước 07/11 chỗ này không cần kẹp vì cửa sổ đoán là 1M cho mọi model, nên
+    // không phiên nào chạm tới. Nay model lạ (acc8/acc9) có cửa sổ 180k, và một
+    // phiên Claude mà `last_usage` KHÔNG đọc ra model sẽ rơi về 180k trong khi
+    // ngữ cảnh thật của nó là 460k ⇒ hàng điện thoại in **256%**, thứ đọc lên
+    // như lỗi hiển thị. Kẹp ở 100 vẫn nói đúng điều cần nói ("đã đầy") và
+    // KHÔNG bao giờ nói ít hơn sự thật.
     let pct = if s.context_tokens > 0 {
-        (s.context_tokens as f64 / win as f64 * 100.0).round() as u64
+        ((s.context_tokens as f64 / win as f64 * 100.0).round() as u64).min(100)
     } else {
         0
     };

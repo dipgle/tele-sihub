@@ -2358,6 +2358,34 @@ pub fn folder_for_session(
 /// Ngữ cảnh của lượt gần nhất + model của nó.
 ///
 /// Đọc XUÔI và giữ cái cuối cùng thấy được: bản ghi mới nhất là bản ghi đúng.
+/// Cửa sổ ngữ cảnh của một model — ĐỌC TỪ CLI, không đoán.
+///
+/// Ba con số, cả ba đều là phép đo trên máy này (07/11):
+/// · model lạ với CLI (`deepseek-v4.1-flash` — acc8/acc9 chạy qua opencode):
+///   **180 000**. CLI tự khai trong nhật ký debug của chính nó
+///   (`~/.claude-acc9/debug/*.txt`): `autocompact: … effectiveWindow=180000` +
+///   `thresholdSource=unknown-model`; và 81 lượt nén tự động trong nhật ký phiên
+///   có `preTokens` 165 754–172 767 (≈93% của 180 000).
+/// · `haiku`: **200 000**.
+/// · model Claude thật: **1 000 000** — một phiên `claude-opus-5-5` chạy tới
+///   888 197 token mà chưa có mốc nén nào, nên cửa sổ của nó lớn hơn 888k.
+///
+/// 🔴 Vì sao hàm này phải tồn tại: bản trước chép hằng số ấy ở HAI chỗ trong
+/// `pipeline.rs` (một chỗ in `%` ra điện thoại, một chỗ quyết định bàn giao), và
+/// cả hai đều đoán 1 000 000 cho mọi model không phải haiku. Quang 07/11: *"chạy
+/// mãi vẫn <20% đã thấy báo auto-compact"* — phiên acc9 đọc 13% trong khi CLI đã
+/// ở 72%. Bài kiểm: `tests/cua_so_ngu_canh.rs` (kèm cổng quét mã nguồn, để chỗ
+/// đoán thứ ba không mọc lại).
+pub fn context_window(model: Option<&str>) -> u64 {
+    match model {
+        Some(m) if m.contains("haiku") => 200_000,
+        Some(m) if m.contains("claude") => 1_000_000,
+        // Gồm cả `None`: không đọc được model thì rơi về đúng con số CLI dùng cho
+        // model nó không biết — thà báo sớm còn hơn báo muộn.
+        _ => 180_000,
+    }
+}
+
 fn last_usage(tail: &str) -> (u64, Option<String>) {
     let mut ctx = 0u64;
     let mut model = None;
