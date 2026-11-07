@@ -396,32 +396,34 @@ fn each_row_carries_the_same_facts_as_the_card_on_the_page() {
 }
 
 /// `%` ngữ cảnh KHÔNG BAO GIỜ vượt 100 — và đây là khoá hồi quy cho một hệ quả
-/// của bản vá 07/11 (`sessions::context_window`).
+/// của bản vá 07/11 (`sessions::display_window`).
 ///
-/// Ca sinh ra nó: `last_usage` không đọc ra model ⇒ `context_window(None)` = 180k
-/// (đúng số CLI dùng cho model nó không biết), trong khi phiên thật có thể là một
-/// phiên Claude 460k token. Không kẹp thì hàng điện thoại in **256%** — đọc lên
-/// như lỗi hiển thị, và nó nằm ngay cạnh tên phiên nên là thứ đầu tiên người đọc
-/// nhìn thấy.
+/// Ca sinh ra nó: `last_usage` không đọc ra model ⇒ mẫu số hiển thị là 200k (đúng
+/// số `/context` của CLI in cho model nó không biết), trong khi phiên thật có thể
+/// là một phiên Claude 460k token. Không kẹp thì hàng điện thoại in **230%** —
+/// đọc lên như lỗi hiển thị, và nó nằm ngay cạnh tên phiên nên là thứ đầu tiên
+/// người đọc nhìn thấy.
 ///
-/// Đối chứng ngược nằm trong CÙNG bài: 90k token phải ra đúng `50%`, không phải
-/// một hằng số 100 nào cũng được — nếu ai thay `.min(100)` bằng `100` thì vế này đỏ.
+/// Đối chứng ngược nằm trong CÙNG bài, hai vế: 89 395 token phải ra đúng `45%` —
+/// con số `/context` của chính phiên ấy in (đo 07/11, phiên `585e8e6b`: CLI in
+/// `89.4k/200k (45%)`). Thay `.min(100)` bằng `100` thì vế đầu đỏ; đổi mẫu số về
+/// cửa nén 180k thì vế này đỏ (nó ra 50%).
 #[test]
 fn phan_tram_ngu_canh_khong_bao_gio_vuot_100() {
     let mut qua = sess("cccccccc-0000-0000-0000-000000000000", "huba", "acc9", true);
     qua.model = None; // model không đọc được
-    qua.context_tokens = 460_000; // 460k/180k = 256% nếu không kẹp
+    qua.context_tokens = 460_000; // 460k/200k = 230% nếu không kẹp
     let text = session_list_text(&[qua], "", NOW);
     assert!(text.contains("· 100% ·"), "phải kẹp ở 100: {text}");
-    assert!(!text.contains("256%"), "in quá 100 phần trăm: {text}");
+    assert!(!text.contains("230%"), "in quá 100 phần trăm: {text}");
 
     let mut vua = sess("dddddddd-0000-0000-0000-000000000000", "huba", "acc9", true);
     vua.model = None;
-    vua.context_tokens = 90_000; // 90k/180k = 50%
+    vua.context_tokens = 89_395; // 89 395/200k = 44,7% ⇒ 45% như CLI in
     let text = session_list_text(&[vua], "", NOW);
     assert!(
-        text.contains("· 50% ·"),
-        "kẹp không được ăn mất số thật: {text}"
+        text.contains("· 45% ·"),
+        "kẹp không được ăn mất số thật, và mẫu số phải là số CLI in: {text}"
     );
 }
 

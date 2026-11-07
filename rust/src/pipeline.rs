@@ -2539,7 +2539,21 @@ fn auto_handover(db: &Db, cfg: &Config, live: &crate::sessions::SessionsSnapshot
                 };
                 // Giờ mới biết lượt này đi tới đâu, nên giờ mới ghi sổ.
                 ghi_so_ban_giao(db, &s.session_id, pct, mo_duoc_khong(&moved), &done);
-                let msg = auto_handover_notice(&crate::sessions::shown(s), pct, idle_sec, &outcome);
+                // 🔴 Câu báo in MẪU SỐ HIỂN THỊ, không phải cửa nén: chủ máy đối
+                // chiếu câu này với `/context` của chính phiên ấy (đo 07/11: cùng
+                // 89 395 token, CLI in 45%, mẫu số nén in 50%). `pct` — cửa nén
+                // thật — vẫn là thứ đi vào sổ bàn giao và log, vì đó mới là thứ
+                // quyết định đã nổ.
+                let pct_hien_thi = crate::sessions::context_pct(
+                    s.context_tokens,
+                    crate::sessions::display_window(s.model.as_deref()),
+                );
+                let msg = auto_handover_notice(
+                    &crate::sessions::shown(s),
+                    pct_hien_thi,
+                    idle_sec,
+                    &outcome,
+                );
                 // …và CÙNG CÂU ẤY sang Telegram (luật 11: hai cái mồm nói một
                 // câu, không thì về sau không ai đối chiếu được).
                 //
@@ -13702,23 +13716,21 @@ fn session_meta(
     } else {
         String::new()
     };
-    // Cùng cửa sổ ngữ cảnh với quyết định bàn giao — một nguồn duy nhất:
-    // `sessions::context_window`. Hai hằng số chép tay là chỗ bản trước lệch
-    // khỏi CLI (07/11).
-    let win: u64 = crate::sessions::context_window(s.model.as_deref());
-    // 🔴 KẸP 100% — cùng luật với `auto_handover` (`.min(100)`).
+    // 🔴 MẪU SỐ HIỂN THỊ, không phải mẫu số quyết định (đo 07/11, phiên
+    // `585e8e6b`): CLI in `Tokens: 89.4k/200k (45%)` trong khi nhật ký debug
+    // của chính nó ghi `effectiveWindow=180000`. Chủ máy đối chiếu điện thoại
+    // với `/context` — hai số lệch nhau ở đó đọc lên như huba tính sai. Bảng
+    // vẫn MỘT chỗ (`sessions::cua_so`), chỉ khác vế.
+    let win: u64 = crate::sessions::display_window(s.model.as_deref());
+    // 🔴 Công thức ở MỘT chỗ (`sessions::context_pct`), và nó KẸP 100%.
     //
     // Trước 07/11 chỗ này không cần kẹp vì cửa sổ đoán là 1M cho mọi model, nên
-    // không phiên nào chạm tới. Nay model lạ (acc8/acc9) có cửa sổ 180k, và một
-    // phiên Claude mà `last_usage` KHÔNG đọc ra model sẽ rơi về 180k trong khi
-    // ngữ cảnh thật của nó là 460k ⇒ hàng điện thoại in **256%**, thứ đọc lên
-    // như lỗi hiển thị. Kẹp ở 100 vẫn nói đúng điều cần nói ("đã đầy") và
-    // KHÔNG bao giờ nói ít hơn sự thật.
-    let pct = if s.context_tokens > 0 {
-        ((s.context_tokens as f64 / win as f64 * 100.0).round() as u64).min(100)
-    } else {
-        0
-    };
+    // không phiên nào chạm tới. Nay model lạ (acc8/acc9) có cửa sổ hẹp, và một
+    // phiên Claude mà `last_usage` KHÔNG đọc ra model sẽ rơi về cửa sổ của model
+    // lạ trong khi ngữ cảnh thật của nó là 460k ⇒ hàng điện thoại in **256%**,
+    // thứ đọc lên như lỗi hiển thị. Kẹp ở 100 vẫn nói đúng điều cần nói ("đã
+    // đầy") và KHÔNG bao giờ nói ít hơn sự thật.
+    let pct = crate::sessions::context_pct(s.context_tokens, win);
     // `%` không cần chú thích: nó đứng cạnh tên phiên và một con số phần trăm
     // trong danh sách phiên chỉ có thể là ngữ cảnh. Chín ký tự × mỗi hàng là
     // một phiên bị đẩy khỏi màn điện thoại.

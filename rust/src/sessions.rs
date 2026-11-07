@@ -2376,14 +2376,46 @@ pub fn folder_for_session(
 /// mãi vẫn <20% đã thấy báo auto-compact"* — phiên acc9 đọc 13% trong khi CLI đã
 /// ở 72%. Bài kiểm: `tests/cua_so_ngu_canh.rs` (kèm cổng quét mã nguồn, để chỗ
 /// đoán thứ ba không mọc lại).
-pub fn context_window(model: Option<&str>) -> u64 {
+///
+/// 🔴 **MỘT BẢNG, HAI MẪU SỐ — vì chính CLI dùng hai con số** (đo 07/11, phiên
+/// `585e8e6b`): nhật ký debug của CLI ghi `effectiveWindow=180000` (cửa nén
+/// thật), nhưng `/context` của chính nó lại in *"Auto-compact window: 200k
+/// tokens (default for an unrecognized model)"* và `Tokens: 89.4k/200k`. Cùng
+/// 89 395 token, cùng một phiên, hai màn hình hai số: 50% và 45%.
+///
+/// Chủ máy đọc `/context` — nên ĐIỆN THOẠI phải in số của `/context`
+/// (`display_window`), còn QUYẾT ĐỊNH bàn giao vẫn bám cửa nén thật
+/// (`context_window`). Bảng để ở một chỗ để hai số không trôi khỏi nhau.
+fn cua_so(model: Option<&str>) -> (u64, u64) {
+    // (cửa sổ để QUYẾT ĐỊNH, cửa sổ để HIỂN THỊ)
     match model {
-        Some(m) if m.contains("haiku") => 200_000,
-        Some(m) if m.contains("claude") => 1_000_000,
+        Some(m) if m.contains("haiku") => (200_000, 200_000),
+        Some(m) if m.contains("claude") => (1_000_000, 1_000_000),
         // Gồm cả `None`: không đọc được model thì rơi về đúng con số CLI dùng cho
         // model nó không biết — thà báo sớm còn hơn báo muộn.
-        _ => 180_000,
+        _ => (180_000, 200_000),
     }
+}
+
+/// Cửa sổ dùng để QUYẾT ĐỊNH (bàn giao) — cửa nén thật của CLI.
+pub fn context_window(model: Option<&str>) -> u64 {
+    cua_so(model).0
+}
+
+/// Cửa sổ dùng để HIỂN THỊ — đúng mẫu số `/context` của CLI in ra.
+pub fn display_window(model: Option<&str>) -> u64 {
+    cua_so(model).1
+}
+
+/// `%` ngữ cảnh — MỘT công thức cho mọi mặt hiển thị.
+///
+/// Làm tròn (không cắt cụt) để khớp đúng con số `/context` in: 89 395 / 200 000
+/// = 44,7% ⇒ CLI in **45%**; cắt cụt sẽ ra 44% và lại lệch một bậc.
+pub fn context_pct(tokens: u64, window: u64) -> u8 {
+    if tokens == 0 || window == 0 {
+        return 0;
+    }
+    ((tokens as f64 / window as f64 * 100.0).round() as u64).min(100) as u8
 }
 
 fn last_usage(tail: &str) -> (u64, Option<String>) {
