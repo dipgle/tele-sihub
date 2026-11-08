@@ -99,6 +99,25 @@ fn the_bell_says_how_many_questions_are_in_the_table() {
         said.contains("Không phân biệt"),
         "kèm lựa chọn của câu 2: {said}"
     );
+    // 🔴 Quang 08/11: *"nhãn lựa chọn hiện lung tung"*. Chữ trong tin và nhãn
+    // nút phải mang CÙNG một số (`1▸1`, `2▸2`), nếu không thì người đọc không
+    // nối được dòng chữ với cái nút — mà nối đúng là cả việc họ đang làm.
+    // Nhãn nút dựng bằng `telegram::choice_head`; ở đây khẳng định ĐÚNG chuỗi
+    // ấy có mặt trong tin.
+    for dong in [
+        "1▸1 Từ chối, nói rõ token nào",
+        "1▸2 Vẫn lưu, báo rõ",
+        "2▸1 Không phân biệt",
+        "2▸2 Chặn từ form",
+    ] {
+        assert!(said.contains(dong), "thiếu dòng `{dong}` khớp nút:\n{said}");
+    }
+    // Câu 2 phải có TIÊU ĐỀ riêng đứng trên các lựa chọn của nó.
+    let dau_cau_2 = said.find("2. Đăng nhập").expect("thiếu tiêu đề câu 2");
+    assert!(
+        dau_cau_2 < said.find("2▸1").unwrap(),
+        "tiêu đề câu 2 phải đứng TRƯỚC lựa chọn của nó:\n{said}"
+    );
 }
 
 /// Bảng MỘT câu không mọc thêm chữ: câu nói cũ đã đúng, và thêm "câu 1/1" vào

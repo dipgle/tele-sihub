@@ -850,6 +850,33 @@ pub fn prune_sent(cfg: &Config, db: &crate::db::Db) {
     );
 }
 
+/// Nhãn ĐẦU của một nút lựa chọn — dùng CHUNG với chữ của tin báo.
+///
+/// 🔴 Quang 08/11: *"nhãn lựa chọn hiện lung tung"*. Hai bên đánh số khác nhau:
+/// tin báo in `2. Đăng nhập: Không phân biệt · Chặn từ form` (các lựa chọn câu 2
+/// nối bằng `·`, KHÔNG số), còn nút bấm là `2▸1 Không phân biệt`. Người đọc
+/// không nối được một dòng chữ với một cái nút, mà đó là cả việc họ đang làm.
+/// Nay cả hai đi qua hàm này, nên chúng không thể lệch nhau nữa.
+///
+/// Ba hình dạng, đúng ba đường gửi của `verbs`:
+/// * câu 2 trở đi: `2▸1` — số câu ▸ số lựa chọn, thứ tự đúng bằng thứ tự tab;
+/// * câu 1 của hộp chọn-nhiều: `☐ 1` — mỗi nút là một CÔNG TẮC, không phải lá
+///   phiếu;
+/// * còn lại: `1.` — hộp một câu, bấm số là xong.
+///
+/// `question` đếm từ 1, `option` đếm từ 1.
+pub fn choice_head(question: usize, option: usize, multi: bool, table: bool) -> String {
+    if question > 1 {
+        format!("{question}▸{option}")
+    } else if multi {
+        format!("☐ {option}")
+    } else if table {
+        format!("1▸{option}")
+    } else {
+        format!("{option}.")
+    }
+}
+
 /// Bảng nút cho một phiên đang dừng lại hỏi — hàm THUẦN, kiểm được không cần mạng.
 ///
 /// Tách khỏi `Inbox::ask_choices` vì phần đáng sai là ở đây: mã `callback_data`
@@ -879,13 +906,7 @@ pub fn choice_buttons(
             // Chọn nhiều thì mỗi nút là một cái CÔNG TẮC, không phải một lá
             // phiếu — nhãn phải nói đúng thế, vì bấm xong màn hình điện thoại
             // không đổi gì và người ta sẽ tưởng nút hỏng.
-            let head = if multi {
-                format!("☐ {}", i + 1)
-            } else if table {
-                format!("1▸{}", i + 1)
-            } else {
-                format!("{}.", i + 1)
-            };
+            let head = choice_head(1, i + 1, multi, table);
             let data = if table {
                 format!("pick:{}:1.{}", session_id, i + 1)
             } else {
@@ -899,7 +920,11 @@ pub fn choice_buttons(
     for (qi, q) in rest.iter().enumerate() {
         for (oi, l) in q.options.iter().take(9).enumerate() {
             buttons.push((
-                format!("{}▸{} {}", qi + 2, oi + 1, crate::exec::truncate(l, 60)),
+                format!(
+                    "{} {}",
+                    choice_head(qi + 2, oi + 1, false, true),
+                    crate::exec::truncate(l, 60)
+                ),
                 format!("pick:{}:{}.{}", session_id, qi + 2, oi + 1),
             ));
         }

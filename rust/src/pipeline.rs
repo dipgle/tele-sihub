@@ -13116,6 +13116,25 @@ fn pick_send_bare(w: i64, keys: &[String]) -> anyhow::Result<()> {
 /// khi máy đang tải nặng (cùng bậc với nhịp 1200 ms sau `/tab`).
 const PICK_ARROW_SETTLE_MS: u64 = 600;
 
+/// Gửi phím của đường GỬI bảng nhiều câu ([`crate::keys::submit_bare_keys`]):
+/// cả dãy mũi tên một nhịp, chờ TUI vẽ sang trang `Submit`, rồi ĐÚNG MỘT cú
+/// Enter.
+///
+/// Cùng hình dạng [`pick_send_bare`], cùng lý do nghỉ: hai phím rời tới quá sát
+/// nhau thì TUI có thể đọc chung một nhịp, và cú Enter rơi vào câu cũ — chốt
+/// nhầm một câu chủ máy không bấm. Mũi tên thì không sợ (tab dời theo chỉ số
+/// hiện hành), nên chúng đi chung một lượt.
+fn submit_send_bare(w: i64, keys: &[String]) -> anyhow::Result<()> {
+    let Some((enter, mui_ten)) = keys.split_last() else {
+        return Err(anyhow::anyhow!("không có phím nào để gửi"));
+    };
+    if !mui_ten.is_empty() {
+        crate::keys::send_bare(w, mui_ten)?;
+        std::thread::sleep(std::time::Duration::from_millis(PICK_ARROW_SETTLE_MS));
+    }
+    crate::keys::send_bare(w, std::slice::from_ref(enter))
+}
+
 /// `/pick <câu>.<lựa chọn>` — trả lời MỘT câu bất kỳ của bảng hỏi nhiều câu.
 ///
 /// 🔴 Hà 2026-08-13: *"chọn option xong thì vẫn còn bước nữa nên không pass qua
@@ -16501,6 +16520,22 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                                     // bên PHẢI trên thanh `← ☒ … ✔ Submit →`,
                                     // nên phải biết đang đứng ở CÂU nào —
                                     // đọc từ màn, không đếm phím.
+                                    // Đọc RỘNG hơn `before`: nó chỉ giữ 24 dòng
+                                    // cuối, mà một bảng có mô tả dài đẩy thanh
+                                    // tab lên quá đó — trượt thanh tab là rơi
+                                    // lại đúng đường treo (cùng bài học nhánh
+                                    // số ngay dưới, 04/11). Đọc thẳng cửa sổ
+                                    // `w` như nhánh ấy, không `look(&s.tty)`:
+                                    // mỗi lượt hỏi Terminal đo được ~6 giây lúc
+                                    // máy nặng.
+                                    let rong = match crate::keys::screen_text(w) {
+                                        Ok(s) => match crate::keys::look_from_screen(&s, 60) {
+                                            crate::keys::Look::Saw { body, .. } => Some(body),
+                                            _ => None,
+                                        },
+                                        Err(_) => None,
+                                    }
+                                    .or_else(|| before.clone());
                                     let at_q = {
                                         let asking = s.asking.clone().unwrap_or_default();
                                         let questions: Vec<String> =
@@ -16509,23 +16544,56 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                                                     asking.rest.iter().map(|r| r.question.clone()),
                                                 )
                                                 .collect();
-                                        before
-                                            .as_deref()
+                                        rong.as_deref()
                                             .and_then(|scr| crate::keys::cursor_on(scr, &questions))
                                             .unwrap_or(0)
                                     };
-                                    match before
+                                    // 🔴 BẢNG NHIỀU CÂU GỬI BẰNG PHÍM RỜI —
+                                    // Quang 08/11: *"chọn xong là bị treo,
+                                    // phải Ctrl+C"*. `submit_plan` xếp ba LƯỢT
+                                    // GHI, mà mỗi lượt `do script` kèm sẵn một
+                                    // CR ⇒ mỗi cú Enter hoá hai cú, câu đang
+                                    // mở bị chốt thêm lần nữa rồi bảng vượt
+                                    // trang `Submit` và đứng trắng. Xem
+                                    // `keys::submit_bare_keys`.
+                                    //
+                                    // Bảng MỘT câu giữ nguyên đường cũ ở dưới:
+                                    // nó đã đo và chạy đúng, và đổi nó chỉ để
+                                    // "nhất quán" là bắt một đường đang tốt
+                                    // gánh rủi ro của đường mới.
+                                    let bare = rong
                                         .as_deref()
-                                        .and_then(|scr| crate::keys::submit_plan(scr, at_q))
-                                    {
-                                        Some(plan) => {
+                                        .and_then(|scr| crate::keys::submit_bare_keys(scr, at_q));
+                                    match bare {
+                                        Some(keys) => {
                                             logging::info(
-                                                "keys_submit_plan",
-                                                json!({ "session": s.session_id, "plan": plan }),
+                                                "keys_submit_bare",
+                                                json!({ "session": s.session_id,
+                                                        "at": at_q, "keys": keys,
+                                                        "why": "bảng nhiều câu — mỗi lượt ghi kèm một CR làm bảng chốt hai lần" }),
                                             );
-                                            crate::keys::press_writes(w, &plan)
+                                            submit_send_bare(w, &keys).map_err(|e| {
+                                                anyhow::anyhow!(
+                                                    "bảng nhiều câu cần phím RỜI mà phím rời không đi được ({e}). \
+                                                     Tôi KHÔNG gõ kèm Enter thay vào: đường ấy chốt câu đang mở \
+                                                     thêm một lần rồi vượt trang Submit — đúng cái treo cần tránh. \
+                                                     /shot để nhìn, hoặc bấm thẳng trên máy."
+                                                )
+                                            })
                                         }
-                                        None => crate::keys::press(w, "enter"),
+                                        None => match rong
+                                            .as_deref()
+                                            .and_then(|scr| crate::keys::submit_plan(scr, at_q))
+                                        {
+                                            Some(plan) => {
+                                                logging::info(
+                                                    "keys_submit_plan",
+                                                    json!({ "session": s.session_id, "plan": plan }),
+                                                );
+                                                crate::keys::press_writes(w, &plan)
+                                            }
+                                            None => crate::keys::press(w, "enter"),
+                                        },
                                     }
                                 } else {
                                     // 🔴 SỐ KHÔNG ĂN TRONG HỘP CHỌN NHIỀU — Hà

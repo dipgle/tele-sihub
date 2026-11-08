@@ -2245,6 +2245,13 @@ fn a_table_with_several_questions_gets_a_button_for_every_question() {
         "{:?}",
         b.iter().map(|(l, _)| l).collect::<Vec<_>>()
     );
+    // Câu 1 của bảng cũng mang số câu (`1▸1`), không phải `1.` — vì chữ của tin
+    // báo in đúng con số ấy (`watch::Change::say` dùng chung `choice_head`).
+    assert!(
+        b.iter().any(|(l, _)| l.starts_with("1▸1 Từ chối")),
+        "{:?}",
+        b.iter().map(|(l, _)| l).collect::<Vec<_>>()
+    );
     // Cú bấm phải dịch được thành một lệnh THẬT, không thì nó rơi vào hư không.
     assert_eq!(
         callback_to_command(&format!("pick:{SID}:2.1")),

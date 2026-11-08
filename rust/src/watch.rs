@@ -488,6 +488,7 @@ impl Change {
                 header,
                 question,
                 options,
+                multi,
                 rest,
                 ..
             } => {
@@ -505,11 +506,21 @@ impl Change {
                 } else {
                     format!("{ST_ASK} {name} dừng lại HỎI — {header}{of}")
                 };
+                // Số của lựa chọn lấy từ ĐÚNG hàm dựng nhãn nút
+                // (`telegram::choice_head`), nên dòng chữ và cái nút bấm được
+                // luôn mang cùng một số. Xem chú thích ở đó.
+                let table = !rest.is_empty();
                 let list: Vec<String> = options
                     .iter()
                     .take(9)
                     .enumerate()
-                    .map(|(i, o)| format!("{}. {}", i + 1, crate::exec::truncate(o, 80)))
+                    .map(|(i, o)| {
+                        format!(
+                            "{} {}",
+                            crate::telegram::choice_head(1, i + 1, *multi, table),
+                            crate::exec::truncate(o, 80)
+                        )
+                    })
                     .collect();
                 let mut out = head;
                 if !question.is_empty() {
@@ -518,36 +529,38 @@ impl Change {
                 if !list.is_empty() {
                     out.push_str(&format!("\n\n{}", list.join("\n")));
                 }
-                // Các câu sau: đưa ra ĐỦ để quyết được, và nói thẳng cái ràng
-                // buộc — bảng chỉ đi khi không còn ô trống. Nhãn ngắn đứng
-                // trước, các lựa chọn nối bằng `·` cho vừa một cái chuông.
+                // Các câu sau: MỖI CÂU MỘT TIÊU ĐỀ, rồi từng lựa chọn một dòng
+                // mang ĐÚNG số của cái nút tương ứng (`2▸1`, `2▸2`, …).
+                //
+                // 🔴 Quang 08/11: *"nhãn lựa chọn hiện lung tung"*. Bản trước
+                // nối các lựa chọn bằng `·` mà KHÔNG đánh số, trong khi nút
+                // bên dưới đánh `2▸1` — người đọc không nối được dòng chữ với
+                // cái nút, tức không biết bấm cái nào cho lựa chọn mình vừa
+                // đọc. Số lấy từ `telegram::choice_head`, cùng hàm dựng nhãn
+                // nút, nên hai bên không thể lệch.
                 if !rest.is_empty() {
                     out.push_str(&format!(
                         "\n\n📋 Bảng {} câu — trả lời HẾT rồi mới gửi được:",
                         rest.len() + 1
                     ));
                     for (i, q) in rest.iter().enumerate() {
+                        let cau = i + 2;
                         let label = if q.header.is_empty() {
                             &q.question
                         } else {
                             &q.header
                         };
-                        let opts = q
-                            .options
-                            .iter()
-                            .map(|o| crate::exec::truncate(o, 40))
-                            .collect::<Vec<_>>()
-                            .join(" · ");
                         out.push_str(&format!(
-                            "\n{}. {}{}",
-                            i + 2,
-                            crate::exec::truncate(label, 60),
-                            if opts.is_empty() {
-                                String::new()
-                            } else {
-                                format!(": {opts}")
-                            }
+                            "\n{cau}. {}",
+                            crate::exec::truncate(label, 60)
                         ));
+                        for (j, o) in q.options.iter().take(9).enumerate() {
+                            out.push_str(&format!(
+                                "\n   {} {}",
+                                crate::telegram::choice_head(cau, j + 1, q.multi, true),
+                                crate::exec::truncate(o, 40)
+                            ));
+                        }
                     }
                 }
                 // Thông tin chốt phiên vừa nói ra TRƯỚC khi hỏi: nhiều câu hỏi

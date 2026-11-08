@@ -5014,6 +5014,54 @@ pub fn submit_plan(screen: &str, at_question: usize) -> Option<Vec<Vec<String>>>
     Some(vec![enter(), rights, enter()])
 }
 
+/// Bảng NHIỀU CÂU gửi đi bằng **PHÍM RỜI**: mũi tên ngang tới trang `Submit`,
+/// rồi đúng MỘT cú Enter — không CR nào đi kèm.
+///
+/// 🔴 Quang 08/11: *"chọn xong là bị treo, phải Ctrl+C"* trên bảng nhiều tab.
+/// Đường cũ đi [`submit_plan`] → [`press_writes`], mà mỗi lượt `do script` mang
+/// sẵn **một CR không tắt được** (xem [`press_writes`]): mỗi cú Enter của kế
+/// hoạch hoá ra là HAI cú, câu đang mở bị chốt thêm một lần (`shouldAdvance`
+/// +1 nữa), và bảng vượt qua trang `Submit` rồi đứng trắng — đúng cái treo đã
+/// ghi ở [`key_way`]. Bảng thật đo được (`tests/fixtures/ask-table-q3-2026-11-04.txt`)
+/// là câu chọn-MỘT, tức `has_submit` sai ⇒ `submit_plan` trả `None` ⇒ rơi về
+/// `press(enter)` — cũng là `do script`, cũng thừa một CR. Nên bảng nhiều câu
+/// phải đi phím rời ở CẢ đường gửi, không chỉ đường bấm số.
+///
+/// Phím rời thì mỗi phím một sự kiện, không kèm gì: mũi tên chỉ DỜI tab, Enter
+/// trên trang `Submit` gửi bảng đi. Cửa an toàn giữ nguyên hai luật của
+/// [`nav_plan`]: dòng chân phải khai `… to navigate` (chính TUI nói mũi tên chỉ
+/// di chuyển), và thanh tab phải mang nút gửi (`✔`).
+///
+/// `at_question` là câu ĐANG MỞ (0 = câu đầu), đọc từ màn bằng [`cursor_on`] —
+/// không đếm phím đã bấm, vì chủ máy có thể vừa tự bấm. Trả `None` khi màn
+/// không phải bảng nhiều câu; chỗ gọi giữ nguyên đường cũ.
+pub fn submit_bare_keys(screen: &str, at_question: usize) -> Option<Vec<String>> {
+    if !screen.contains("to navigate") {
+        return None;
+    }
+    let table = ask_table(screen)?;
+    let questions = table.answered.len();
+    if questions < 2 {
+        return None;
+    }
+    // `ask_table` dừng đếm ở `✔` nhưng KHÔNG đòi phải có nó. Không có nút gửi
+    // thì mép phải của thanh tab không phải trang `Submit`, và cú Enter cuối
+    // sẽ chốt bừa lựa chọn đang trỏ ở tab cuối.
+    let co_gui = screen
+        .lines()
+        .any(|l| l.contains('←') && l.contains('→') && (l.contains('✔') || l.contains('✓')));
+    if !co_gui {
+        return None;
+    }
+    // `→` KHÔNG quấn vòng (đo 19/08: sáu lượt liên tiếp đứng lại ở mép phải),
+    // nên đi thừa vẫn dừng ở `Submit`; nhưng đi ĐÚNG số bước thì không phải
+    // dựa vào phép đo ấy cho mỗi câu.
+    let steps = questions.saturating_sub(at_question).max(1);
+    let mut keys: Vec<String> = std::iter::repeat_n("right".to_string(), steps).collect();
+    keys.push("enter".to_string());
+    Some(keys)
+}
+
 /// Màn này có nút gửi bấm tới được không — dùng để quyết định có gắn ✅ hay
 /// không, nên nó KHÔNG phụ thuộc con trỏ đang đứng đâu.
 pub fn has_submit(screen: &str) -> bool {
