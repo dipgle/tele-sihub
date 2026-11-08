@@ -9781,6 +9781,37 @@ fn line_carries(line: &str, cmd: &str) -> bool {
     bare.chars().count() >= 12 && c.starts_with(bare)
 }
 
+/// Dòng này có phải DÒNG LỰA CHỌN mang đúng nhãn ấy không — `❯ 2. <nhãn>`.
+///
+/// 🔴 Vì sao phải có phép hỏi riêng, Quang 2026-11-08 10:46, ảnh buồng chat:
+/// *"Tab 2 Mất lựa chọn 2"*. Câu hỏi của huba viết nguyên văn nhãn
+/// `(Lựa chọn 2-2)`, và [`line_carries`] khớp bằng `line.contains` — nên dòng
+/// VĂN XUÔI khớp TRƯỚC dòng lựa chọn thật. `html_with_links_last` gắn mỗi neo
+/// vào dòng khớp ĐẦU TIÊN, nên `☑` của `pick_…_2_2` nhảy lên đầu câu hỏi và
+/// dòng lựa chọn ở dưới không còn gì để bấm.
+///
+/// `line_carries` KHÔNG sửa được: nó còn dùng cho dòng lệnh (lệnh có thật nằm
+/// giữa câu văn là chuyện bình thường), cho ô nhập, cho tên tệp. Ở đây chỉ cần
+/// hỏi hẹp hơn: nhãn có đứng đúng CHỖ của một lựa chọn không — sau dấu nhắc
+/// `❯` và số thứ tự `N. ` mà TUI tự in.
+fn line_is_choice(line: &str, cmd: &str) -> bool {
+    let c = cmd.trim();
+    if c.is_empty() {
+        return false;
+    }
+    let bare = line.trim_start().trim_start_matches(|ch: char| {
+        matches!(ch, '☐' | '☒' | '☑' | '✔' | '❯' | '•' | '*' | '-') || ch.is_whitespace()
+    });
+    let sau_so = bare.trim_start_matches(|ch: char| ch.is_ascii_digit());
+    if sau_so.len() == bare.len() {
+        return false; // không có số thứ tự ⟹ không phải dòng lựa chọn
+    }
+    let Some(rest) = sau_so.strip_prefix(['.', ')']) else {
+        return false;
+    };
+    rest.trim_start().starts_with(c)
+}
+
 /// Chèn liên kết chạy vào NGAY SAU dòng lệnh, rồi ghép cả tin thành một chuỗi
 /// HTML. Trả `(html, số liên kết đã chèn, chỉ số những lệnh không có liên kết)`.
 ///
@@ -10124,6 +10155,23 @@ pub fn html_with_links_last(
         })
         .collect();
     let mut used = vec![false; anchors.len()];
+    // 🔴 NEO LỰA CHỌN CHỈ ĐƯỢC BÁM DÒNG LỰA CHỌN — Quang 2026-11-08, xem
+    // [`line_is_choice`]. Tính một lần, như `dong_cuoi`: nếu neo có một dòng
+    // ĐÚNG HÌNH DẠNG lựa chọn ở đâu đó trên màn thì nó bị GHIM vào dòng ấy, và
+    // những dòng khác chỉ nhắc tới nhãn (câu hỏi, mô tả) không cướp được nữa.
+    // Không có dòng nào như thế ⟹ `None` ⟹ đường cũ nguyên vẹn.
+    let dong_lua_chon: Vec<Option<usize>> = anchors
+        .iter()
+        .map(|(a, links)| {
+            // Chỉ áp cho neo LỰA CHỌN — nhận ra bằng chính glyph mà
+            // `session_layout` đặt xuống (`\t☑`). Neo lệnh/tệp/tên phiên có
+            // luật riêng của chúng và không được đổi hình dạng ở đây.
+            if a.trim().is_empty() || !links.iter().any(|(_, i)| i.trim() == "☑") {
+                return None;
+            }
+            shown.lines().position(|l| line_is_choice(l, a))
+        })
+        .collect();
     let mut html = String::new();
     let mut linked = 0usize;
     let mut unlinked: Vec<usize> = Vec::new();
@@ -10135,6 +10183,8 @@ pub fn html_with_links_last(
                 // Neo "bám cuối" chỉ ăn ĐÚNG dòng cuối của nó; các dòng trùng
                 // phía trên đi qua như chữ thường.
                 && dong_cuoi[*i].is_none_or(|d| d == so_dong)
+                // …và neo LỰA CHỌN chỉ ăn ĐÚNG dòng hình dạng lựa chọn của nó.
+                && dong_lua_chon[*i].is_none_or(|d| d == so_dong)
         });
         // 🔴 NEO PHẢI NHÌN THẤY ĐƯỢC — Hà 2026-08-16, ảnh chụp tin của
         // `[mailler]` có hai dòng lệnh liền nhau: *"chỗ này tại sao chỉ rend
@@ -13205,14 +13255,17 @@ fn submit_send_bare(w: i64, keys: &[String]) -> anyhow::Result<()> {
 ///   một màn không đọc được là chốt bừa vào việc của người khác.
 /// * **Không tin mã trả về** — `osascript` trả 0 chỉ chứng minh byte vào tới
 ///   tab. Câu trả lời dựng từ việc ĐỌC LẠI bảng và so số ô trống trước/sau.
-fn pick_answer(s: &crate::sessions::LiveSession, w: i64, arg: &str) -> String {
+fn pick_answer(s: &crate::sessions::LiveSession, w: i64, arg: &str) -> (String, bool) {
     let name = crate::sessions::shown(s);
     let (q_txt, opt_txt) = match arg.trim().split_once('.') {
         Some(p) => p,
         None => {
-            return format!(
-                "⚠ `/pick` cần dạng `<câu>.<lựa chọn>`, ví dụ `/pick 2.1` — nhận được '{}'",
-                crate::exec::truncate(arg.trim(), 40)
+            return (
+                format!(
+                    "⚠ `/pick` cần dạng `<câu>.<lựa chọn>`, ví dụ `/pick 2.1` — nhận được '{}'",
+                    crate::exec::truncate(arg.trim(), 40)
+                ),
+                false,
             )
         }
     };
@@ -13220,10 +13273,16 @@ fn pick_answer(s: &crate::sessions::LiveSession, w: i64, arg: &str) -> String {
         q_txt.trim().parse::<usize>(),
         opt_txt.trim().parse::<usize>(),
     ) else {
-        return format!("⚠ `/pick` cần hai con số, ví dụ `/pick 2.1` — nhận được '{arg}'");
+        return (
+            format!("⚠ `/pick` cần hai con số, ví dụ `/pick 2.1` — nhận được '{arg}'"),
+            false,
+        );
     };
     if q == 0 || opt == 0 || opt > 9 {
-        return "⚠ số câu và số lựa chọn đếm từ 1, và lựa chọn tối đa là 9".to_string();
+        return (
+            "⚠ số câu và số lựa chọn đếm từ 1, và lựa chọn tối đa là 9".to_string(),
+            false,
+        );
     }
 
     // Câu hỏi lấy từ NHẬT KÝ (đủ chữ, không phụ thuộc bề ngang cửa sổ); vị trí
@@ -13243,7 +13302,10 @@ fn pick_answer(s: &crate::sessions::LiveSession, w: i64, arg: &str) -> String {
                 "pick_refused_blind",
                 json!({ "session": s.session_id, "why": why }),
             );
-            return format!("⚠ Không đọc được màn của {name} ({why}) — nên tôi KHÔNG bấm gì cả.");
+            return (
+                format!("⚠ Không đọc được màn của {name} ({why}) — nên tôi KHÔNG bấm gì cả."),
+                false,
+            );
         }
     };
 
@@ -13254,8 +13316,11 @@ fn pick_answer(s: &crate::sessions::LiveSession, w: i64, arg: &str) -> String {
     let hep_note = hep.map(|w| format!("\n{w}")).unwrap_or_default();
     let total = table.as_ref().map(|t| t.answered.len()).unwrap_or(1);
     if q > total {
-        return format!(
-            "⚠ Bảng của {name} có {total} câu, không có câu {q}. (Bảng một câu thì dùng `/key`.){hep_note}"
+        return (
+            format!(
+                "⚠ Bảng của {name} có {total} câu, không có câu {q}. (Bảng một câu thì dùng `/key`.){hep_note}"
+            ),
+            false,
         );
     }
     // Không có thanh tab ⟹ bảng MỘT câu ⟹ không có gì để đi tới; `/pick 1.x`
@@ -13329,19 +13394,22 @@ fn pick_answer(s: &crate::sessions::LiveSession, w: i64, arg: &str) -> String {
             } else {
                 format!("\nChạm thẳng lựa chọn của câu ĐANG MỞ:{moi}")
             };
-            return if so_sach < total {
-                format!(
-                    "⚠ Bảng của {name} có {total} câu trên màn, nhưng sổ của tôi mới ghi được \
-                     {so_sach} — bảng vừa mở, nhật ký phiên chưa kịp có nó. Nên tôi KHÔNG biết \
-                     câu đang mở là câu nào, và đi mò thì chốt nhầm câu.{duong_ra}"
-                )
-            } else {
-                format!(
-                    "⚠ Đọc được bảng {total} câu của {name}, sổ cũng đủ {so_sach} câu, nhưng chữ \
-                     của câu ĐANG MỞ không có trên màn (đã nới hết cỡ mà vẫn thiếu) — nên tôi \
-                     không biết phải đi mấy bước, và đi mò thì chốt nhầm câu.{duong_ra}"
-                )
-            };
+            return (
+                if so_sach < total {
+                    format!(
+                        "⚠ Bảng của {name} có {total} câu trên màn, nhưng sổ của tôi mới ghi được \
+                         {so_sach} — bảng vừa mở, nhật ký phiên chưa kịp có nó. Nên tôi KHÔNG biết \
+                         câu đang mở là câu nào, và đi mò thì chốt nhầm câu.{duong_ra}"
+                    )
+                } else {
+                    format!(
+                        "⚠ Đọc được bảng {total} câu của {name}, sổ cũng đủ {so_sach} câu, nhưng chữ \
+                         của câu ĐANG MỞ không có trên màn (đã nới hết cỡ mà vẫn thiếu) — nên tôi \
+                         không biết phải đi mấy bước, và đi mò thì chốt nhầm câu.{duong_ra}"
+                    )
+                },
+                false,
+            );
         }
     };
 
@@ -13367,7 +13435,7 @@ fn pick_answer(s: &crate::sessions::LiveSession, w: i64, arg: &str) -> String {
             "pick_send_failed",
             json!({ "session": s.session_id, "keys": keys, "err": e.to_string() }),
         );
-        return format!("⚠ Không gửi được phím tới {name}: {e}");
+        return (format!("⚠ Không gửi được phím tới {name}: {e}"), false);
     }
     logging::info(
         "pick_sent",
@@ -13421,7 +13489,17 @@ fn pick_answer(s: &crate::sessions::LiveSession, w: i64, arg: &str) -> String {
         .map(|r| r.header.clone())
         .filter(|_| q >= 2)
         .unwrap_or_else(|| asking.header.clone());
-    match (before, after.as_ref().map(|t| t.left())) {
+    // 🔴 TIN "BẢNG ĐÃ ĐỦ" PHẢI MANG ĐÍCH CHẠM SUBMIT — Quang 2026-11-08 10:46,
+    // ảnh buồng chat: *"Bấm hết rồi nhưng lại thiếu submit"*. Tin ấy chỉ nói
+    // *"bấm /send_<sid> để gửi"* — một lệnh nằm GIỮA câu, còn đường gửi thật
+    // (đi tới tab `Submit` rồi Enter) thì không có gì bấm vào.
+    //
+    // Cờ đặt Ở NHÁNH BIẾT nó vừa làm bảng đầy, KHÔNG suy từ chữ của chính tin
+    // (suy từ đầu ra của mình là phép đo mù quen thuộc của tệp này). Chỗ gọi
+    // dùng cờ ấy để bật neo `✅ Submit` — neo ấy trỏ `/send_<sid>`, tức
+    // `keys::submit_bare_keys`: sang tab Submit rồi Enter, MỘT cú chạm.
+    let mut du_gui = false;
+    let loi = match (before, after.as_ref().map(|t| t.left())) {
         // Ô trống bớt đi: đúng thứ vừa làm, và nói luôn còn mấy câu nữa.
         (Some(b), Some(a)) if a < b => {
             if a == 0 {
@@ -13437,8 +13515,11 @@ fn pick_answer(s: &crate::sessions::LiveSession, w: i64, arg: &str) -> String {
                 // lệnh"*. Nhánh `(Some(0), Some(0))` ngay dưới đã dùng
                 // `/send_{sid}` từ trước; nhánh này bị bỏ quên — một luật sửa ở
                 // một chỗ trong hai chỗ cùng hình dạng.
+                du_gui = true;
                 format!(
-                    "✅ {name} · câu {q} ({label}) → chọn {opt}. Bảng ĐÃ ĐỦ — bấm /send_{sid} để gửi.",
+                    "✅ {name} · câu {q} ({label}) → chọn {opt}. Bảng ĐÃ ĐỦ — chạm để gửi:\n\
+                     Submit\n\
+                     (neo không bám được thì gõ /send_{sid})",
                     sid = s.session_id.chars().take(8).collect::<String>()
                 )
             } else {
@@ -13447,11 +13528,15 @@ fn pick_answer(s: &crate::sessions::LiveSession, w: i64, arg: &str) -> String {
         }
         // Bảng đã đủ TỪ TRƯỚC: chọn lại một câu đã trả lời thì số ô trống không
         // đổi, và đó là chuyện bình thường — không phải cảnh báo.
-        (Some(0), Some(0)) => format!(
-            "✅ {name} · câu {q} ({label}) → chọn {opt}. Bảng đã ĐỦ (chọn lại câu đã trả lời) — \
-             bấm /send_{sid} để gửi.",
-            sid = s.session_id.chars().take(8).collect::<String>()
-        ),
+        (Some(0), Some(0)) => {
+            du_gui = true;
+            format!(
+                "✅ {name} · câu {q} ({label}) → chọn {opt}. Bảng đã ĐỦ (chọn lại câu đã trả lời) \
+                 — chạm để gửi:\nSubmit\n\
+                 (neo không bám được thì gõ /send_{sid})",
+                sid = s.session_id.chars().take(8).collect::<String>()
+            )
+        }
         (Some(b), Some(a)) if a == b => format!(
             "⚠ Đã gửi phím tới {name} nhưng bảng KHÔNG đổi (vẫn {b} câu trống). Có thể câu ấy \
              cho chọn nhiều, hoặc phím chưa tới. `/shot` để nhìn trước khi bấm tiếp."
@@ -13485,7 +13570,8 @@ fn pick_answer(s: &crate::sessions::LiveSession, w: i64, arg: &str) -> String {
             "✅ {name} · câu {q} ({label}) → chọn {opt}. Bảng không còn trên màn — nhiều khả năng \
              nó vừa được gửi đi. `/shot` để nhìn."
         ),
-    }
+    };
+    (loi, du_gui)
 }
 
 /// Bao nhiêu dòng màn cần đọc để thấy CẢ thanh tab lẫn hộp chọn.
@@ -16126,7 +16212,16 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                                 // Bảng nhiều câu đi đường riêng: nó phải ĐỌC
                                 // trước khi gõ (đang đứng ở câu nào), và gõ cả
                                 // dãy trong một lượt — xem `pick_answer`.
-                                pick_answer(&s, w, &typed)
+                                //
+                                // Cờ thứ hai của nó = "tin này mang dòng
+                                // `Submit`": chuyển thẳng vào `shot_submit` để
+                                // `session_layout` gắn neo `✅` tại đúng dòng
+                                // ấy. Neo trỏ `/send_<sid>` — đường gửi THẬT
+                                // (sang tab Submit rồi Enter), nên chủ máy chỉ
+                                // cần MỘT cú chạm thay vì tự gõ hai bước.
+                                let (loi, du_gui) = pick_answer(&s, w, &typed);
+                                shot_submit = du_gui;
+                                loi
                             } else {
                             let is_key = matches!(cmd.kind, CommandKind::Key);
                             let arrow = matches!(
