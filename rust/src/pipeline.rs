@@ -9853,6 +9853,60 @@ pub fn html_with_command_links(
 /// Nên hỏi cả hai, mỗi bên một câu: nhật ký nói bảng có nhiều câu, MÀN nói còn ô
 /// trống hay không. Không đọc được thanh tab ⟹ giữ nguyên câu trả lời của nhật
 /// ký (mù không lật ngược bằng chứng đã có).
+/// Bảng nhiều câu: Câu ĐANG MỞ là câu thứ mấy (0-based), đọc từ chính màn vừa chụp.
+///
+/// Một chỗ đo duy nhất, để `/shot`, `/tab` và phím số không tự chế mỗi nơi một
+/// phép đo — đúng thứ đã đẻ ra lỗi 08/11: hai đường dựng mã nút cứng `1.<n>`
+/// trong khi màn đang đứng ở câu khác.
+///
+/// `None` = CHƯA ĐO ĐƯỢC (không có bảng, hoặc `cursor_on` không ghép được
+/// nguyên văn câu hỏi với màn). Chỗ gọi KHÔNG được thay bằng một con số trông
+/// y như đã đo — xem [`choice_codes`].
+pub fn current_question(asking: Option<&crate::sessions::Asking>, screen: &str) -> Option<usize> {
+    let a = asking?;
+    let cau_hoi: Vec<String> = std::iter::once(a.question.clone())
+        .chain(a.rest.iter().map(|r| r.question.clone()))
+        .collect();
+    crate::keys::cursor_on(screen, &cau_hoi)
+}
+
+/// Mã của một lựa chọn trên màn, cho ☑ chèn thẳng vào dòng của nó.
+///
+/// · hộp MỘT câu ⟹ `"<n>"`, đi bằng `k_` (số gửi vào câu đang mở, không cần số câu);
+/// · bảng NHIỀU câu ⟹ `"<câu>.<n>"`, đi bằng `pick_` — mã mang số câu ĐANG MỞ.
+///
+/// 🔴 Quang 08/11: *"rõ ràng là bấm 2 ở tab 2 sao lại nhảy về tab 1"*. Đo trong
+/// `logs/huba.log`: bấm nút nằm dưới lựa chọn của câu 2 ⟹ Telegram giao
+/// `/start pick_74451d4a_1_2`, tức **câu 1**; `pick_sent` gửi `["left","2"]` —
+/// lùi về tab 1 rồi mới bấm số, đúng như mắt anh thấy. Gốc: `/shot` và `/tab`
+/// dựng mã bằng `format!("1.{n}")` gõ cứng, dù ngay trên đó đã đo được câu đang
+/// mở.
+///
+/// Bảng nhiều câu mà KHÔNG đo được câu đang mở ⟹ trả RỖNG, không gắn đích chạm
+/// nào: một mã đoán sai sẽ ghi đè lên câu ĐÃ CHỐT, và không có đường lùi cho
+/// việc đó. Cùng luật với `press_ack_from_screen`; khi ấy chỗ gọi còn
+/// `ask_command_lines` liệt kê `/pick_<câu>_<n>` ở cuối tin — đường bấm đúng số
+/// câu vẫn còn, chỉ là không nằm ngay trong chữ.
+pub fn choice_codes(
+    choices: &[(usize, String)],
+    table: bool,
+    dang_o: Option<usize>,
+) -> Vec<(String, String)> {
+    if !table {
+        return choices
+            .iter()
+            .map(|(n, l)| (n.to_string(), l.clone()))
+            .collect();
+    }
+    let Some(q) = dang_o else {
+        return Vec::new();
+    };
+    choices
+        .iter()
+        .map(|(n, l)| (format!("{}.{}", q + 1, n), l.clone()))
+        .collect()
+}
+
 pub fn multi_question_screen(has_more_questions: bool, screen: &str) -> bool {
     if !has_more_questions {
         return false;
@@ -15920,26 +15974,15 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                                 // ĐÂY vì `rep.text` bị chuyển quyền sở hữu ngay
                                 // sau đó; không ghép được ⟹ `None` ⟹ không đánh
                                 // dấu câu nào, chứ không đoán.
-                                let dang_o = shot_asking.as_ref().and_then(|a| {
-                                    let cau_hoi: Vec<String> =
-                                        std::iter::once(a.question.clone())
-                                            .chain(a.rest.iter().map(|r| r.question.clone()))
-                                            .collect();
-                                    crate::keys::cursor_on(&rep.text, &cau_hoi)
-                                });
+                                let dang_o = current_question(shot_asking.as_ref(), &rep.text);
                                 let table = multi_question_screen(
                                     shot_asking.as_ref().is_some_and(|a| !a.rest.is_empty()),
                                     &rep.text,
                                 );
-                                shot_choices = rep
-                                    .choices
-                                    .into_iter()
-                                    .map(|(n, l)| {
-                                        let code =
-                                            if table { format!("1.{n}") } else { n.to_string() };
-                                        (code, l)
-                                    })
-                                    .collect();
+                                // 🔴 MÃ NÚT MANG SỐ CÂU ĐANG MỞ — Quang 08/11:
+                                // *"bấm 2 ở tab 2 sao lại nhảy về tab 1"*. Chỗ
+                                // này từng gõ cứng `1.{n}`; xem `choice_codes`.
+                                shot_choices = choice_codes(&rep.choices, table, dang_o);
                                 let mut out = rep.text;
                                 // 🔴 MÀN KHÔNG CÓ LỜI NÀO CỦA PHIÊN ⟹ BÙ BẰNG
                                 // NHẬT KÝ. Hà 2026-08-17, ảnh `/shot` của
@@ -17255,17 +17298,14 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                                                         .is_some_and(|a| !a.rest.is_empty()),
                                                     &screen,
                                                 );
-                                                shot_choices = opts
-                                                    .iter()
-                                                    .map(|(n, l)| {
-                                                        let code = if table {
-                                                            format!("1.{n}")
-                                                        } else {
-                                                            n.to_string()
-                                                        };
-                                                        (code, l.clone())
-                                                    })
-                                                    .collect();
+                                                // Cùng luật với `/shot`/`/tab`:
+                                                // mã nút mang số câu ĐANG MỞ,
+                                                // và không đo được thì không
+                                                // gắn đích chạm nào — xem
+                                                // `choice_codes`.
+                                                let dang_o =
+                                                    current_question(shot_asking.as_ref(), &screen);
+                                                shot_choices = choice_codes(&opts, table, dang_o);
                                                 shot_submit = crate::keys::has_submit(&screen);
                                                 let lines: Vec<String> = opts
                                                     .iter()
