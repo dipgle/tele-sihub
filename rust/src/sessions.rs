@@ -2915,6 +2915,25 @@ impl ChoiceKind {
     }
 }
 
+/// Chuỗi này có phải KÝ HIỆU CỦA MỘT LỰA CHỌN không — bất kể hộp chọn một hay
+/// chọn nhiều.
+///
+/// 🔴 Vì sao cần, Quang 2026-11-08: bản vá đầu ghim neo lựa chọn bằng so cứng
+/// `== "☑"`, nên nó chỉ cứu hộp CHỌN NHIỀU. Hộp CHỌN MỘT vẽ `◉` (nguồn duy
+/// nhất nói được `Single` là nhật ký — `from_journal`, đường tin TỰ PHÁT ở
+/// `pipeline.rs`), và neo ấy vẫn bị dòng câu hỏi cướp y như `☑` từng bị. Bài
+/// kiểm `neo_khong_bi_cuop_boi_cau_hoi.rs::hop_chon_MOT_cung_khong_bi_cuop_neo`
+/// đỏ trước bản vá này.
+///
+/// Nguồn ký hiệu vẫn là [`ChoiceKind::glyph`] — thêm một loại hộp mới thì sửa
+/// ĐÚNG MỘT chỗ, không phải đi lùng các chỗ so chuỗi.
+pub fn is_choice_glyph(s: &str) -> bool {
+    let t = s.trim();
+    [ChoiceKind::Single, ChoiceKind::Multi]
+        .iter()
+        .any(|k| k.glyph() == t)
+}
+
 /// Cùng một sự thật tới bằng HAI đường — xếp lại `(lỗi, hết hạn mức)` cho đúng.
 ///
 /// 🔴 Đo trên máy này 2026-08-30 05:16: BỐN phiên acc3 mang nguyên văn

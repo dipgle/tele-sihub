@@ -10164,9 +10164,16 @@ pub fn html_with_links_last(
         .iter()
         .map(|(a, links)| {
             // Chỉ áp cho neo LỰA CHỌN — nhận ra bằng chính glyph mà
-            // `session_layout` đặt xuống (`\t☑`). Neo lệnh/tệp/tên phiên có
-            // luật riêng của chúng và không được đổi hình dạng ở đây.
-            if a.trim().is_empty() || !links.iter().any(|(_, i)| i.trim() == "☑") {
+            // `session_layout` đặt xuống (`\t☑` chọn nhiều, `\t◉` chọn một).
+            // Hỏi qua `sessions::is_choice_glyph`, KHÔNG so cứng một ký hiệu:
+            // bản vá đầu chỉ so `☑` và để nguyên lỗi cho hộp CHỌN MỘT
+            // (Quang 2026-11-08 — cùng một lớp, hai nửa). Neo lệnh/tệp/tên
+            // phiên có luật riêng của chúng và không được đổi hình dạng ở đây.
+            if a.trim().is_empty()
+                || !links
+                    .iter()
+                    .any(|(_, i)| crate::sessions::is_choice_glyph(i))
+            {
                 return None;
             }
             shown.lines().position(|l| line_is_choice(l, a))

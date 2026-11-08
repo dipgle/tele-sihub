@@ -26,11 +26,17 @@ const TIN: &str = "\
   3. Type something.\n";
 
 fn neo(nhan: &str, payload: &str) -> (String, Vec<(String, String)>) {
+    neo_glyph(nhan, payload, "\t☑")
+}
+
+/// Cùng một neo, khác KÝ HIỆU — `sessions::ChoiceKind::glyph()` vẽ `◉` cho hộp
+/// CHỌN MỘT (đường nhật ký, `from_journal(false)`) và `☑` cho chọn nhiều/không rõ.
+fn neo_glyph(nhan: &str, payload: &str, glyph: &str) -> (String, Vec<(String, String)>) {
     (
         nhan.to_string(),
         vec![(
             format!("https://t.me/ai_agents_bot?start={payload}"),
-            "\t☑".to_string(),
+            glyph.to_string(),
         )],
     )
 }
@@ -100,6 +106,27 @@ fn dong_cau_hoi_khong_mang_dich_cham() {
         !cau_hoi.contains("t.me/"),
         "câu hỏi bị gắn đích chạm: «{}»",
         cau_hoi.trim()
+    );
+}
+
+/// 🔴 CẢ LỚP, KHÔNG CHỈ `☑`: hộp CHỌN MỘT vẽ `◉`
+/// (`ChoiceKind::from_journal(false)` — đường tin TỰ PHÁT, `pipeline.rs:1939`).
+/// Cùng một luật ghim phải áp cho nó; trước bản vá theo lớp, neo `◉` vẫn bị
+/// dòng câu hỏi cướp y như `☑` từng bị.
+#[test]
+fn hop_chon_mot_cung_khong_bi_cuop_neo() {
+    let anchors = vec![
+        neo_glyph("Lựa chọn 2-1", "pick_6b3ef665_2_1", "\t◉"),
+        neo_glyph("Lựa chọn 2-2", "pick_6b3ef665_2_2", "\t◉"),
+    ];
+    let (html, linked, unlinked) = html_with_links(TIN, &anchors);
+    assert!(unlinked.is_empty(), "neo rơi mất: {unlinked:?}\n{html}");
+    assert_eq!(linked, 2, "phải chèn đủ hai đích chạm:\n{html}");
+    let dong = dong_mang(&html, "pick_6b3ef665_2_2").expect("không dòng nào mang ◉ của 2-2");
+    let chu = chu_cua_dong(&dong);
+    assert!(
+        chu.starts_with("2.") && chu.contains("Lựa chọn 2-2"),
+        "◉ của lựa chọn 2-2 bám nhầm dòng: «{chu}» — phải bám dòng «2. Lựa chọn 2-2»"
     );
 }
 
