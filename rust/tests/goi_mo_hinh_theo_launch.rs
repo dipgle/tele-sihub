@@ -46,7 +46,7 @@ fn acc(name: &str, dir: &Path, launch: Option<String>) -> ClaudeAccountCfg {
         name: name.into(),
         config_dir: Some(dir.to_string_lossy().into_owned()),
         launch,
-        locked: false,
+        ..Default::default()
     }
 }
 

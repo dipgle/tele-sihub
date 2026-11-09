@@ -8682,23 +8682,7 @@ pub fn account_launch(cfg: &Config, account: Option<&str>) -> String {
         }
         found
     });
-    if let Some(l) = row.as_ref().and_then(|r| r.launch.as_ref()) {
-        let l = l.trim();
-        if !l.is_empty() {
-            return l.to_string();
-        }
-    }
-    match row
-        .and_then(|r| r.config_dir)
-        .map(|d| crate::config::expand_home(Path::new(&d)))
-    {
-        Some(dir) => format!(
-            "CLAUDE_CONFIG_DIR={} {}",
-            shell_quote(&dir.to_string_lossy()),
-            shell_quote(&cfg.claude_cli)
-        ),
-        None => shell_quote(&cfg.claude_cli),
-    }
+    crate::accounts::effective_launch(cfg, row.as_ref())
 }
 
 /// Dòng lệnh mở một phiên mới trong cửa sổ Terminal.
@@ -8814,7 +8798,6 @@ pub fn window_command(
 /// [`account_launch`] cho PowerShell: `$env:CLAUDE_CONFIG_DIR = '…'; & 'claude'`.
 /// Từ `launch` chủ máy tự khai thì giữ nguyên chữ (như bản macOS), đứng sau `&`.
 pub fn account_launch_ps(cfg: &Config, account: Option<&str>) -> String {
-    use crate::win_procs::ps_quote;
     let row = account.and_then(|a| {
         let found = cfg
             .claude_accounts_or_ambient()
@@ -8828,23 +8811,7 @@ pub fn account_launch_ps(cfg: &Config, account: Option<&str>) -> String {
         }
         found
     });
-    if let Some(l) = row.as_ref().and_then(|r| r.launch.as_ref()) {
-        let l = l.trim();
-        if !l.is_empty() {
-            return format!("& {l}");
-        }
-    }
-    match row
-        .and_then(|r| r.config_dir)
-        .map(|d| crate::config::expand_home(Path::new(&d)))
-    {
-        Some(dir) => format!(
-            "$env:CLAUDE_CONFIG_DIR = {}; & {}",
-            ps_quote(&dir.to_string_lossy()),
-            ps_quote(&cfg.claude_cli)
-        ),
-        None => format!("& {}", ps_quote(&cfg.claude_cli)),
-    }
+    crate::accounts::effective_launch_ps(cfg, row.as_ref())
 }
 
 /// [`terminal_command_resuming`] cho Windows PowerShell 5.1 — cùng rào, cùng thứ
@@ -9342,12 +9309,11 @@ pub fn stop_background(cfg: &Config, session: &LiveSession) -> Result<()> {
 /// như cũ (`CLAUDE_CONFIG_DIR` vẫn do chỗ gọi đặt). Windows giữ đường trực tiếp.
 pub fn account_call(cfg: &Config, account: Option<&str>, args: &[&str]) -> (String, Vec<String>) {
     let line = account.and_then(|a| {
-        cfg.claude_accounts
-            .iter()
-            .find(|x| x.name == a)
-            .and_then(|x| x.launch.as_deref())
-            .map(str::trim)
-            .filter(|l| cfg!(unix) && l.split_whitespace().count() > 1)
+        let row = cfg.claude_accounts.iter().find(|x| x.name == a)?;
+        // MỘT cửa với `account_launch`: dòng cấu trúc dựng ra cũng đi đường
+        // `/bin/zsh -c` như dòng viết tay, vì nó cũng nhiều từ.
+        let l = crate::accounts::effective_launch(cfg, Some(row));
+        (cfg!(unix) && l.split_whitespace().count() > 1).then_some(l)
     });
     let Some(line) = line else {
         return (

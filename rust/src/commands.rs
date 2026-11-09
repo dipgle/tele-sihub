@@ -390,7 +390,7 @@ pub const ROUTES: &[Route] = &[
         // Dạng cũ `detail|khoa|mo <tên>` vẫn nhận — `pipeline::accounts_order`.
         arg: Arg::Rest,
         usage: "[<tài khoản> [-a | -b | -l [mã] | -k <API key>|xoa]]",
-        help: "Các tài khoản Claude trên máy · <tên> = chi tiết + email + ĐO LẠI hạn mức (kể cả đang khoá) · <tên> -b = khoá · <tên> -a = mở · <tên> -l = đăng nhập lại · <tên> -k <API key> = chạy bằng API key (tính tiền; -k xoa = về gói)",
+        help: "Các tài khoản Claude trên máy · <tên> = chi tiết + email + ĐO LẠI hạn mức (kể cả đang khoá) · <tên> -b = khoá · <tên> -a = mở · <tên> -l = đăng nhập lại · <tên> -k <API key> = chạy bằng API key (tính tiền; -k xoa = về gói) · thêm/sửa/model: chạy `huba accounts` trên máy",
         listed: true,
     },
     Route {

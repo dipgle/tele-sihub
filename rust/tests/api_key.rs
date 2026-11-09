@@ -170,8 +170,8 @@ fn cfg_mot(dir: &std::path::Path, cli: String, locked: bool) -> Config {
     c.claude_accounts = vec![ClaudeAccountCfg {
         name: "acc5".into(),
         config_dir: Some(dir.display().to_string()),
-        launch: None,
         locked,
+        ..Default::default()
     }];
     c
 }
@@ -393,8 +393,7 @@ fn danh_tinh_in_nhan_key_va_thoi_bao_trung() {
         accs.push(ClaudeAccountCfg {
             name: ten.into(),
             config_dir: Some(d.display().to_string()),
-            launch: None,
-            locked: false,
+            ..Default::default()
         });
     }
     let mut c = common::cfg_for_tests();

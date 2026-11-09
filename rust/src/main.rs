@@ -49,6 +49,17 @@ enum Command {
     /// Hà 2026-08-13: *"đóng gói huba thành app và cài trên máy có ui để cấu
     /// hình biến môi trường"*. Trang chạy ở 127.0.0.1, đóng ngay sau khi lưu.
     Setup,
+    /// Trang quản lý tài khoản Claude trên máy này (thêm · sửa · khoá + model)
+    ///
+    /// Quang 2026-11-09: *"cần có 1 giao diện quản lý để thêm sửa xóa acc … rồi
+    /// muốn cấu hình models cho acc thì làm thế nào"*. Trang chạy ở 127.0.0.1,
+    /// cùng khung `huba setup`; Telegram giữ nguyên `/accounts` để xem/khoá.
+    /// ⛔ KHÔNG xoá: "xoá tài khoản" = khoá (`locked: true`).
+    Accounts {
+        /// In bảng ra stdout rồi thoát — cho script/test, không mở cổng
+        #[arg(long)]
+        print: bool,
+    },
     /// Write huba.config.json + create the db
     Init {
         #[arg(long)]
@@ -167,6 +178,14 @@ fn real_main() -> Result<()> {
             Ok(())
         }
         Command::Setup => huba::setup::serve(&cfg.hub_home),
+        Command::Accounts { print } => {
+            if print {
+                print!("{}", huba::accounts_page::print_table(&cfg));
+                Ok(())
+            } else {
+                huba::accounts_page::serve(&cfg, &db)
+            }
+        }
         Command::Init { force } => cmd_init(&cfg, force),
         Command::Once => {
             println!("{}", serde_json::to_string_pretty(&run_once(&db, &cfg)?)?);
@@ -560,6 +579,36 @@ fn cmd_doctor(db: &Db, cfg: &Config) -> Result<()> {
                 Some(d) => println!("  {name:<14} OK   {}{}", d.display(), if bits.is_empty() { String::new() } else { format!("  ({bits})") }),
                 None => println!("  {name:<14} SAI  không có thư mục nào tên '{name}' trong project dirs — /new sẽ không mở được phiên ở đó"),
             }
+        }
+    }
+    println!();
+
+    // Tài khoản Claude — chẩn đoán GĐ 2 ("tài khoản này thiếu gì"). `doctor`
+    // chỉ ĐỌC ĐĨA: không gọi `/usage`, không mở cửa sổ, không chạy tiến trình;
+    // mục "phiên đang chạy" để CHƯA ĐO thay vì đoán bằng `claude agents`.
+    println!("accounts:");
+    for acc in cfg.claude_accounts_or_ambient() {
+        let dir = acc
+            .config_dir
+            .as_deref()
+            .filter(|d| !d.is_empty())
+            .map(|d| config::expand_home(std::path::Path::new(d)));
+        let q = huba::quota::read(&acc.name, dir.as_deref());
+        let p = huba::accounts::probe(&acc, Some(q));
+        let c = huba::accounts::checks(&acc, &p);
+        let hong = huba::accounts::problems(&c);
+        println!(
+            "  {:<10} {}/{} OK{}",
+            acc.name,
+            c.len() - hong.len(),
+            c.len(),
+            if acc.locked { "  🔒" } else { "" }
+        );
+        for x in hong.iter().take(3) {
+            println!("             {}", x.line());
+        }
+        if hong.len() > 3 {
+            println!("             … +{} mục", hong.len() - 3);
         }
     }
     println!();

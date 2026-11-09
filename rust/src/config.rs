@@ -653,6 +653,62 @@ pub fn save(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
+// ── Cửa GHI cấu hình (GĐ 3 `huba accounts`) ────────────────────────────────
+//
+// Ba hàm dưới đây từng nằm rải trong `pipeline.rs` (`/set`, `/accounts khoa`).
+// GĐ 3 gom về MỘT chỗ vì trang quản lý tài khoản là chủ thể GHI thứ hai, và hai
+// bản sao của "đọc tệp → sửa → ghi" là hai chỗ để lệch nhau.
+
+/// Đọc tệp cấu hình ĐANG NẰM TRÊN ĐĨA thành `Value` — bản trên đĩa, không phải
+/// bản `cfg` trong bộ nhớ: một lượt sửa không được đè mất thứ ai đó vừa ghi tay.
+pub fn read_raw(cfg: &Config) -> Result<serde_json::Value> {
+    let path = &cfg.config_file;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
+    serde_json::from_str(&text)
+        .with_context(|| format!("config file is not valid JSON: {}", path.display()))
+}
+
+/// Ghi lại một bản cấu hình đã sửa — MỘT đường cho mọi lượt sửa từ buồng chat
+/// (`/set`) và từ trang quản lý tài khoản.
+///
+/// Đường dẫn suy ra lúc chạy KHÔNG bao giờ lấy từ bản đã sửa: hubd và CLI nạp
+/// tệp khác nhau, và một đường dẫn tương đối đi vào tệp là lần ghi sau rơi vào
+/// thư mục của tiến trình nào gọi `save`.
+pub fn save_edited(cfg: &Config, root: serde_json::Value) -> Result<()> {
+    let mut incoming: Config = serde_json::from_value(root)
+        .map_err(|e| anyhow::anyhow!("cấu hình sau khi sửa không hợp lệ: {e}"))?;
+    incoming.config_file = cfg.config_file.clone();
+    incoming.hub_home = cfg.hub_home.clone();
+    incoming.db = cfg.db.clone();
+    incoming.log_file = cfg.log_file.clone();
+    incoming.notify.file = cfg.notify.file.clone();
+    save(&incoming)
+}
+
+/// MỘT cửa ghi cho `claude_accounts[]`: đọc tệp trên đĩa, cho `f` sửa DANH
+/// SÁCH hàng tài khoản, rồi [`save_edited`] (validate + sao lưu + đổi tên tạm).
+///
+/// ⛔ Không có hàm xoá tài khoản: chủ máy chốt 09/11 — *"xoá = chỉ khoá"*.
+/// `f` nhận `&mut Vec` nên về mặt kiểu nó XOÁ ĐƯỢC; đường duy nhất đi qua đây
+/// là [`crate::accounts::upsert_account`] và [`crate::accounts::set_locked`],
+/// cả hai chỉ thêm/sửa hàng.
+pub fn edit_accounts<F>(cfg: &Config, f: F) -> Result<()>
+where
+    F: FnOnce(&mut Vec<ClaudeAccountCfg>) -> Result<()>,
+{
+    let root = read_raw(cfg)?;
+    let mut incoming: Config = serde_json::from_value(root)
+        .map_err(|e| anyhow::anyhow!("cấu hình sau khi sửa không hợp lệ: {e}"))?;
+    f(&mut incoming.claude_accounts)?;
+    incoming.config_file = cfg.config_file.clone();
+    incoming.hub_home = cfg.hub_home.clone();
+    incoming.db = cfg.db.clone();
+    incoming.log_file = cfg.log_file.clone();
+    incoming.notify.file = cfg.notify.file.clone();
+    save(&incoming)
+}
+
 /// Where a project lives. Most sit under AI/, some (dwork, social, sso-user,
 /// uiux, video) sit directly in the workspace root — never hardcode `AI/<name>`.
 /// Is this a plausible project NAME, as opposed to a path?
@@ -705,6 +761,40 @@ pub struct ClaudeAccountCfg {
     /// một lệnh sắp chạy trên máy người khác là đúng thứ tệp này cấm.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub launch: Option<String>,
+    // ── Trường CẤU TRÚC (2026-11-09, `huba accounts`) ────────────────────────
+    //
+    // Nguồn sự thật của một tài khoản. `launch` ở trên là dòng shell viết tay
+    // của thời chưa có trang quản lý; khi nó có mặt thì nó THẮNG (di trú từ từ,
+    // xem `accounts::effective_launch`). Tệp cấu hình cũ đọc vào y nguyên vì cả
+    // 8 trường đều optional + `skip_serializing_if`.
+    //
+    // 🔴 Luật 4 vẫn đứng: ở đây chỉ có ĐƯỜNG DẪN và TÊN biến, không giá trị.
+    /// Máy chủ API của tài khoản (`ANTHROPIC_BASE_URL`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// Tệp env (chmod 600) chứa `KEY=VALUE`; huba chỉ giữ ĐƯỜNG DẪN.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env_file: Option<String>,
+    /// TÊN biến giữ khoá trong `env_file` — không phải giá trị.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+    /// Đổi tên biến ấy lúc nạp env (cơ chế acc8: `OPENCODE_API_KEY` →
+    /// `ANTHROPIC_API_KEY`). Không khai thì nạp nguyên tên.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key_as: Option<String>,
+    /// `--model` của tài khoản; cũng là `model` trong `settings.json`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// `modelSettings.<model>.effortLevel`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// Biến env thêm, đã sắp theo tên. KHÔNG chứa bí mật (luật 4) —
+    /// `accounts::env_for_child` bỏ qua mọi tên kết thúc `_KEY`/`_TOKEN`/`_SECRET`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra_env: BTreeMap<String, String>,
+    /// Đối số thêm cho `claude` (vd `--debug`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub extra_args: Vec<String>,
     /// 🔒 Chủ máy KHOÁ tài khoản này ⟹ huba không đưa nó vào sử dụng: không tự
     /// chọn (`quota::Rank::Locked`), không mở phiên trên nó kể cả khi gõ `-a`
     /// (`sessions::ensure_account_usable`), không dò `/usage` bằng nó. Phiên ĐANG
@@ -744,9 +834,7 @@ impl Config {
         if self.claude_accounts.is_empty() {
             vec![ClaudeAccountCfg {
                 name: "mặc định".into(),
-                config_dir: None,
-                launch: None,
-                locked: false,
+                ..Default::default()
             }]
         } else {
             self.claude_accounts.clone()

@@ -19702,7 +19702,7 @@ pub fn owner_budget_state(db: &Db) -> OwnerBudget {
 /// `/set auto_handover.enabled false` cannot turn a bool into the string
 /// "false" and silently disable the check that reads it.
 pub fn set_config_field(cfg: &Config, dotted: &str, raw: &str) -> Result<String> {
-    let mut root = read_config_value(cfg)?;
+    let mut root = crate::config::read_raw(cfg)?;
 
     let parts: Vec<&str> = dotted.split('.').filter(|p| !p.is_empty()).collect();
     if parts.is_empty() {
@@ -19751,39 +19751,13 @@ pub fn set_config_field(cfg: &Config, dotted: &str, raw: &str) -> Result<String>
     };
 
     node[leaf] = next.clone();
-    save_edited_config(cfg, root)?;
+    crate::config::save_edited(cfg, root)?;
 
     logging::info(
         "config_field_set",
         json!({ "key": dotted, "value": next, "via": "chat" }),
     );
     Ok(format!("⚙ đã đặt {dotted} = {next}"))
-}
-
-/// Đọc tệp cấu hình ĐANG nằm trên đĩa thành `Value` — bản trên đĩa, không phải
-/// bản `cfg` trong bộ nhớ, để một lượt sửa không đè mất thứ ai đó vừa ghi tay.
-fn read_config_value(cfg: &Config) -> Result<Value> {
-    let path = &cfg.config_file;
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
-    serde_json::from_str(&text).map_err(|e| anyhow::anyhow!("config file is not valid JSON: {e}"))
-}
-
-/// Ghi lại một bản cấu hình đã sửa — MỘT đường cho mọi lượt sửa từ buồng chat
-/// (`/set`, `/accounts khoa|mo`).
-fn save_edited_config(cfg: &Config, root: Value) -> Result<()> {
-    // The real gate: unknown keys are dropped, types enforced, and
-    // `config::save` validates + backs up + temp-renames.
-    let incoming: Config = serde_json::from_value(root)
-        .map_err(|e| anyhow::anyhow!("cấu hình sau khi sửa không hợp lệ: {e}"))?;
-    let mut incoming = incoming;
-    // Paths are runtime-derived, never taken from the edited copy.
-    incoming.config_file = cfg.config_file.clone();
-    incoming.hub_home = cfg.hub_home.clone();
-    incoming.db = cfg.db.clone();
-    incoming.log_file = cfg.log_file.clone();
-    incoming.notify.file = cfg.notify.file.clone();
-    crate::config::save(&incoming)
 }
 
 /// Việc mà một dòng `/accounts …` đòi — xem [`accounts_order`].
@@ -19969,43 +19943,10 @@ fn xoa_tin_chua_key(cmd: &ChannelCommand) -> String {
 }
 
 pub fn set_account_locked(cfg: &Config, name: &str, locked: bool) -> Result<String> {
-    let mut root = read_config_value(cfg)?;
-    let rows = root
-        .get_mut("claude_accounts")
-        .and_then(Value::as_array_mut)
-        .ok_or_else(|| anyhow::anyhow!("cấu hình không khai claude_accounts"))?;
-    let biet: Vec<String> = rows
-        .iter()
-        .filter_map(|r| r.get("name").and_then(Value::as_str).map(str::to_string))
-        .collect();
-    let row = rows
-        .iter_mut()
-        .find(|r| r.get("name").and_then(Value::as_str) == Some(name))
-        .and_then(Value::as_object_mut)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "không có tài khoản '{}'. Máy này khai: {}",
-                crate::exec::truncate(name, 24),
-                biet.join(" · ")
-            )
-        })?;
-    let truoc = row.get("locked").and_then(Value::as_bool).unwrap_or(false);
-    row.insert("locked".into(), Value::Bool(locked));
-    save_edited_config(cfg, root)?;
-    logging::info(
-        "account_lock_set",
-        json!({ "account": name, "locked": locked, "truoc": truoc, "via": "chat" }),
-    );
-    let viec = match (truoc, locked) {
-        (true, true) => "vẫn đang KHOÁ (không đổi)",
-        (false, false) => "vẫn đang mở (không đổi)",
-        (false, true) => "đã KHOÁ — huba không tự chọn, không tự mở phiên, không tự dò /usage trên nó (gõ /accounts <tên> vẫn đo)",
-        (true, false) => "đã MỞ khoá — huba dùng lại được",
-    };
-    let dau = if locked { "🔒" } else { "🔓" };
-    Ok(format!(
-        "{dau} {name} {viec}\n(daemon nạp lại theo mtime, có hiệu lực từ vòng kế)"
-    ))
+    // Cùng một cửa với trang quản lý (`huba accounts`) — khác mỗi cái
+    // `via` ghi vào log. GĐ 4 gom về `accounts::set_locked` để log nói đúng
+    // CỬA nào đã bấm thay vì mọi lượt đều khai "chat".
+    crate::accounts::set_locked(cfg, name, locked, "chat")
 }
 
 pub fn run_once(db: &Db, cfg: &Config) -> Result<CycleSummary> {

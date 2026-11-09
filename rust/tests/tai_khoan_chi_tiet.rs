@@ -44,6 +44,7 @@ fn cfg_voi(dir3: Option<&Path>, khoa3: bool) -> Config {
             ),
             launch: Some("claude3".into()),
             locked: khoa3,
+            ..Default::default()
         },
     ];
     c
@@ -536,4 +537,123 @@ fn dang_nhap_cham_ket_cuc_bang_tien_trinh_khong_bang_dong_cuoi() {
         None,
         "chỉ còn shell ⟹ CLI đã thoát"
     );
+}
+
+// ── GĐ 2: chẩn đoán trong `/accounts <tên>` ────────────────────────────────
+
+#[test]
+fn chi_tiet_kem_chan_doan_toi_da_3_muc_va_ba_trang_thai() {
+    use huba::accounts::{EnvFileState, Probe, ProjectsState, SettingsState};
+    use huba::quota::Quota;
+
+    let mut c = common::cfg_for_tests();
+    c.claude_accounts = vec![ClaudeAccountCfg {
+        name: "acc9".into(),
+        config_dir: Some("/tmp/.claude-acc9".into()),
+        launch: Some("claude9".into()),
+        env_file: Some("/tmp/acc9.env".into()),
+        api_key_env: Some("K".into()),
+        model: Some("m9".into()),
+        ..Default::default()
+    }];
+    let p = Probe {
+        dir: "/tmp/.claude-acc9".into(),
+        dir_exists: true,
+        projects: ProjectsState::RealDir,
+        env_file: EnvFileState::Missing("/tmp/acc9.env".into()),
+        settings: SettingsState::Bad {
+            path: "/tmp/.claude-acc9/settings.json".into(),
+            why: "JSON hỏng".into(),
+        },
+        quota: None,
+        api_key: None,
+        live_sessions: Some(2),
+        blind: None,
+    };
+    let t = huba::runtime::account_detail_text_voi_probe(
+        &c,
+        &SessionsSnapshot::default(),
+        "acc9",
+        None,
+        None,
+        Err("chưa đọc được".into()),
+        &std::collections::BTreeMap::new(),
+        BAY_GIO,
+        Some(&p),
+    );
+    assert!(t.contains("chẩn đoán: 2/8 OK · 6 mục cần xem"), "{t}");
+    assert!(
+        t.contains("⚠ chưa đo sổ hạn mức"),
+        "không đo được phải là ⚠, KHÔNG phải ✗: {t}"
+    );
+    // Đếm TRONG khối chẩn đoán, không đếm cả câu: chỗ khác của màn cũng có ⚠.
+    let khoi: Vec<&str> = t
+        .lines()
+        .skip_while(|l| !l.starts_with("chẩn đoán:"))
+        .skip(1)
+        .take_while(|l| l.starts_with("  "))
+        .collect();
+    assert_eq!(khoi.len(), 4, "3 mục + dòng '… +3': {t}");
+    assert_eq!(
+        khoi.iter().filter(|l| l.starts_with("  ✗")).count(),
+        2,
+        "khối: {khoi:?}"
+    );
+    assert_eq!(
+        khoi.iter().filter(|l| l.starts_with("  ⚠")).count(),
+        1,
+        "khối: {khoi:?}"
+    );
+    assert!(t.contains("… +3 mục"), "{t}");
+    assert!(!t.contains("K="), "không in giá trị biến: {t}");
+
+    // Vế ngược: probe sạch + hàng không còn `launch` ⟹ 8/8, không mục nào để xem.
+    let mut c2 = c.clone();
+    c2.claude_accounts[0].launch = None;
+    let sach = Probe {
+        projects: ProjectsState::Link(
+            huba::config::home_dir()
+                .unwrap()
+                .join(".claude")
+                .join("projects"),
+        ),
+        env_file: EnvFileState::Found {
+            path: "/tmp/acc9.env".into(),
+            mode: Some(0o600),
+            vars: vec!["K".into()],
+        },
+        settings: SettingsState::Found(serde_json::json!({
+            "model": "m9",
+            "apiKeyHelper": "printenv K"
+        })),
+        quota: Some(Quota {
+            account: "acc9".into(),
+            week_pct: Some(12),
+            week_resets_at: None,
+            hour5_pct: None,
+            hour5_resets_at: None,
+            fetched_at_ms: None,
+            why_unknown: None,
+            chua_dung_duoc: None,
+            models: Vec::new(),
+            model_use: None,
+        }),
+        api_key: Some("API key …WXYZ".into()),
+        live_sessions: Some(1),
+        blind: None,
+        ..p
+    };
+    let s = huba::runtime::account_detail_text_voi_probe(
+        &c2,
+        &SessionsSnapshot::default(),
+        "acc9",
+        None,
+        None,
+        Err("chưa đọc được".into()),
+        &std::collections::BTreeMap::new(),
+        BAY_GIO,
+        Some(&sach),
+    );
+    assert!(s.contains("chẩn đoán: 8/8 OK"), "{s}");
+    assert!(!s.contains("mục cần xem"), "{s}");
 }

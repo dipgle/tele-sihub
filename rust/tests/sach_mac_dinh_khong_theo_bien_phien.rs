@@ -72,15 +72,13 @@ fn tai_khoan_mac_dinh_doc_so_o_nha_khong_doc_bien_cua_phien() {
             // acc1 = tài khoản MẶC ĐỊNH: không khai `config_dir` ⟹ `~/.claude`.
             ClaudeAccountCfg {
                 name: "acc1".into(),
-                config_dir: None,
-                launch: None,
                 locked: true,
+                ..Default::default()
             },
             ClaudeAccountCfg {
                 name: "acc2".into(),
                 config_dir: Some(acc2.display().to_string()),
-                launch: None,
-                locked: false,
+                ..Default::default()
             },
         ],
         ..Default::default()

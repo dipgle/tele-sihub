@@ -29,8 +29,7 @@ fn acc(name: &str, dir: &Path) -> ClaudeAccountCfg {
     ClaudeAccountCfg {
         name: name.into(),
         config_dir: Some(dir.to_string_lossy().into_owned()),
-        launch: None,
-        locked: false,
+        ..Default::default()
     }
 }
 
@@ -134,9 +133,7 @@ fn tai_khoan_mac_dinh_khong_them_goc() {
     let mut cfg = m.cfg.clone();
     cfg.claude_accounts = vec![ClaudeAccountCfg {
         name: "mặc định".into(),
-        config_dir: None,
-        launch: None,
-        locked: false,
+        ..Default::default()
     }];
     assert_eq!(sessions::transcript_roots(&cfg), vec![m.chung.clone()]);
 }

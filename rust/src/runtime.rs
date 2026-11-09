@@ -203,6 +203,30 @@ pub fn account_detail_say(
             now_ms,
         );
     };
+    // Dữ liệu chẩn đoán (GĐ 2) — đọc MỘT lần, cả hai nhánh dùng chung. `blind`
+    // lấy đúng câu mà `/accounts` đã dùng cho hàng này: một phép đo hỏng phải
+    // đọc ra một câu, không phải hai (luật 11b).
+    let lam_probe = |quota: Option<crate::quota::Quota>| {
+        let mut p = crate::accounts::probe(&acc, quota);
+        p.live_sessions = Some(
+            live.sessions
+                .iter()
+                .filter(|s| s.account == acc.name && s.host != "dead")
+                .count(),
+        );
+        p.blind = if live.blind.contains(&acc.name) {
+            Some(
+                live.notes
+                    .iter()
+                    .find(|n| n.starts_with(&format!("{}:", acc.name)))
+                    .and_then(|n| n.split_once(':').map(|x| x.1.trim().to_string()))
+                    .unwrap_or_else(|| "lượt này không liệt kê được phiên".to_string()),
+            )
+        } else {
+            None
+        };
+        p
+    };
     // 🔑 Chạy bằng API key: không dò `/usage` (không có hạn mức gói), không in hạn mức
     // của đăng nhập gói cũ, không báo trùng theo email cũ — cả ba nói về một cách xác
     // thực CLI không còn dùng. Danh tính gói cũ vẫn in, có ghi rõ là không dùng.
@@ -212,7 +236,8 @@ pub fn account_detail_say(
             .as_deref()
             .filter(|d| !d.is_empty())
             .map(|d| crate::config::expand_home(Path::new(d)));
-        let mut out = account_detail_text(
+        let probe = lam_probe(None);
+        let mut out = account_detail_text_voi_probe(
             cfg,
             live,
             name,
@@ -221,6 +246,7 @@ pub fn account_detail_say(
             crate::quota::identity(dir.as_deref()),
             dead,
             now_ms,
+            Some(&probe),
         );
         let chen = format!(
             "🔑 chạy bằng {nhan} — tính tiền theo token, không có hạn mức gói; huba không tự \
@@ -243,7 +269,18 @@ pub fn account_detail_say(
     let q = crate::quota::read(&acc.name, dir.as_deref());
     let id = crate::quota::identity(dir.as_deref());
     let email = id.as_ref().ok().and_then(|i| i.email.clone());
-    let mut out = account_detail_text(cfg, live, name, Some(&q), row, id, dead, now_ms);
+    let probe = lam_probe(Some(q.clone()));
+    let mut out = account_detail_text_voi_probe(
+        cfg,
+        live,
+        name,
+        Some(&q),
+        row,
+        id,
+        dead,
+        now_ms,
+        Some(&probe),
+    );
     if let Some(e) = email {
         let trung =
             crate::account_login::trung_voi(&crate::account_login::danh_tinh_tat_ca(cfg), name, &e);
@@ -355,6 +392,26 @@ pub fn account_detail_text(
     dead: &std::collections::BTreeMap<String, String>,
     now_ms: i64,
 ) -> String {
+    account_detail_text_voi_probe(cfg, live, name, quota, usage_row, id, dead, now_ms, None)
+}
+
+/// [`account_detail_text`] kèm CHẨN ĐOÁN (`accounts::checks`, GĐ 2) — tối đa 3
+/// mục không đạt, phần còn lại trỏ về trang `huba accounts`.
+///
+/// `probe` là tham số, không phải lượt đọc đĩa tại chỗ: cùng ranh giới với
+/// `quotas` — hàm này phải chấm được bằng bài kiểm không chạm `$HOME`.
+#[allow(clippy::too_many_arguments)]
+pub fn account_detail_text_voi_probe(
+    cfg: &Config,
+    live: &SessionsSnapshot,
+    name: &str,
+    quota: Option<&crate::quota::Quota>,
+    usage_row: Option<&Value>,
+    id: Result<crate::quota::Identity, String>,
+    dead: &std::collections::BTreeMap<String, String>,
+    now_ms: i64,
+    probe: Option<&crate::accounts::Probe>,
+) -> String {
     let accounts = cfg.claude_accounts_or_ambient();
     let Some(acc) = accounts.iter().find(|a| a.name == name) else {
         return format!(
@@ -416,6 +473,32 @@ pub fn account_detail_text(
             .unwrap_or("~ (không đặt CLAUDE_CONFIG_DIR)"),
         acc.launch.as_deref().unwrap_or("(không khai launch)")
     ));
+    // Chẩn đoán (GĐ 2): "tài khoản này thiếu gì" — tối đa 3 mục trên điện thoại,
+    // phần còn lại trỏ về trang. Mục KHÔNG ĐO ĐƯỢC hiện với ⚠, không bị gộp
+    // vào ✗ (luật 13②).
+    if let Some(p) = probe {
+        let c = crate::accounts::checks(acc, p);
+        let hong = crate::accounts::problems(&c);
+        out.push_str(&format!(
+            "chẩn đoán: {}/{} OK",
+            c.len() - hong.len(),
+            c.len()
+        ));
+        if hong.is_empty() {
+            out.push('\n');
+        } else {
+            out.push_str(&format!(" · {} mục cần xem\n", hong.len()));
+            for x in hong.iter().take(3) {
+                out.push_str(&format!("  {}\n", x.line()));
+            }
+            if hong.len() > 3 {
+                out.push_str(&format!(
+                    "  … +{} mục — xem đủ trên trang `huba accounts`\n",
+                    hong.len() - 3
+                ));
+            }
+        }
+    }
     if let Some(q) = quota {
         out.push_str(&format!("hạn mức: {}\n", q.say(now_ms)));
     }
@@ -1225,17 +1308,9 @@ fn parse_usage(text: &str) -> Value {
 /// `~/.claude` là một chuyện khác. Đo được ngay ngày đầu: gọi tay trong shell
 /// đang set `CLAUDE_CONFIG_DIR=acc3` thì "acc1" trả về hòm thư của acc3.
 pub fn account_env(acc: &crate::config::ClaudeAccountCfg) -> Vec<(String, Option<String>)> {
-    match acc.config_dir.as_ref() {
-        Some(d) => vec![(
-            "CLAUDE_CONFIG_DIR".to_string(),
-            Some(
-                crate::config::expand_home(Path::new(d))
-                    .display()
-                    .to_string(),
-            ),
-        )],
-        None => vec![("CLAUDE_CONFIG_DIR".to_string(), None)],
-    }
+    // MỘT cửa: `CLAUDE_CONFIG_DIR` + `ANTHROPIC_BASE_URL` + `extra_env` — bí mật
+    // bị bỏ kèm log trong `accounts::env_for_child`.
+    crate::accounts::env_for_child(acc)
 }
 
 /// `claude auth status` bằng ĐÚNG tài khoản ấy, qua `launch` của nó — MỘT chỗ chạy

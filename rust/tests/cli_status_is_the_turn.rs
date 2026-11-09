@@ -223,8 +223,7 @@ fn the_wake_up_fingerprint_moves_when_a_turn_ends() {
         claude_accounts: vec![huba::config::ClaudeAccountCfg {
             name: "acc7".into(),
             config_dir: Some(dir.path().display().to_string()),
-            launch: None,
-            locked: false,
+            ..Default::default()
         }],
         ..Default::default()
     };

@@ -121,8 +121,7 @@ fn cfg_3() -> huba::config::Config {
             .map(|n| huba::config::ClaudeAccountCfg {
                 name: (*n).into(),
                 config_dir: (*n != "acc1").then(|| format!("~/.claude-{n}")),
-                launch: None,
-                locked: false,
+                ..Default::default()
             })
             .collect(),
         ..Default::default()

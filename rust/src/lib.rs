@@ -18,6 +18,11 @@
 
 /// `/accounts <tên> -l` — đăng nhập lại một tài khoản Claude từ điện thoại.
 pub mod account_login;
+/// Trường cấu trúc của một tài khoản → dòng lệnh · môi trường · bản vá
+/// `settings.json`. Hàm THUẦN, dùng chung cho `huba accounts` và mọi chỗ mở
+/// phiên (2026-11-09).
+pub mod accounts;
+pub mod accounts_page;
 pub mod adapters;
 pub mod api_key;
 /// Gửi MỘT phím vào Terminal, không kèm dấu xuống dòng — tệp DUY NHẤT có
@@ -51,6 +56,9 @@ pub mod keys;
 /// được" ở đầu tệp trước khi tin.
 #[cfg(windows)]
 pub mod keys_win;
+/// Khung HTTP loopback dùng chung cho các trang chạy trên MÁY cài huba
+/// (`huba setup`, `huba accounts`) — xem đầu tệp trước khi thêm trang thứ ba.
+pub mod localserver;
 pub mod logging;
 pub mod pipeline;
 /// Tài khoản nào còn nhiều hạn mức nhất — đọc `cachedUsageUtilization` trong

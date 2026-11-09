@@ -33,12 +33,12 @@
 use anyhow::{anyhow, Result};
 use serde_json::json;
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
+use std::net::TcpStream;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use crate::localserver::{bind_loopback, new_ticket, parse_form, read_request, respond};
 use crate::logging;
 
 /// Những khoá trang này biết hỏi. Thứ tự chính là thứ tự hiện trên trang.
@@ -84,18 +84,10 @@ const FIELDS: &[Field] = &[
 /// Mở trang cấu hình rồi CHỜ tới khi lưu xong (hoặc chủ máy đóng bằng Ctrl-C).
 pub fn serve(hub_home: &Path) -> Result<()> {
     let env_path = hub_home.join("huba.env");
-    let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
-    let port = listener.local_addr()?.port();
-    // Vé một lần. `SystemTime` + địa chỉ con trỏ là đủ cho một cái vé sống vài
-    // phút trên máy của chính mình; đây không phải khoá phiên đăng nhập.
-    let ticket = format!(
-        "{:x}{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0),
-        &listener as *const _ as usize
-    );
+    // Cổng + vé nằm ở `localserver` để trang thứ hai không chép lại hàng rào
+    // (và để cái trôi chỉ có một chỗ để trôi).
+    let (listener, port) = bind_loopback()?;
+    let ticket = new_ticket(&listener);
     let url = format!("http://127.0.0.1:{port}/?t={ticket}");
 
     logging::info(
@@ -104,7 +96,7 @@ pub fn serve(hub_home: &Path) -> Result<()> {
     );
     println!("\n  Mở trang cấu hình huba:\n\n    {url}\n");
     println!("  (chỉ máy này vào được — trang đóng ngay sau khi bạn bấm Lưu)\n");
-    open_window(&url);
+    crate::localserver::open_window(&url, "setup");
 
     for stream in listener.incoming() {
         let mut stream = match stream {
@@ -131,87 +123,13 @@ pub fn serve(hub_home: &Path) -> Result<()> {
     Err(anyhow!("cổng cấu hình đóng trước khi lưu được gì"))
 }
 
-/// Mở trang cấu hình như một CỬA SỔ ỨNG DỤNG, không phải một tab lẫn trong bầy.
-///
-/// 🔴 Hà 2026-08-13: *"khi chạy ứng dụng thì hiện luôn fe hay phải vào trình
-/// duyệt để thao tác"*. Câu hỏi đúng chỗ: một trang cấu hình mở ra thành tab
-/// thứ ba mươi, cạnh Gmail và mười cái tab tài liệu, thì người không rành kỹ
-/// thuật sẽ lạc mất nó ngay.
-///
-/// Chrome/Edge có `--app=<url>`: cùng một trang, nhưng thành cửa sổ riêng,
-/// không thanh địa chỉ, không tab — nhìn và dùng như một ứng dụng. Không có
-/// trình duyệt nào trong danh sách thì rơi về `open` thường; và `open` hỏng nốt
-/// thì cũng KHÔNG làm hỏng cả lệnh, vì đường dẫn đã in ra màn hình rồi.
-fn open_window(url: &str) {
-    // Windows không có `open`: `start` (lệnh trong `cmd`) mở bằng trình duyệt
-    // mặc định. Chuỗi rỗng `""` là tiêu đề cửa sổ — thiếu nó thì `start` đọc
-    // chính URL (trong ngoặc kép) làm tiêu đề và không mở gì.
-    if cfg!(windows) {
-        match std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .status()
-        {
-            Ok(s) if s.success() => {
-                logging::info("setup_window_opened", json!({ "as": "windows-start" }))
-            }
-            other => logging::warn(
-                "setup_open_failed",
-                json!({ "detail": format!("{other:?}"), "url_printed": true }),
-            ),
-        }
-        return;
-    }
-    const APP_BROWSERS: &[&str] = &[
-        "Google Chrome",
-        "Microsoft Edge",
-        "Brave Browser",
-        "Chromium",
-    ];
-    for b in APP_BROWSERS {
-        let ok = std::process::Command::new("open")
-            .args(["-na", b, "--args", &format!("--app={url}")])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if ok {
-            logging::info("setup_window_opened", json!({ "as": "app", "browser": b }));
-            return;
-        }
-    }
-    match std::process::Command::new("open").arg(url).status() {
-        Ok(s) if s.success() => {
-            logging::info("setup_window_opened", json!({ "as": "browser-tab" }));
-        }
-        other => logging::warn(
-            "setup_open_failed",
-            json!({ "detail": format!("{other:?}"), "url_printed": true }),
-        ),
-    }
-}
-
 /// Trả `true` khi vừa lưu xong — chỗ gọi lấy đó làm dấu dừng.
 fn handle(stream: &mut TcpStream, ticket: &str, env_path: &Path) -> Result<bool> {
-    let mut reader = BufReader::new(stream.try_clone()?);
-    let mut request = String::new();
-    reader.read_line(&mut request)?;
-    let mut parts = request.split_whitespace();
-    let method = parts.next().unwrap_or("").to_string();
-    let target = parts.next().unwrap_or("/").to_string();
-
-    let mut len = 0usize;
-    loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 || line.trim().is_empty() {
-            break;
-        }
-        if let Some(v) = line.to_lowercase().strip_prefix("content-length:") {
-            len = v.trim().parse().unwrap_or(0);
-        }
-    }
+    let req = read_request(stream)?;
 
     // Cái vé, không phải cái cổng, mới là hàng rào — mọi tiến trình trên máy đều
     // gọi được loopback.
-    if !target.contains(&format!("t={ticket}")) {
+    if !req.target.contains(&format!("t={ticket}")) {
         respond(
             stream,
             "403 Forbidden",
@@ -221,10 +139,8 @@ fn handle(stream: &mut TcpStream, ticket: &str, env_path: &Path) -> Result<bool>
         return Ok(false);
     }
 
-    if method == "POST" {
-        let mut body = vec![0u8; len];
-        reader.read_exact(&mut body)?;
-        let mut form = parse_form(&String::from_utf8_lossy(&body));
+    if req.method == "POST" {
+        let mut form = parse_form(&String::from_utf8_lossy(&req.body));
         let dò = auto_chat_id(&mut form);
         let written = save_env(env_path, &form)?;
         let page = saved_page(&written, &dò);
@@ -246,17 +162,6 @@ fn handle(stream: &mut TcpStream, ticket: &str, env_path: &Path) -> Result<bool>
         page.as_bytes(),
     )?;
     Ok(false)
-}
-
-fn respond(stream: &mut TcpStream, status: &str, ctype: &str, body: &[u8]) -> Result<()> {
-    let head = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    stream.write_all(head.as_bytes())?;
-    stream.write_all(body)?;
-    stream.flush()?;
-    Ok(())
 }
 
 /// Khoá nào ĐÃ có giá trị trong `huba.env` — **chỉ tên khoá, không lấy giá trị**.
@@ -341,37 +246,6 @@ fn save_env(env_path: &Path, form: &BTreeMap<String, String>) -> Result<Vec<Stri
     }
     std::fs::rename(&tmp, env_path)?;
     Ok(written)
-}
-
-/// `a=1&b=2` với mã hoá phần trăm → cặp khoá–giá trị.
-fn parse_form(body: &str) -> BTreeMap<String, String> {
-    let mut out = BTreeMap::new();
-    for pair in body.split('&') {
-        let Some((k, v)) = pair.split_once('=') else {
-            continue;
-        };
-        out.insert(percent_decode(k), percent_decode(v));
-    }
-    out
-}
-
-fn percent_decode(s: &str) -> String {
-    let bytes = s.replace('+', " ").into_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
-            if let Ok(b) = u8::from_str_radix(hex, 16) {
-                out.push(b);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).to_string()
 }
 
 fn esc(s: &str) -> String {
@@ -506,6 +380,7 @@ fn saved_page(written: &[String], dò: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::localserver::parse_form;
 
     #[test]
     fn an_empty_box_never_wipes_a_key_that_is_already_there() {
