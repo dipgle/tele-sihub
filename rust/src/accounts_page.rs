@@ -902,8 +902,9 @@ background:#1a6dd4;color:#fff;cursor:pointer}button.sec{background:#eceef1;color
 a.btn{display:inline-block;padding:.5rem 1rem;border-radius:8px;background:#1a6dd4;color:#fff;\
 text-decoration:none;font-weight:600}a.btn.sec{background:#eceef1;color:#1a1a1a}\
 table{width:100%;border-collapse:collapse;margin:1rem 0}th,td{text-align:left;padding:.5rem .55rem;\
-border-bottom:1px solid #e4e4e0;vertical-align:top}tbody tr:nth-child(even){background:#f4f4f1}\
-code{background:#eceef1;padding:.08rem .3rem;border-radius:4px;font-size:.9em}\
+border-bottom:1px solid #e4e4e0;vertical-align:top;overflow-wrap:anywhere}\
+tbody tr:nth-child(even){background:#f4f4f1}\
+code{background:#eceef1;padding:.08rem .3rem;border-radius:4px;font-size:.9em;overflow-wrap:anywhere}\
 ul.tight{margin:0;padding-left:1.1rem}ul.checks{list-style:none;padding:0;margin:.4rem 0}\
 ul.checks li{margin:.35rem 0}.ok{color:#0a7d33}.bad{color:#c0392b}.unk{color:#a06a00}\
 .err{background:#fdecea;border-left:3px solid #c0392b;padding:.7rem 1rem;margin:.8rem 0;\
@@ -913,7 +914,13 @@ padding:.7rem 1rem;margin:1.2rem 0;border-radius:0 8px 8px 0}\
 border-radius:0 8px 8px 0;white-space:pre-wrap}.flash.err{background:#fdecea;border-color:#c0392b}\
 .row{display:flex;gap:.6rem;flex-wrap:wrap;margin:1rem 0}.row form{margin:0}.muted{color:#666;font-size:.9rem}\
 pre.guide{background:#111;color:#eee;padding:1rem;border-radius:8px;overflow-x:auto;white-space:pre-wrap}\
-.grid{display:block}";
+.grid{display:block}\
+@media (max-width:600px){thead{display:none}table,tbody,tr,td{display:block}\
+tr{border:1px solid #e4e4e0;border-radius:8px;padding:.6rem .75rem;margin:0 0 .8rem;background:#fff}\
+tbody tr:nth-child(even){background:#f4f4f1}td{border:0;padding:.1rem 0}\
+td:first-child{font-weight:700;font-size:1.05rem}\
+td:nth-child(2)::before{content:\"Thư mục: \";color:#666}\
+td:nth-child(3)::before{content:\"Chẩn đoán: \";color:#666}}";
 
 fn page_shell(title: &str, flash: Option<(String, bool)>, body: &str) -> String {
     let flash_html = match flash {
