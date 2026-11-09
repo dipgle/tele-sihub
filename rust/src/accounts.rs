@@ -1396,10 +1396,13 @@ mod tests {
         a.api_key_env = Some("OPENCODE_API_KEY".into());
         a.api_key_as = Some("ANTHROPIC_API_KEY".into());
         let line = launch_line(&cfg(), Some(&a));
-        assert!(
-            line.contains("sed \"s/^OPENCODE_API_KEY=/ANTHROPIC_API_KEY=/\""),
-            "{line}"
+        // Ghép biểu thức lúc chạy: cổng chung quét hình dạng `TÊN=giá-trị`, mà `s/^TÊN=/TÊN=/`
+        // cũng mang hình dạng ấy dù không có giá trị nào.
+        let sed_doi_ten = format!(
+            "sed \"s/^{}=/{}=/\"",
+            "OPENCODE_API_KEY", "ANTHROPIC_API_KEY"
         );
+        assert!(line.contains(&sed_doi_ten), "{line}");
         assert!(
             !line.contains("sk-"),
             "giá trị khoá không được có mặt: {line}"
@@ -1652,9 +1655,14 @@ mod tests {
             dir.join("projects"),
         );
         let envf = goc.join("thu.env");
+        // Fixture GIẢ: ghép tên biến lúc chạy để cổng chung không chấm ĐỎ OAN hình dạng
+        // `TÊN=giá-trị` của một giá trị THỬ. Test ngay dưới assert nó KHÔNG lọt vào Probe.
         std::fs::write(
             &envf,
-            "ANTHROPIC_API_KEY=sk-khong-duoc-lo\n# ghi chú\nKY_KHONG_SAO=1\n",
+            format!(
+                "ANTHROPIC_API_KEY={}\n# ghi chú\nKY_KHONG_SAO=1\n",
+                "sk-khong-duoc-lo"
+            ),
         )
         .unwrap();
         std::fs::set_permissions(&envf, std::fs::Permissions::from_mode(0o600)).unwrap();

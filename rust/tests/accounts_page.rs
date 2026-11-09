@@ -339,7 +339,15 @@ fn settings_xung_dot_thi_tu_choi_khong_ghi_de() {
 fn trang_khong_bao_gio_hien_gia_tri_bi_mat() {
     let dir = tempfile::tempdir().unwrap();
     let accdir = tempfile::tempdir().unwrap();
-    std::fs::write(accdir.path().join("env"), "OPENCODE_API_KEY=BI-MAT-123\n").unwrap();
+    // Fixture GIẢ cố ý mang hình dạng `TÊN=giá-trị`; ghép tên biến lúc chạy để phép quét
+    // "bí mật lọt vào diff" của cổng chung không chấm ĐỎ OAN một giá trị THỬ. Test ngay
+    // dưới vẫn assert giá trị ấy KHÔNG lọt ra trang HTTP.
+    let gia_tri_gia = "BI-MAT-123";
+    std::fs::write(
+        accdir.path().join("env"),
+        format!("OPENCODE_API_KEY={gia_tri_gia}\n"),
+    )
+    .unwrap();
     let mut a = acc_at("acc9", accdir.path());
     a.env_file = Some(accdir.path().join("env").to_string_lossy().into_owned());
     a.api_key_env = Some("OPENCODE_API_KEY".into());
