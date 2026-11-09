@@ -417,7 +417,16 @@ not the risk. Never put that word back in a filename here.
 `pipeline::is_self_rebuild` still accepts the OLD path — it lives in Telegram
 messages already sent and in the suggestion book.
 
-🔴 **Gone 2026-08-14** (in git before `cf20874`): `rust/src/portal.rs` (snapshot
-pushed to tfl5 as docs), `rust/src/live.rs` (held-open `/ws/chat`),
-`rust/src/adapters/tfl5.rs`, `fe/index.html`, `fe-deploy.mjs`, 17 more `fe-*.mjs`
-Playwright scripts, `console-acl.mjs`, `ui-shots/`.
+🔴 **Gone 2026-08-14 in the OLD repo — physically removed HERE on 2026-11-09.**
+`rust/src/portal.rs` (snapshot pushed to tfl5 as docs), `rust/src/live.rs`
+(held-open `/ws/chat`), `rust/src/adapters/tfl5.rs`, `fe/index.html`,
+`fe-deploy.mjs`, 17 more `fe-*.mjs` Playwright scripts, `console-acl.mjs`.
+The re-import that created this repo's first commit (`507716c`, 2026-10-29,
+289 files) came from a tree that still carried them: 23 tracked files were
+deleted on 2026-11-09 after measuring that **nothing executes them** (no
+`package.json` script, no import from `web.mjs`, no `mod` for `portal`/`live`
+in `lib.rs`). `cf20874` is NOT an ancestor of HEAD — it lives only in the
+archived `luu-tru` history, and its tree still had all 21 fe/acl files, so the
+old sentence described a history this repo never had. `ui-shots/` (35 MB, 226
+PNGs) is **gitignored and untracked** ⇒ left on disk: deleting it would not be
+recoverable.
