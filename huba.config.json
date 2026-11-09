@@ -12,7 +12,7 @@
   },
   "auto_handover": {
     "enabled": true,
-    "at_percent": 80,
+    "at_percent": 70,
     "idle_sec": 120,
     "on_limit": true,
     "on_limit_wait_min": 30
@@ -69,7 +69,8 @@
     },
     {
       "name": "acc5",
-      "config_dir": "~/.claude-acc5"
+      "config_dir": "~/.claude-acc5",
+      "locked": true
     },
     {
       "name": "acc6",
@@ -77,7 +78,18 @@
     },
     {
       "name": "acc7",
-      "config_dir": "~/.claude-acc7"
+      "config_dir": "~/.claude-acc7",
+      "locked": true
+    },
+    {
+      "name": "acc8",
+      "config_dir": "~/.claude-acc8",
+      "launch": "env $(sed \"s/^OPENCODE_API_KEY=/ANTHROPIC_API_KEY=/\" $HOME/.opencode_acc8.env | xargs) ANTHROPIC_BASE_URL=https://opencode.ai/inference/go/anthropic CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4.1-flash CLAUDE_CONFIG_DIR=$HOME/.claude-acc8 claude --debug --model deepseek-v4.1-flash"
+    },
+    {
+      "name": "acc9",
+      "config_dir": "~/.claude-acc9",
+      "launch": "env $(cat $HOME/.opencode_acc9.env | xargs) CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4.1-flash CLAUDE_CONFIG_DIR=$HOME/.claude-acc9 claude --debug --model deepseek-v4.1-flash"
     }
   ],
   "new_in_terminal": true,

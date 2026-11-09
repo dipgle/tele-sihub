@@ -60,7 +60,11 @@ fn a_session_whose_recorded_pct_was_evicted_is_reconsidered() {
         "quên mốc cũ mà vẫn khoá ⟹ phiên đứng im tới 70%"
     );
     // …và khi ấy nó phải đi tiếp tới các cửa THẬT, không dừng ở AlreadyDone.
-    let why = auto_handover_why(63, AT, false, true, false, false, 0, 300, 120);
+    let da_thay = huba::keys::Look::Saw {
+        body: "✳ xong".to_string(),
+        choices: Vec::new(),
+    };
+    let why = auto_handover_why(63, AT, false, Some(&da_thay), 0, 300, 120);
     assert_eq!(why, AutoWhy::Do, "{why:?}");
 }
 

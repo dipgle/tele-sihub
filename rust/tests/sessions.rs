@@ -465,11 +465,26 @@ fn a_stop_notice_closes_only_the_call_it_names() {
 /// hẳn việc không có cơ chế nào.
 #[test]
 fn auto_handover_only_fires_when_the_session_is_truly_done() {
+    use huba::keys::Look;
     use huba::pipeline::{auto_handover_why, AutoWhy};
 
-    // đủ đầy · có cửa sổ · không bận · không hỏi · không subagent · đã im đủ lâu
+    // Màn đọc được; `busy`/`asking` đọc từ CHÍNH chữ ấy — một nguồn bằng chứng,
+    // không phải hai cờ rời để chỗ gọi tự ghép sai.
+    let saw = |busy: bool, asking: bool| Look::Saw {
+        body: if busy {
+            "✳ Đang chạy (1m 2s · esc to interrupt)".to_string()
+        } else {
+            "✳ Xong".to_string()
+        },
+        choices: if asking {
+            vec![(1, "Có".to_string())]
+        } else {
+            Vec::new()
+        },
+    };
+    // đủ đầy · đọc được màn · không bận · không hỏi · không subagent · đã im đủ lâu
     let go = |pct, busy, asking, subs, idle| {
-        auto_handover_why(pct, 80, false, true, busy, asking, subs, idle, 120)
+        auto_handover_why(pct, 80, false, Some(&saw(busy, asking)), subs, idle, 120)
     };
     assert_eq!(go(85, false, false, 0, 300), AutoWhy::Do);
 
@@ -484,14 +499,30 @@ fn auto_handover_only_fires_when_the_session_is_truly_done() {
     // Vừa im được 30 giây chưa đủ chắc: giữa hai lệnh cũng im.
     assert_eq!(go(95, false, false, 0, 30), AutoWhy::TooFresh(30));
 
-    // Không đọc được màn thì KHÔNG đoán là rảnh.
+    // Không có cửa sổ nào thì KHÔNG đoán là rảnh.
     assert_eq!(
-        auto_handover_why(95, 80, false, false, false, false, 0, 300, 120),
+        auto_handover_why(95, 80, false, None, 0, 300, 120),
         AutoWhy::NoWindow
+    );
+    // Có cửa sổ mà KHÔNG đọc được chữ — nhãn RIÊNG, khác "không có cửa sổ".
+    // Gộp hai ca này là chỗ giấu `keys_screen_read_failed` (đo 07–08/11).
+    assert_eq!(
+        auto_handover_why(
+            95,
+            80,
+            false,
+            Some(&Look::Blind {
+                why: "osascript im".into()
+            }),
+            0,
+            300,
+            120
+        ),
+        AutoWhy::Blind
     );
     // Đã đóng rồi thì thôi, kể cả mọi thứ khác đều thoả.
     assert_eq!(
-        auto_handover_why(95, 80, true, true, false, false, 0, 300, 120),
+        auto_handover_why(95, 80, true, None, 0, 300, 120),
         AutoWhy::AlreadyDone
     );
 }

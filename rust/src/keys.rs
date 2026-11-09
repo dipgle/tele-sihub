@@ -6412,6 +6412,89 @@ pub fn look_from_screen(screen: &str, lines: usize) -> Look {
     }
 }
 
+/// Màn của một phiên, lấy từ BẢNG TAB mà ảnh chụp của vòng đã mang
+/// ([`crate::sessions::SessionsSnapshot::tabs`]) — không hỏi Terminal lượt nào.
+///
+/// 🔴 Vì sao có hàm này (đo 07–08/11): `auto_handover` tự gọi [`look`] cho từng
+/// phiên quá ngưỡng, và 665/666 lượt giữ phiên mang `keys_screen_read_failed`
+/// trong ±10 s — ngân sách hỏi Terminal của MỘT vòng ([`PROBE_BUDGET_MS`]) đã bị
+/// chính ảnh chụp (5,3–17,2 s) tiêu trước đó. Ảnh chụp ĐÃ đọc chữ mọi tab
+/// ([`terminal_screens`]), nên hỏi lại là trả giá lần hai cho đúng câu trả lời
+/// đã có.
+///
+/// Ba kết cục, và `None` chỉ mang ĐÚNG một nghĩa: `None` = phiên KHÔNG có tab
+/// Terminal nào còn sống ([`alive_tab`]) — không có cửa sổ. Tab CÓ mà lượt dò
+/// không mang chữ (`Tab::screen == None`) là `Some(Look::Blind)`, không phải
+/// `None`: "chưa đo được" khác "không có".
+pub fn screen_in_tabs(tabs: &[Tab], tty: &str, lines: usize) -> Option<Look> {
+    let tab = alive_tab(tabs, tty)?;
+    match tab.screen.as_deref() {
+        Some(screen) => Some(look_from_screen(screen, lines)),
+        // Lượt dò không xin chữ — KHÔNG đoán là màn trống (xem `Tab::screen`).
+        None => Some(Look::Blind {
+            why: "ảnh chụp của vòng này không mang chữ màn cho tab".into(),
+        }),
+    }
+}
+
+#[cfg(test)]
+mod screen_in_tabs_tests {
+    use super::*;
+
+    fn tab(tty: &str, screen: Option<&str>, con_song: bool) -> Tab {
+        Tab {
+            tty: tty.to_string(),
+            busy: con_song,
+            procs: if con_song {
+                vec!["claude".to_string()]
+            } else {
+                Vec::new()
+            },
+            screen: screen.map(str::to_string),
+            title: String::new(),
+        }
+    }
+
+    /// `None` chỉ mang MỘT nghĩa: không có tab nào còn sống. Tab có tty nhưng
+    /// không còn tiến trình (cửa sổ đã chết) cũng là `None` — đúng `alive_tab`.
+    #[test]
+    fn no_live_tab_is_no_window() {
+        let tabs = [tab("ttys001", Some("✳ xong"), true)];
+        assert_eq!(screen_in_tabs(&tabs, "ttys002", 40), None);
+        let dead = [tab("ttys001", Some("✳ xong"), false)];
+        assert_eq!(screen_in_tabs(&dead, "ttys001", 40), None);
+    }
+
+    /// Lượt dò KHÔNG xin chữ là `Blind`, không phải màn trống — và không phải
+    /// `None` (cửa sổ có thật).
+    #[test]
+    fn a_screen_the_probe_did_not_carry_is_blind() {
+        let tabs = [tab("ttys001", None, true)];
+        match screen_in_tabs(&tabs, "ttys001", 40) {
+            Some(Look::Blind { why }) => assert!(why.contains("không mang chữ"), "{why}"),
+            other => panic!("phải là Blind, thấy {other:?}"),
+        }
+    }
+
+    /// Chữ đã có đi qua ĐÚNG bộ đọc của `look_from_screen` — hộp chọn và dấu
+    /// hiệu đang chạy phải ra y hệt đường hỏi Terminal.
+    #[test]
+    fn the_carried_screen_feeds_the_same_readers() {
+        let tabs = [tab(
+            "ttys001",
+            Some("✳ Việc\n❯ 1. Có\n2. Không\n(1m 2s · esc to interrupt)"),
+            true,
+        )];
+        match screen_in_tabs(&tabs, "ttys001", 40) {
+            Some(Look::Saw { body, choices }) => {
+                assert_eq!(choices.len(), 2, "phải đọc ra 2 lựa chọn: {choices:?}");
+                assert!(is_busy(&body), "dòng '(1m 2s' phải nhận là đang chạy");
+            }
+            other => panic!("phải là Saw, thấy {other:?}"),
+        }
+    }
+}
+
 /// Phím mũi tên có được gửi không.
 ///
 /// `do script` LUÔN kèm một dấu xuống dòng, không tắt được — nên trên hộp chọn

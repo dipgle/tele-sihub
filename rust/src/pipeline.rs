@@ -2250,9 +2250,30 @@ fn auto_handover(db: &Db, cfg: &Config, live: &crate::sessions::SessionsSnapshot
         // vòng từ ~18 giây lên **90 giây** (đo 2026-08-10) — đủ chậm để một
         // lệnh gõ từ điện thoại nằm chờ hơn một phút. Phiên còn 5% ngữ cảnh thì
         // màn của nó không đổi được quyết định nào, nên đừng hỏi.
-        let screen = if pct >= cfg.auto_handover.at_percent {
-            crate::keys::screen_of(&s.tty, 40)
+        // 🔴 ĐỌC MÀN TỪ ẢNH CHỤP CỦA VÒNG, không hỏi Terminal lần nữa (09/11).
+        // Đo 07–08/11: 665/666 lượt giữ phiên có `keys_screen_read_failed` trong
+        // ±10 s — `terminal_screens()` đã ăn 5,3–17,2 s, vượt ngân sách 10 s
+        // (`keys::PROBE_BUDGET_MS`), nên `screen_of` ở đây bị chặn gần như mọi
+        // lượt. Ảnh chụp ĐÃ mang chữ mọi tab (`SessionsSnapshot::tabs`), nên
+        // đọc từ đó là dùng đúng câu trả lời đã trả giá. `screen_of` chỉ còn là
+        // đường lùi khi cả lượt dò tab hỏng (`live.tabs == None`).
+        let screen: Option<crate::keys::Look> = if pct >= cfg.auto_handover.at_percent {
+            match live.tabs.as_deref() {
+                // `None` = phiên không có tab Terminal nào = `NoWindow`.
+                Some(tabs) => crate::keys::screen_in_tabs(tabs, &s.tty, 40),
+                None => {
+                    // Lượt dò của cả vòng hỏng ⟹ vẫn có thể hỏi thẳng Terminal,
+                    // nhưng chỉ khi tty là thật (`??` không phải cửa sổ — luật 11b).
+                    if crate::sessions::is_real_tty(&s.tty) {
+                        Some(crate::keys::look(&s.tty, 40))
+                    } else {
+                        None
+                    }
+                }
+            }
         } else {
+            // Dưới ngưỡng: `NotFull` chốt trước khi ai đọc giá trị này, nên
+            // không trả giá đọc màn.
             None
         };
         let idle_sec = s
@@ -2302,11 +2323,7 @@ fn auto_handover(db: &Db, cfg: &Config, live: &crate::sessions::SessionsSnapshot
             // sau (`Busy`, `Asking`, `TooFresh`) quyết, đúng như phiên chưa
             // từng bàn giao lần nào.
             already_handed_over(&s.session_id, pct, &done, &done_at),
-            screen.is_some(),
-            screen
-                .as_ref()
-                .is_some_and(|(t, _)| crate::keys::is_busy(t)),
-            screen.as_ref().is_some_and(|(_, c)| !c.is_empty()),
+            screen.as_ref(),
             s.pending_subagents,
             idle_sec,
             cfg.auto_handover.idle_sec,
@@ -4381,7 +4398,13 @@ pub enum AutoWhy {
     Subagents(usize),
     TooFresh(u64),
     AlreadyDone,
+    /// Phiên KHÔNG có tab Terminal nào còn sống — không có cửa sổ để đọc.
     NoWindow,
+    /// Có tab, nhưng lượt dò này không mang chữ màn. KHÁC `NoWindow`: cửa sổ có
+    /// thật, chỉ là huba không thấy được (luật 11b — phép đo hỏng không phải sự
+    /// thật về thế giới). Hai nhãn tách nhau vì gộp chúng chính là chỗ giấu lỗi
+    /// `keys_screen_read_failed` suốt 665/666 lượt (đo 07–08/11).
+    Blind,
 }
 
 /// Quyết định thuần: không đọc đĩa, không gọi ai — để test được từng điều kiện.
@@ -4393,9 +4416,7 @@ pub fn auto_handover_why(
     pct: u8,
     at_percent: u8,
     already_done: bool,
-    has_window: bool,
-    busy: bool,
-    asking: bool,
+    screen: Option<&crate::keys::Look>,
     subagents: usize,
     idle_sec: u64,
     need_idle_sec: u64,
@@ -4408,15 +4429,23 @@ pub fn auto_handover_why(
     }
     // Không đọc được màn thì KHÔNG đoán là rảnh. Đóng sổ giữa chừng làm mất
     // đúng thứ phiên đang làm, nên thiếu tín hiệu là lý do để KHÔNG làm.
-    if !has_window {
+    //
+    // `busy`/`asking` tính TỪ CHÍNH chữ ấy — một nguồn bằng chứng, không phải
+    // ba biến rời để chỗ gọi tự ghép (ghép sai thì hàm thuần không thấy được).
+    let Some(screen) = screen else {
         return AutoWhy::NoWindow;
-    }
-    if busy {
-        return AutoWhy::Busy;
-    }
-    // Đang hỏi thì càng không: đóng sổ lúc ấy là trả lời thay người dùng.
-    if asking {
-        return AutoWhy::Asking;
+    };
+    match screen {
+        crate::keys::Look::Blind { .. } => return AutoWhy::Blind,
+        crate::keys::Look::Saw { body, choices } => {
+            if crate::keys::is_busy(body) {
+                return AutoWhy::Busy;
+            }
+            // Đang hỏi thì càng không: đóng sổ lúc ấy là trả lời thay người dùng.
+            if !choices.is_empty() {
+                return AutoWhy::Asking;
+            }
+        }
     }
     if subagents > 0 {
         return AutoWhy::Subagents(subagents);

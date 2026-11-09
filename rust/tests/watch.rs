@@ -1008,21 +1008,26 @@ fn two_sessions_in_one_project_get_two_different_names() {
 #[test]
 fn a_session_that_refilled_after_a_handover_asks_again() {
     use huba::pipeline::{auto_handover_why, AutoWhy};
+    // Màn đọc được, không bận, không hỏi — bài này chỉ hỏi về cuốn sổ bàn giao.
+    let da_thay = || huba::keys::Look::Saw {
+        body: "✳ xong".to_string(),
+        choices: Vec::new(),
+    };
     // Ngay sau khi bàn giao ở 67%: im lặng, đúng.
     assert_eq!(
-        auto_handover_why(67, 60, true, true, false, false, 0, 300, 120),
+        auto_handover_why(67, 60, true, Some(&da_thay()), 0, 300, 120),
         AutoWhy::AlreadyDone
     );
     // Leo thêm vài điểm vẫn im — một lượt trả lời dài không được tự châm ngòi.
     assert_eq!(
-        auto_handover_why(74, 60, true, true, false, false, 0, 300, 120),
+        auto_handover_why(74, 60, true, Some(&da_thay()), 0, 300, 120),
         AutoWhy::AlreadyDone
     );
     // …nhưng leo hẳn một mốc (≥10) thì phải HỎI LẠI, không im nữa.
     // (Chỗ gọi tính lại cờ `already_done` theo `done_at + AUTO_RETRY_STEP`, nên
     // ở đây nó tới như `false`.)
     assert_eq!(
-        auto_handover_why(78, 60, false, true, false, false, 0, 300, 120),
+        auto_handover_why(78, 60, false, Some(&da_thay()), 0, 300, 120),
         AutoWhy::Do
     );
 }
