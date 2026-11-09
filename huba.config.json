@@ -90,7 +90,8 @@
     {
       "name": "acc9",
       "config_dir": "~/.claude-acc9",
-      "launch": "env $(cat $HOME/.opencode_acc9.env | xargs) CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4.1-flash CLAUDE_CONFIG_DIR=$HOME/.claude-acc9 claude --debug --model deepseek-v4.1-flash"
+      "launch": "env $(cat $HOME/.opencode_acc9.env | xargs) CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4.1-flash CLAUDE_CONFIG_DIR=$HOME/.claude-acc9 claude --debug --model deepseek-v4.1-flash",
+      "locked": true
     }
   ],
   "new_in_terminal": true,
