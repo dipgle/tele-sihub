@@ -945,14 +945,19 @@ fn page_shell(title: &str, flash: Option<(String, bool)>, body: &str) -> String 
 // ── Chạy thật ───────────────────────────────────────────────────────────────
 
 /// `huba accounts` — mở trang trên 127.0.0.1 rồi phục vụ tới khi Ctrl-C.
-pub fn serve(cfg: &Config, db: &Db) -> Result<()> {
+///
+/// `open_window` = true thì tự mở cửa sổ trình duyệt (người dùng gõ tay);
+/// `--no-open` truyền false — nghiệm thu headless đọc URL in ra, không bật cửa sổ.
+pub fn serve(cfg: &Config, db: &Db, mo_cua_so: bool) -> Result<()> {
     let (listener, port) = bind_loopback()?;
     let ticket = new_ticket(&listener);
     let url = format!("http://127.0.0.1:{port}/?t={ticket}");
     crate::logging::info("accounts_started", json!({ "port": port }));
     println!("\n  Mở trang quản lý tài khoản:\n\n    {url}\n");
     println!("  (chỉ máy này vào được — Ctrl-C để đóng)\n");
-    open_window(&url, "accounts");
+    if mo_cua_so {
+        open_window(&url, "accounts");
+    }
 
     let mut login = RealLogin { cfg, db };
     let mut st = PageState::new(cfg, ticket, format!("http://127.0.0.1:{port}"), &mut login);

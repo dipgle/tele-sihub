@@ -59,6 +59,10 @@ enum Command {
         /// In bảng ra stdout rồi thoát — cho script/test, không mở cổng
         #[arg(long)]
         print: bool,
+        /// Không tự mở cửa sổ trình duyệt — in URL rồi phục vụ. Cho nghiệm
+        /// thu headless (Playwright) và máy không có màn hình.
+        #[arg(long)]
+        no_open: bool,
     },
     /// Write huba.config.json + create the db
     Init {
@@ -178,12 +182,12 @@ fn real_main() -> Result<()> {
             Ok(())
         }
         Command::Setup => huba::setup::serve(&cfg.hub_home),
-        Command::Accounts { print } => {
+        Command::Accounts { print, no_open } => {
             if print {
                 print!("{}", huba::accounts_page::print_table(&cfg));
                 Ok(())
             } else {
-                huba::accounts_page::serve(&cfg, &db)
+                huba::accounts_page::serve(&cfg, &db, !no_open)
             }
         }
         Command::Init { force } => cmd_init(&cfg, force),
@@ -734,4 +738,22 @@ fn cmd_status(db: &Db) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--no-open` phải vào được CLI và bật đúng cờ — nghiệm thu headless dựa vào nó.
+    #[test]
+    fn accounts_co_co_no_open() {
+        let cli = Cli::try_parse_from(["huba", "accounts", "--no-open"]).unwrap();
+        match cli.command {
+            Command::Accounts { print, no_open } => {
+                assert!(!print, "--no-open không được bật --print");
+                assert!(no_open, "--no-open không tới được Command::Accounts");
+            }
+            _ => panic!("parse ra lệnh khác"),
+        }
+    }
 }
