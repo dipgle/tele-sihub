@@ -162,6 +162,20 @@ pub const ROUTES: &[Route] = &[
         help: "Đưa cửa sổ của phiên ra trước mặt (không chụp, không gõ gì)",
         listed: true,
     },
+    // 🔴 Quang 2026-11-10: *"thêm lệnh để đổi được cho phiên đang chạy"*. Gõ đúng
+    // `/effort <mức>` như ngồi ở máy (`effort::set_on_window`). `Rest`, không
+    // `RestRequired`: chạm từ menu ☰ chỉ gửi `/effort` trần, và câu trả lời khi ấy
+    // là danh sách mức — một lệnh trong menu mà bấm vào im lặng là lệnh hỏng.
+    Route {
+        name: "effort",
+        aliases: &["mucdo"],
+        legacy: &[],
+        kind: CommandKind::Effort,
+        arg: Arg::Rest,
+        usage: "<low|medium|high|xhigh|max>",
+        help: "Đổi mức effort của phiên đang theo (low…max) — từ lần gọi model kế",
+        listed: true,
+    },
     Route {
         name: "anh",
         aliases: &["photo", "screenshot"],

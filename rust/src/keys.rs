@@ -134,6 +134,26 @@ pub fn close_hidden_again(window: i64) -> Result<bool> {
 pub fn type_into(window: i64, text: &str) -> Result<()> {
     crate::keys_win::type_into(window, text)
 }
+// `/effort` mới đo trên TUI macOS (ESC+CR = Meta-Enter) — Windows chưa đo nên
+// nói thẳng là chưa có, không giả vờ gõ.
+#[cfg(windows)]
+pub fn type_held(_window: i64, _text: &str) -> Result<()> {
+    Err(anyhow!(
+        "chưa có trên Windows: gõ-mà-không-gửi mới đo trên macOS"
+    ))
+}
+#[cfg(windows)]
+pub fn delete_held(_window: i64, _n: usize) -> Result<()> {
+    Err(anyhow!(
+        "chưa có trên Windows: gõ-mà-không-gửi mới đo trên macOS"
+    ))
+}
+#[cfg(windows)]
+pub fn type_after_dels(_window: i64, _dels: usize, _text: &str) -> Result<()> {
+    Err(anyhow!(
+        "chưa có trên Windows: gõ-mà-không-gửi mới đo trên macOS"
+    ))
+}
 #[cfg(windows)]
 pub fn clear_box(window: i64) -> Result<Cleared> {
     crate::keys_win::clear_box(window)
@@ -3159,6 +3179,47 @@ pub fn quit_and_close(window: i64) -> Result<Closed> {
 #[cfg(target_os = "macos")]
 pub fn type_into(window: i64, text: &str) -> Result<()> {
     osascript(&do_script(window, &as_string(text)))?;
+    Ok(())
+}
+
+/// Gõ `text` vào ô mà KHÔNG gửi: `ESC` cuối lượt ghi biến cái CR không tắt được
+/// của `do script` thành một dấu XUỐNG DÒNG trong ô (ESC+CR = Meta-Enter).
+///
+/// 🔴 Đo 2026-11-10 trên TUI thật (`claude` 2.1.280): sau lượt này ô giữ
+/// `text` + `\n`, nên muốn rút lại thì xoá `len + 1` ký tự ([`delete_held`]).
+/// Và đừng để cái `\n` ấy nằm ĐẦU ô: lệnh `/exit` gõ sau một lượt xoá kiểu này
+/// tới model dưới dạng `"\n/exit"` — một TIN NHẮN, không phải lệnh.
+#[cfg(target_os = "macos")]
+pub fn type_held(window: i64, text: &str) -> Result<()> {
+    osascript(&do_script(
+        window,
+        &format!("({} & (ASCII character 27))", as_string(text)),
+    ))?;
+    Ok(())
+}
+
+/// Xoá `n` ký tự cuối ô rồi dừng (ESC chặn cú CR — xem [`type_held`]).
+#[cfg(target_os = "macos")]
+pub fn delete_held(window: i64, n: usize) -> Result<()> {
+    let dels: String = std::iter::repeat_n('\u{7f}', n).collect();
+    osascript(&do_script(
+        window,
+        &format!("({} & (ASCII character 27))", as_string(&dels)),
+    ))?;
+    Ok(())
+}
+
+/// `dels` phím xoá rồi `text`, trong MỘT lượt ghi, kèm cú CR của `do script`.
+///
+/// Dành cho ô mà màn đọc ra là TRỐNG: thứ còn lại trong đó (nếu có) chỉ là
+/// dấu xuống dòng vô hình [`type_held`]/[`clear_box`] để lại — đúng thứ biến
+/// một lệnh `/…` thành tin nhắn. Xoá trước trong cùng lượt thì ký tự đầu ô
+/// chắc chắn là ký tự đầu của `text`.
+#[cfg(target_os = "macos")]
+pub fn type_after_dels(window: i64, dels: usize, text: &str) -> Result<()> {
+    let mut payload: String = std::iter::repeat_n('\u{7f}', dels).collect();
+    payload.push_str(text);
+    osascript(&do_script(window, &as_string(&payload)))?;
     Ok(())
 }
 

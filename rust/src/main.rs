@@ -127,6 +127,22 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Đổi mức effort của một phiên ĐANG chạy — gõ `/effort <mức>` vào ô nhập của nó
+    ///
+    /// Quang 2026-11-10: *"thêm lệnh để đổi được cho phiên đang chạy ghi vào quy
+    /// tắc để tự model đánh giá việc nào cần ở mức độ nào để chuyển"*. Cùng lõi
+    /// với route `/effort` (`effort::set_on_window`); cửa này để CHÍNH phiên gọi
+    /// từ Bash (`huba effort xhigh`) — không gõ id thì đo phiên của terminal này,
+    /// như `huba handover`. Có hiệu lực từ lần gọi model KẾ (đo: ngay sau khi
+    /// lệnh Bash này trả về, trong cùng lượt). Thoát 0 đã đổi · 1 từ chối ·
+    /// 2 đã gõ mà không thấy xác nhận.
+    Effort {
+        /// low · medium · high · xhigh · max
+        level: String,
+        /// id phiên (đủ hoặc rút gọn). Bỏ trống = phiên đang chạy ở terminal này
+        #[arg(short = 's', long = "session")]
+        session: Option<String>,
+    },
     /// Windows: ĐO trên máy thật trước khi tin bản Windows — bảng tiến trình,
     /// gõ + đọc console (cổ điển VÀ Windows Terminal), `claude --version`, tên
     /// thư mục nhật ký. Không cần cấu hình. Thoát 0 đạt hết · 1 có mục hỏng ·
@@ -204,6 +220,9 @@ fn real_main() -> Result<()> {
             no_switch,
             dry_run,
         } => cmd_handover(&db, &cfg, session.as_deref(), &acc, no_switch, dry_run),
+        Command::Effort { level, session } => {
+            std::process::exit(cmd_effort(&cfg, &level, session.as_deref()))
+        }
         // Đã xử lý TRƯỚC `config::load` (đầu `real_main`) — tới được đây là lỗi luồng.
         Command::WindowsTuKiem { .. } => Err(anyhow::anyhow!(
             "windows-tu-kiem phải được xử lý trước khi nạp cấu hình"
@@ -293,6 +312,69 @@ fn cmd_windows_tu_kiem(chay: Option<&std::path::Path>) -> i32 {
 fn cmd_windows_tu_kiem(_chay: Option<&std::path::Path>) -> i32 {
     eprintln!("windows-tu-kiem chỉ chạy trên Windows");
     2
+}
+
+/// `huba effort <mức> [-s id]` — xem doc-comment của `Command::Effort`.
+///
+/// Mức sai ⟹ thoát 1 TRƯỚC khi chụp danh sách phiên (lượt ấy spawn `claude
+/// agents` cho mọi tài khoản). Không tìm được phiên/cửa sổ ⟹ 2: đó là "không
+/// đo được", không phải "đã từ chối" (luật 13②).
+fn cmd_effort(cfg: &Config, level: &str, session: Option<&str>) -> i32 {
+    let level = match huba::effort::parse_level(level) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    let snap = huba::sessions::snapshot(cfg);
+    let target = match session {
+        Some(want) => snap
+            .sessions
+            .iter()
+            .find(|s| s.session_id == want)
+            .or_else(|| {
+                snap.sessions
+                    .iter()
+                    .find(|s| s.session_id.starts_with(want))
+            }),
+        None => huba::sessions::session_of_this_terminal(&snap.sessions),
+    };
+    let Some(target) = target else {
+        eprintln!(
+            "KHÔNG ĐO ĐƯỢC phiên nào {} — gõ trong chính phiên ấy (`huba effort {level}` từ Bash) \
+             hoặc kèm `-s <id>`.",
+            session
+                .map(|s| format!("khớp '{s}'"))
+                .unwrap_or_else(|| "đang chạy ở terminal này".to_string())
+        );
+        return 2;
+    };
+    let who = huba::sessions::shown(target);
+    let w = match huba::keys::window_of(&target.tty) {
+        Ok(Some(w)) => w,
+        Ok(None) => {
+            eprintln!(
+                "KHÔNG ĐO ĐƯỢC cửa sổ Terminal của {who} (tty {})",
+                target.tty
+            );
+            return 2;
+        }
+        Err(e) => {
+            eprintln!("KHÔNG ĐO ĐƯỢC cửa sổ của {who}: {e}");
+            return 2;
+        }
+    };
+    match huba::effort::set_on_window(w, level) {
+        Ok(out) => {
+            println!("{}", out.say(&who, level));
+            out.exit_code()
+        }
+        Err(e) => {
+            eprintln!("⚠ {who}: không gõ được `/effort {level}` — {e}");
+            2
+        }
+    }
 }
 
 /// `huba handover [id] [-a acc] [--no-switch]` — xem doc-comment của

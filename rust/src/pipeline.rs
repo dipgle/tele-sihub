@@ -13036,6 +13036,44 @@ pub fn pick_keys(from: usize, to: usize, opt: usize) -> Vec<String> {
     keys
 }
 
+/// `/effort <mức>` trên cửa sổ đã ghép — lõi ở [`crate::effort::set_on_window`].
+///
+/// Trống mức ⟹ trả danh sách mức thay vì im lặng (menu ☰ chỉ gửi `/effort`).
+fn effort_reply(s: &crate::sessions::LiveSession, w: i64, typed: &str) -> String {
+    let who = crate::sessions::shown(s);
+    if typed.trim().is_empty() {
+        return format!(
+            "⚙️ /effort <mức> — đổi mức effort của {who}, có hiệu lực từ lần gọi model kế. \
+             Mức: {}.\n\
+             Phiên đã có lịch sử thì lần gọi kế đọc lại toàn bộ (mất bộ đệm) — đổi ở ranh giới việc.",
+            crate::effort::LEVELS.join(" · ")
+        );
+    }
+    let level = match crate::effort::parse_level(typed) {
+        Ok(l) => l,
+        Err(e) => return format!("⚠ {e}"),
+    };
+    match crate::effort::set_on_window(w, level) {
+        Ok(out) => {
+            logging::info(
+                "effort_route_done",
+                json!({ "session": s.session_id, "level": level, "exit": out.exit_code() }),
+            );
+            out.say(&who, level)
+        }
+        Err(e) => {
+            logging::error(
+                "effort_route_failed",
+                json!({ "session": s.session_id, "level": level, "err": e.to_string() }),
+            );
+            format!(
+                "⚠ {who}: không gõ được `/effort {level}` — {}",
+                crate::exec::truncate(&e.to_string(), 200)
+            )
+        }
+    }
+}
+
 /// `/tab <n>` — đưa con trỏ sang tab thứ `n` của bảng hỏi, KHÔNG chọn gì.
 ///
 /// 🔴 Hà 2026-08-19: *"muốn chuyển tab thì bấm phím phải trái, giờ qua tele thì
@@ -15606,6 +15644,7 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
             | CommandKind::Shot
             | CommandKind::Photo
             | CommandKind::Front
+            | CommandKind::Effort
             | CommandKind::Clean
             | CommandKind::Clear
             | CommandKind::Tab
@@ -15887,6 +15926,8 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                                         crate::exec::truncate(&e.to_string(), 420)
                                     ),
                                 }
+                            } else if matches!(cmd.kind, CommandKind::Effort) {
+                                effort_reply(&s, w, &typed)
                             } else if matches!(cmd.kind, CommandKind::Clean) {
                                 // 🔴 `/clean` — dọn HÀNG CHỜ, và nói đúng con số.
                                 //

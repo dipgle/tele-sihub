@@ -104,6 +104,12 @@ pub enum CommandKind {
     ///
     /// `focus` là một alias có chủ ý — đó là từ chủ máy gõ ra khi cần việc này.
     Front,
+    /// `/effort <mức>` — gõ đúng `/effort <mức>` vào ô nhập của phiên đang theo.
+    ///
+    /// 🔴 Quang 2026-11-10: *"thêm lệnh để đổi được cho phiên đang chạy"*. Lõi ở
+    /// `effort::set_on_window` — chung với `huba effort` (phiên tự đổi mức của
+    /// chính nó từ Bash). Có hiệu lực từ lần gọi model KẾ.
+    Effort,
     /// `/key <tên phím>` — một phím điều khiển: up · down · enter · esc · tab ·
     /// space · 1-9. Hộp chọn của `claude` đi bằng mũi tên, gửi chữ "xuống" vào
     /// đó thì nó gõ ra chữ chứ không di chuyển.

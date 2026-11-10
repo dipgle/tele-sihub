@@ -43,6 +43,7 @@ pub mod config;
 /// Xác nhận lần hai qua Telegram cho lệnh không lùi lại được.
 pub mod confirm;
 pub mod db;
+pub mod effort;
 pub mod exec;
 /// Gõ phím vào cửa sổ terminal của một phiên, và chụp lại cửa sổ ấy.
 ///
