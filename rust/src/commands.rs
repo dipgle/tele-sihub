@@ -404,7 +404,9 @@ pub const ROUTES: &[Route] = &[
         // Dạng cũ `detail|khoa|mo <tên>` vẫn nhận — `pipeline::accounts_order`.
         arg: Arg::Rest,
         usage: "[<tài khoản> [-a | -b | -l [mã] | -k <API key>|xoa]]",
-        help: "Các tài khoản Claude trên máy · <tên> = chi tiết + email + ĐO LẠI hạn mức (kể cả đang khoá) · <tên> -b = khoá · <tên> -a = mở · <tên> -l = đăng nhập lại · <tên> -k <API key> = chạy bằng API key (tính tiền; -k xoa = về gói) · thêm/sửa/model: chạy `huba accounts` trên máy",
+        // ≤ 256 ký tự — `every_menu_description_fits_telegram_limit` (vượt ⟹ Telegram
+        // từ chối CẢ menu; bản 270 ký tự của `f11c0a9` đã làm đúng thế 10/11).
+        help: "Tài khoản Claude trên máy · <tên> = chi tiết + email + ĐO LẠI hạn mức (cả khi khoá) · <tên> -b = khoá · <tên> -a = mở · <tên> -l = đăng nhập lại · <tên> -k <API key> = dùng API key (tính tiền; -k xoa = về gói) · thêm/sửa/model: `huba accounts` trên máy",
         listed: true,
     },
     Route {
@@ -614,6 +616,29 @@ mod tests {
             dem >= 30,
             "chỉ chấm được {dem} tên — phép quét đang nhìn nhầm chỗ"
         );
+    }
+
+    /// 🔴 Mô tả mỗi lệnh khai với Telegram: 1–256 ký tự (Bot API `BotCommand`).
+    ///
+    /// Vượt MỘT dòng là `setMyCommands` từ chối CẢ danh sách — menu ☰ trên điện
+    /// thoại đứng nguyên bản cũ. Đo 2026-11-10 01:57Z, lượt cài đầu tiên sau
+    /// `f11c0a9`: `/accounts` 270 ký tự ⟹ `telegram_commands_register_failed`
+    /// *"command description length must not exceed 256"*, trong khi bài khoá
+    /// TÊN ngay trên vẫn xanh. Đếm theo UTF-16 — đơn vị Telegram đo chữ.
+    #[test]
+    fn every_menu_description_fits_telegram_limit() {
+        let rows = for_telegram();
+        assert!(
+            rows.len() >= 15,
+            "chỉ {} dòng menu — quét nhầm chỗ",
+            rows.len()
+        );
+        let qua: Vec<String> = rows
+            .iter()
+            .filter(|(_, d)| !(1..=256).contains(&d.encode_utf16().count()))
+            .map(|(n, d)| format!("/{n}: {} ký tự", d.encode_utf16().count()))
+            .collect();
+        assert!(qua.is_empty(), "mô tả ngoài 1–256: {qua:?}");
     }
 
     /// 🔴 Cái từ chủ máy GÕ RA phải dẫn tới đâu đó.
