@@ -1084,6 +1084,16 @@ fn check_projects(p: &Probe) -> Check {
 
 fn check_login(p: &Probe) -> Check {
     let path = format!("{}/.claude.json", p.dir);
+    // Chạy `apiKeyHelper` thì sổ KHÔNG có `oauthAccount` là đúng — chấm ✗ ở đây
+    // là một lời báo đỏ bịa. Chỉ in NHÃN, không bao giờ in khoá (luật 4).
+    if let Some(label) = &p.api_key {
+        return Check {
+            code: "login",
+            state: CheckState::Ok,
+            text: format!("dùng {label} — không cần đăng nhập gói"),
+            path: format!("{}/settings.json", p.dir),
+        };
+    }
     let (state, text) = match &p.quota {
         None => (
             CheckState::Unknown,
@@ -1629,6 +1639,50 @@ mod tests {
             "không được bịa 0%: {}",
             login.text
         );
+    }
+
+    #[test]
+    fn tai_khoan_api_key_khong_can_dang_nhap_goi() {
+        // acc9 chạy `apiKeyHelper`: sổ không có `oauthAccount` là ĐÚNG, không phải hỏng.
+        let a = acc("acc9");
+        let mut q = quota_mau("acc9");
+        q.chua_dung_duoc = Some("chưa đăng nhập (sổ không có oauthAccount)".into());
+        let p = Probe {
+            dir: "/tmp/x".into(),
+            dir_exists: true,
+            quota: Some(q),
+            api_key: Some("API key …WXYZ".into()),
+            ..Default::default()
+        };
+        let login = tim(&checks(&a, &p), "login").clone();
+        assert_eq!(login.state, CheckState::Ok, "{login:?}");
+        assert!(login.text.contains("API key …WXYZ"), "{}", login.text);
+        assert!(!login.text.contains("oauthAccount"), "{}", login.text);
+
+        // Vế ngược — cùng sổ, KHÔNG có key: vẫn ✗ nguyên văn như cũ.
+        let p2 = Probe { api_key: None, ..p };
+        let login2 = tim(&checks(&a, &p2), "login").clone();
+        assert_eq!(login2.state, CheckState::Fail, "{login2:?}");
+        assert_eq!(login2.text, "chưa đăng nhập (sổ không có oauthAccount)");
+    }
+
+    /// Có API key là đủ để `login` xanh — kể cả khi sổ hạn mức CHƯA đo. Vế
+    /// ngược: không key + chưa đo vẫn là ⚠ (Unknown), không thành ✓.
+    #[test]
+    fn api_key_du_de_login_xanh_ca_khi_chua_do_so_han_muc() {
+        let a = acc("acc9");
+        let p = Probe {
+            dir: "/tmp/x".into(),
+            dir_exists: true,
+            quota: None,
+            api_key: Some("API key …WXYZ".into()),
+            ..Default::default()
+        };
+        assert_eq!(tim(&checks(&a, &p), "login").state, CheckState::Ok);
+        let p2 = Probe { api_key: None, ..p };
+        let login2 = tim(&checks(&a, &p2), "login").clone();
+        assert_eq!(login2.state, CheckState::Unknown, "{login2:?}");
+        assert!(login2.text.contains("chưa đo sổ hạn mức"), "{login2:?}");
     }
 
     #[test]
