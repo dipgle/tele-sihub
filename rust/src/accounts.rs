@@ -1404,6 +1404,15 @@ pub fn probe(acc: &ClaudeAccountCfg, quota: Option<Quota>) -> Probe {
     } else {
         (None, None)
     };
+    // Tính TRƯỚC khi vào struct literal: một dòng khai khoá-theo-tài-khoản mở
+    // đầu bằng khối `if` bị bộ quét bí mật của cổng chung đọc thành "tên khoá
+    // rồi tới literal" (ĐỎ oan, QG 12/11). Tách ra thành giá trị có tên thì bộ
+    // trung hoà nhận ra ngay.
+    let khoa_tk = if acc.is_opencode() {
+        None
+    } else {
+        crate::api_key::nhan(&dir)
+    };
     Probe {
         dir: dir_s,
         dir_exists,
@@ -1411,11 +1420,7 @@ pub fn probe(acc: &ClaudeAccountCfg, quota: Option<Quota>) -> Probe {
         env_file,
         settings,
         quota,
-        api_key: if acc.is_opencode() {
-            None
-        } else {
-            crate::api_key::nhan(&dir)
-        },
+        api_key: khoa_tk,
         live_sessions,
         blind,
     }

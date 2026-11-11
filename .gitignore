@@ -27,3 +27,6 @@ hub.config.json
 memory/
 .mcp.json
 .quality-gate.env
+
+# Cấu hình cục bộ của CLI (đường dẫn máy này) — không lên kho công khai.
+.claude/
