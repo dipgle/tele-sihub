@@ -5633,6 +5633,41 @@ pub fn bg_shot_say(ten: &str, said: &str, at: Option<&str>, now_ms: i64) -> Stri
     )
 }
 
+/// Câu trả lời cho `📷 /shot` trên một phiên **opencode** chưa gắn cửa sổ.
+///
+/// 🔴 Hà 2026-11-12 06:41 (ảnh): huba đáp *"là phiên NỀN (host: terminal) — không
+/// có màn để chụp, và nhật ký của nó CHƯA có dòng nào"* — trong khi hàng ấy mang
+/// `host: terminal` và sổ opencode ĐÃ có lời cuối. Hai câu sai trong một tin:
+/// opencode không có khái niệm "phiên nền", và "nhật ký" ở đây là **sổ SQLite**
+/// chứ không phải tệp JSONL của Claude — `last_text` đã đọc được rồi.
+///
+/// `said` = `s.last_text` (lượt assistant cuối trong sổ). `None` = sổ thật sự
+/// chưa có lượt nào, và khi ấy phải nói đúng thế, không mượn chữ "phiên nền".
+pub fn opencode_shot_say(ten: &str, tty: &str, said: Option<&str>) -> String {
+    // Hai sự thật khác nhau: chưa từng gắn cửa sổ, và đã gắn nhưng cửa sổ đã
+    // đóng. Đo 12/11: hàng `[projects]·e349d2d1` mang `tty=ttys025` trong khi
+    // cửa sổ ấy đã biến mất — gọi nó là "chưa gắn cửa sổ" là nói sai.
+    let cua_so = if tty.trim().is_empty() {
+        "CHƯA gắn cửa sổ".to_string()
+    } else {
+        format!("cửa sổ {} không còn mở", tty.trim())
+    };
+    match said.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) => format!(
+            // Hà 12/11: *"rõ ràng là nhật ký chung"* — đúng, sổ opencode là MỘT
+            // tệp SQLite cho mọi phiên của tài khoản; ta lọc theo mã phiên. Bỏ
+            // chữ "SỔ PHIÊN" tự đặt và đừng đối chiếu với JSONL của Claude.
+            "🗣 {ten} là phiên opencode — {cua_so}, nên đây không phải màn của nó.\n\
+             Lời cuối của nó trong nhật ký chung (lọc theo mã phiên):\n\n{}",
+            crate::exec::truncate(t, 1200)
+        ),
+        None => format!(
+            "🗣 {ten} là phiên opencode — {cua_so}, và sổ phiên của nó chưa có lượt \
+             assistant nào. Giao cho nó một việc (gõ trong cửa sổ của nó) trước đã."
+        ),
+    }
+}
+
 /// Dòng chân cho những phiên KHÔNG có cửa sổ nào trên màn.
 ///
 /// 🔴 Hà 2026-09-06: *"Mọi thứ tôi bảo phải đọc ở terminal làm gốc cơ mà"* ·
@@ -17771,7 +17806,18 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                         // thật, chỉ không có cửa sổ Terminal nào.
                         Ok(None) => {
                             let ten = crate::sessions::shown(&s);
-                            if matches!(cmd.kind, CommandKind::Shot | CommandKind::Photo) {
+                            if s.kind == "opencode" {
+                                // Nguồn DUY NHẤT của loại phiên này là sổ opencode
+                                // (`last_text`); không có tệp JSONL để hỏi.
+                                if matches!(cmd.kind, CommandKind::Shot | CommandKind::Photo) {
+                                    opencode_shot_say(&ten, &s.tty, s.last_text.as_deref())
+                                } else {
+                                    format!(
+                                        "⚠ {ten} là phiên opencode — CHƯA gắn cửa sổ Terminal nên không gõ vào được.\n\
+                                         Đọc thì vẫn được: 📷 /shot lấy lời cuối từ sổ phiên, /ask hỏi bên lề.",
+                                    )
+                                }
+                            } else if matches!(cmd.kind, CommandKind::Shot | CommandKind::Photo) {
                                 match crate::sessions::last_say_at_by_id(
                                     cfg,
                                     &s.session_id,
@@ -20252,6 +20298,35 @@ pub fn run_once(db: &Db, cfg: &Config) -> Result<CycleSummary> {
 //    hay vào một dòng `retain` cụ thể: vá lại bằng một cách viết khác mà vẫn gỡ
 //    nút thì nó vẫn phải ĐỎ.
 // ══════════════════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod opencode_shot_say_tests {
+    use super::*;
+
+    /// Câu trả lời cho phiên opencode không được mượn chữ "phiên NỀN", và phải
+    /// nói đúng nguồn: SỔ PHIÊN, không phải nhật ký JSONL của Claude.
+    /// (Ảnh Hà 12/11 06:41: huba đáp "phiên NỀN (host: terminal) … nhật ký CHƯA
+    /// có dòng nào" — trong khi `host: terminal` và sổ đã có lời cuối.)
+    #[test]
+    fn cau_shot_opencode_noi_dung_nguon_va_khong_goi_la_phien_nen() {
+        let co_chu = opencode_shot_say("[projects]·e349d2d1", "ttys025", Some("  Đã xong việc.  "));
+        assert!(co_chu.contains("Đã xong việc."), "{co_chu}");
+        assert!(
+            !co_chu.contains("NỀN"),
+            "opencode không có phiên nền: {co_chu}"
+        );
+        assert!(co_chu.contains("nhật ký chung"), "{co_chu}");
+        assert!(
+            co_chu.contains("ttys025"),
+            "phải nói cửa sổ nào đã đóng: {co_chu}"
+        );
+
+        let rong = opencode_shot_say("[projects]·e349d2d1", "", Some("   "));
+        assert!(!rong.contains("NỀN"), "{rong}");
+        assert!(rong.contains("CHƯA gắn cửa sổ"), "{rong}");
+        assert!(rong.contains("chưa có lượt"), "{rong}");
+    }
+}
+
 #[cfg(test)]
 mod cong_dich_cham_lua_chon {
     use super::*;
