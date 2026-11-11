@@ -131,7 +131,9 @@ fn doi_co_chi_duoc_nam_trong_open_window() {
         text.len()
     );
     assert!(
-        text.contains("contents of selected tab"),
+        // Từ 11/11 câu đọc màn nhắm tab theo tty (`contents of {tab}`, tab =
+        // `keys::tab_ref`) — không còn `contents of selected tab`.
+        text.contains("return contents of {tab}"),
         "keys.rs không còn câu AppleScript đọc màn — phép quét đang nhìn nhầm chỗ"
     );
     // 🔴 KHÔNG lấy `open_window` ĐẦU TIÊN — vá 2026-09-09.

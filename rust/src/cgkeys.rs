@@ -71,6 +71,52 @@ extern "C" {
     /// nào đang nhận phím trên cả máy — tức nếu chủ máy vừa chuyển sang trình
     /// duyệt thì phím rơi vào đó. Bản này chỉ tiến trình Terminal nhận được.
     fn CGEventPostToPid(pid: i32, event: CfRef);
+    /// Gắn phím bổ trợ (⌘…) vào một sự kiện — xem [`post_command`].
+    fn CGEventSetFlags(event: CfRef, flags: u64);
+}
+
+/// `kCGEventFlagMaskCommand`.
+const FLAG_COMMAND: u64 = 0x0010_0000;
+
+/// Tên phím đi kèm ⌘ mà huba được gửi. Hẹp có chủ ý, cùng lý do với
+/// [`keycode`]: ⌘T là "tab mới" của Terminal — thứ DUY NHẤT huba cần (11/11,
+/// Quang: *"mở chung 1 cửa sổ thôi"*; Terminal không có lệnh AppleScript nào
+/// mở tab). Không có ⌘W, ⌘Q: phím đóng không bao giờ đi đường này.
+pub fn command_keycode(name: &str) -> Option<u16> {
+    Some(match name {
+        "t" => 17,
+        _ => return None,
+    })
+}
+
+/// Gửi ⌘`name` vào tiến trình `pid`. Luật cũ của tệp giữ nguyên: kiểm tên phím
+/// TRƯỚC khi gửi, gửi rồi mới hỏi quyền, và nói ra khi thiếu quyền.
+pub fn post_command(pid: i32, name: &str) -> Result<()> {
+    let code = command_keycode(name).ok_or_else(|| anyhow!("phím ⌘ lạ: {name}"))?;
+    // SAFETY: như `post` — mọi con trỏ được giải phóng ngay trong hàm, NULL
+    // được kiểm trước khi dùng.
+    unsafe {
+        let source = CGEventSourceCreate(1);
+        for down in [true, false] {
+            let ev = CGEventCreateKeyboardEvent(source, code, down);
+            if ev.is_null() {
+                if !source.is_null() {
+                    CFRelease(source);
+                }
+                bail!("không dựng được sự kiện bàn phím cho ⌘{name}");
+            }
+            CGEventSetFlags(ev, FLAG_COMMAND);
+            CGEventPostToPid(pid, ev);
+            CFRelease(ev);
+        }
+        if !source.is_null() {
+            CFRelease(source);
+        }
+    }
+    if !trusted() {
+        bail!("hubad chưa có quyền Trợ năng nên ⌘{name} KHÔNG tới nơi");
+    }
+    Ok(())
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]

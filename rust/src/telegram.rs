@@ -51,7 +51,7 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -1172,6 +1172,28 @@ static BOT_USERNAME: OnceLock<String> = OnceLock::new();
 /// `getMe`, và trả `false` khi đã có người khai trước.
 pub fn set_bot_username(name: &str) -> bool {
     BOT_USERNAME.set(name.to_string()).is_ok()
+}
+
+/// Nhịp lùi giữa hai lượt hỏi lại `getMe` khi chưa biết tên bot.
+pub const HOI_LAI_TEN_BOT_SAU: Duration = Duration::from_secs(30);
+
+/// Có nên hỏi lại `getMe` lượt này không.
+///
+/// 🔴 Quang 2026-11-11, sau hai lần máy sập: *"Sao cứ khởi động lại máy danh
+/// sách phiên lại thành thế này"* · *"Phải chạy lệnh upgrade"*. hubd lên lúc
+/// đăng nhập, TRƯỚC khi mạng có ⟹ `getMe` duy nhất hỏng (`client error
+/// (Connect)`) ⟹ `BOT_USERNAME` rỗng mãi ⟹ mọi `/session` rơi về khối nút
+/// (`session_taps_partial linked:0`) tới khi có người khởi động lại hubd.
+/// Chưa biết tên thì hỏi lại — nhưng có nhịp lùi, kẻo mạng chập là gõ cửa
+/// Telegram mỗi vòng.
+pub fn can_hoi_lai_ten_bot(da_biet: bool, lan_truoc: Option<Instant>, bay_gio: Instant) -> bool {
+    if da_biet {
+        return false;
+    }
+    match lan_truoc {
+        None => true,
+        Some(t) => bay_gio.saturating_duration_since(t) >= HOI_LAI_TEN_BOT_SAU,
+    }
 }
 
 pub fn deep_link(payload: &str) -> Option<String> {
@@ -2412,13 +2434,12 @@ impl Inbox {
         Some(c)
     }
 
-    fn read_forever(&self) {
-        let Some(client) = self.client() else { return };
-        // NÓI RA đang cầm bot nào. Không có dòng này thì câu hỏi "huba đã nhận
-        // token mới chưa" không trả lời được từ bên ngoài — đúng chỗ Hà mắc
-        // 2026-08-12 khi đổi bot: gõ `/start` mà im, và mọi giả thuyết (token
-        // sai · chưa khởi động lại · chat_id lệch) đều nghe hợp lý như nhau.
-        // Chỉ tên công khai của bot, không bao giờ token (luật §4).
+    /// NÓI RA đang cầm bot nào, và giữ lại tên để dựng deep link. Không có dòng
+    /// log này thì câu hỏi "huba đã nhận token mới chưa" không trả lời được từ
+    /// bên ngoài — đúng chỗ Hà mắc 2026-08-12 khi đổi bot: gõ `/start` mà im, và
+    /// mọi giả thuyết (token sai · chưa khởi động lại · chat_id lệch) đều nghe
+    /// hợp lý như nhau. Chỉ tên công khai của bot, không bao giờ token (luật §4).
+    fn hoi_ten_bot(&self, client: &reqwest::blocking::Client) {
         match client
             .get(self.api("getMe"))
             .send()
@@ -2449,9 +2470,16 @@ impl Inbox {
             },
             Err(e) => logging::warn(
                 "telegram_getme_failed",
-                json!({ "err": logging::redact(&e.to_string()) }),
+                json!({ "err": logging::redact(&e.to_string()),
+                        "effect": "chưa biết tên bot ⟹ danh sách phiên rơi về khối nút — vòng đọc hỏi lại sau lượt getUpdates thành công" }),
             ),
         }
+    }
+
+    fn read_forever(&self) {
+        let Some(client) = self.client() else { return };
+        self.hoi_ten_bot(&client);
+        let mut lan_hoi_ten = Some(Instant::now());
         // 🔴 KHÔNG nhảy con dấu về hiện tại nữa — và đây là một tin nhắn ĐÃ MẤT
         // THẬT. Hà 2026-08-14, ngay sau một lượt cài lại: *"Vừa rồi đã dừng ko
         // nhận được tin nhắn"*.
@@ -2506,6 +2534,15 @@ impl Inbox {
                 // Telegram 1200 lần một giờ để nghe cùng một câu từ chối.
                 std::thread::sleep(Duration::from_secs(30));
                 continue;
+            }
+            // Lượt `getMe` lúc khởi động hỏng (hubd lên lúc đăng nhập, trước khi
+            // mạng có — 11/11) thì hỏi lại ở ĐÂY: `getUpdates` vừa thành công
+            // tức mạng đã có. Không hỏi lại thì danh sách phiên mất liên kết tới
+            // lần khởi động lại hubd kế tiếp (`can_hoi_lai_ten_bot`).
+            let bay_gio = Instant::now();
+            if can_hoi_lai_ten_bot(BOT_USERNAME.get().is_some(), lan_hoi_ten, bay_gio) {
+                lan_hoi_ten = Some(bay_gio);
+                self.hoi_ten_bot(&client);
             }
             let empty = vec![];
             let updates = resp

@@ -435,6 +435,25 @@ pub fn pin_bg_rebuild_allowed(last: Option<(i64, u32)>, now: i64) -> bool {
     }
 }
 
+/// Nhịp hỏi Telegram "tin nào đang nằm trên đỉnh buồng" (`getChat`).
+pub const PIN_CHECK_GAP_SEC: i64 = 300;
+
+/// Sổ nhịp của lượt hỏi đỉnh buồng — trong bộ nhớ, khởi động lại thì hỏi ngay.
+static PIN_CHECK: std::sync::Mutex<Option<i64>> = std::sync::Mutex::new(None);
+
+/// Tin trong sổ KHÔNG còn nằm trên đỉnh buồng chat — hàm THUẦN.
+///
+/// 🔴 Quang 2026-11-11: *"mất gim tin nhắn thông tin phiên đang theo rồi ko tự
+/// tạo lại?"*. Đo trong log: tin gim 77628 vẫn SỬA được (07:20–07:21) ⟹ tin
+/// còn sống, nên cả hai cửa dựng lại cũ (`pin_is_gone` khi sửa hỏng · sắp tới
+/// hạn tự xoá) đều không thấy gì. Tin bị GỠ GIM thì sửa vẫn được — chỉ `getChat`
+/// mới nói được nó còn trên đỉnh hay không.
+///
+/// `tren_dinh = None` (buồng không gim gì) cũng là bị gỡ.
+pub fn pin_bi_go(so: i64, tren_dinh: Option<i64>) -> bool {
+    tren_dinh != Some(so)
+}
+
 /// Sổ nhịp của [`pin_bg_rebuild_allowed`]. Trong bộ nhớ là đủ: khởi động lại
 /// thì quên, và cái giá là đúng MỘT lượt dựng lại sớm.
 static PIN_BG_REBUILD: std::sync::Mutex<Option<(i64, u32)>> = std::sync::Mutex::new(None);
@@ -623,7 +642,7 @@ pub fn refresh_pin(db: &Db, cfg: &Config, live: &crate::sessions::SessionsSnapsh
     if !cfg.pin_following {
         return;
     }
-    let Some((_, cu)) = pinned_message(db) else {
+    let Some((mid, cu)) = pinned_message(db) else {
         return;
     };
     let sid = db.cursor_or_log(FOCUS_SESSION_KEY).unwrap_or_default();
@@ -637,6 +656,53 @@ pub fn refresh_pin(db: &Db, cfg: &Config, live: &crate::sessions::SessionsSnapsh
     let Some(tg) = crate::telegram::inbox() else {
         return;
     };
+    // ⑥ tin trong sổ bị GỠ GIM (11/11): sửa vẫn được nên ②–⑤ không thấy gì.
+    // Hỏi `getChat` mỗi `PIN_CHECK_GAP_SEC`; đỉnh buồng không phải tin trong sổ
+    // ⟹ gim lại đúng tin ấy (không đẻ tin mới). Tin đã mất thì dựng lại.
+    // ⚠ Xoá lịch sử phía điện thoại thì `getChat` VẪN trả tin cũ (đo 16/10) —
+    // ca ấy vẫn đi đường nút START.
+    let bay_gio = chrono::Utc::now().timestamp();
+    let den_luot = {
+        let mut g = PIN_CHECK.lock().unwrap_or_else(|e| e.into_inner());
+        let den = g.is_none_or(|t| bay_gio - t >= PIN_CHECK_GAP_SEC);
+        if den {
+            *g = Some(bay_gio);
+        }
+        den
+    };
+    if den_luot {
+        match tg.pinned_message_id() {
+            Ok(tren_dinh) if pin_bi_go(mid, tren_dinh) => {
+                logging::warn(
+                    "pin_found_unpinned",
+                    json!({ "so": mid, "tren_dinh": tren_dinh,
+                            "effect": "gim lại đúng tin trong sổ" }),
+                );
+                match tg.pin(mid) {
+                    Ok(()) => logging::info("pin_restored", json!({ "message_id": mid })),
+                    Err(e) if e.contains("not found") => {
+                        logging::info("pin_restore_gone", json!({ "message_id": mid, "err": e }));
+                        pin_rebuild_bg(db, tg, &sid, &moi, VI_SAO_DA_MAT);
+                        return;
+                    }
+                    Err(e) => logging::error(
+                        "pin_restore_failed",
+                        json!({ "message_id": mid, "err": e,
+                                "effect": "đỉnh buồng chat vẫn trống — lượt kiểm sau thử lại" }),
+                    ),
+                }
+            }
+            // Ghi cả lúc ổn: không có dòng này thì "đã hỏi, vẫn gim" và "chưa
+            // hề hỏi" đọc y hệt nhau trong log (đo 11/11 — đúng chỗ mù ấy).
+            Ok(tren_dinh) => {
+                logging::info("pin_check_ok", json!({ "so": mid, "tren_dinh": tren_dinh }))
+            }
+            Err(e) => logging::warn(
+                "pin_check_failed",
+                json!({ "err": e, "effect": "không biết tin gim còn trên đỉnh — lượt sau hỏi lại" }),
+            ),
+        }
+    }
     // ④ tin gim SẮP tới hạn tự xoá của buồng chat ⟹ thay bằng tin mới, TRƯỚC khi
     // nó mất (xem `pin_due_for_renew`). Đứng trước ② vì chữ không đổi không có
     // nghĩa là tin còn sống: phiên nằm 💤 cả ngày thì không vòng nào sửa nó,

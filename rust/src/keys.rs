@@ -1130,7 +1130,105 @@ pub fn landed(screen: &str, typed: &str) -> Landed {
     Landed::Idle
 }
 
-/// Mở một cửa sổ Terminal MỚI và chạy `cmd` trong đó; trả về `(id cửa sổ, tty)`.
+/// Mọi tab của mọi cửa sổ: `(id cửa sổ, /dev/ttysNNN)`.
+#[cfg(target_os = "macos")]
+fn all_tabs() -> Result<Vec<(i64, String)>> {
+    let out = osascript(
+        r#"tell application "Terminal"
+  set out to ""
+  repeat with w in every window
+    try
+      repeat with t in tabs of w
+        set out to out & (id of w as text) & " " & (tty of t) & linefeed
+      end repeat
+    end try
+  end repeat
+  return out
+end tell"#,
+    )?;
+    Ok(parse_all_tabs(&out))
+}
+
+/// Tách ra để kiểm được: `"184 /dev/ttys000\n185 /dev/ttys001\n"`.
+pub fn parse_all_tabs(out: &str) -> Vec<(i64, String)> {
+    out.lines()
+        .filter_map(|l| {
+            let (w, t) = l.trim().split_once(' ')?;
+            Some((w.trim().parse::<i64>().ok()?, t.trim().to_string()))
+        })
+        .filter(|(_, t)| t.starts_with("/dev/"))
+        .collect()
+}
+
+/// Mở một TAB trong cửa sổ Terminal đang đứng trước rồi chạy `cmd` trong đó.
+///
+/// `Ok(None)` = KHÔNG có tab nào được tạo ⟹ chỗ gọi mở cửa sổ riêng (an toàn,
+/// không mồ côi gì). `Err` = tab ĐÃ có mà gõ lệnh hỏng — không rơi về cửa sổ
+/// mới, kẻo một lệnh mở ra hai chỗ.
+///
+/// Terminal không có lệnh AppleScript nào mở tab, nên đi bằng ⌘T qua
+/// `CGEventPostToPid` (quyền Trợ năng của hubd), rồi nhận ra tab mới bằng tty
+/// MỚI xuất hiện — không đoán "tab cuối" hay "tab đang chọn".
+#[cfg(target_os = "macos")]
+fn open_tab(cmd: &str) -> Result<Option<(i64, String)>> {
+    let truoc = match all_tabs() {
+        Ok(t) if !t.is_empty() => t,
+        Ok(_) => return Ok(None),
+        Err(e) => {
+            logging::warn(
+                "tab_open_skipped",
+                json!({ "err": e.to_string(), "effect": "mở cửa sổ riêng như cũ" }),
+            );
+            return Ok(None);
+        }
+    };
+    let Some(nha) = front_window().ok().flatten().map(window_id) else {
+        return Ok(None);
+    };
+    let gui = focus_window(nha)
+        .and_then(|()| terminal_pid())
+        .and_then(|pid| crate::cgkeys::post_command(pid, "t"));
+    if let Err(e) = gui {
+        logging::warn(
+            "tab_open_skipped",
+            json!({ "window": nha, "err": e.to_string(), "effect": "mở cửa sổ riêng như cũ" }),
+        );
+        return Ok(None);
+    }
+    let mut moi = None;
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        if let Ok(sau) = all_tabs() {
+            moi = sau
+                .into_iter()
+                .find(|(_, t)| !truoc.iter().any(|(_, c)| c == t));
+            if moi.is_some() {
+                break;
+            }
+        }
+    }
+    let Some((w, tty)) = moi else {
+        logging::warn(
+            "tab_open_skipped",
+            json!({ "window": nha, "effect": "⌘T đã gửi mà 3 giây không thấy tty mới — mở cửa sổ riêng như cũ" }),
+        );
+        return Ok(None);
+    };
+    let handle = tab_handle(w, &tty);
+    osascript(&do_script(handle, &as_string(cmd))).map_err(|e| {
+        e.context(format!(
+            "tab mới {tty} (cửa sổ {w}) đã mở nhưng gõ lệnh hỏng"
+        ))
+    })?;
+    logging::info(
+        "tab_opened",
+        json!({ "window": w, "tty": tty, "handle": handle, "o_cua_so_truoc": nha }),
+    );
+    Ok(Some((handle, tty)))
+}
+
+/// Mở một TAB mới (đã có cửa sổ Terminal) hoặc một cửa sổ Terminal MỚI (chưa có,
+/// hoặc không tạo được tab) và chạy `cmd` trong đó; trả về `(tay cầm tab, tty)`.
 ///
 /// Vì sao huba cần biết mở cửa sổ (Hà 2026-08-11: *"cli claude cài trên máy tôi,
 /// huba là cầu kết nối ra ui"*): một phiên `--bg` là hạng phiên **chủ máy không
@@ -1143,6 +1241,15 @@ pub fn landed(screen: &str, typed: &str) -> Landed {
 /// thì chưa tồn tại lúc này.
 #[cfg(target_os = "macos")]
 pub fn open_window(cmd: &str) -> Result<(i64, String)> {
+    // 🔴 Quang 2026-11-11: *"tại sao giờ mở phiên mới lại ra cửa sổ terminal mới
+    // thế, mở chung 1 cửa sổ thôi"*. Đã có cửa sổ Terminal ⟹ mở TAB trong cửa sổ
+    // đang đứng trước (`open_tab`). Chưa tạo được tab (chưa có cửa sổ · thiếu
+    // quyền Trợ năng · ⌘T không ra tab) ⟹ cửa sổ riêng như cũ ở dưới, và NÓI vì
+    // sao. Tab mở trong cửa sổ đã có ⟹ KHÔNG đổi cỡ (Hà 30/08: "là tab thì không
+    // động đến kích thước").
+    if let Some(mo) = open_tab(cmd)? {
+        return Ok(mo);
+    }
     // 🔴 Bản cũ hỏi `id of window 1` — **cửa sổ đang ở TRƯỚC, không phải cửa sổ
     // vừa mở**. `do script` trả về một TAB, và tab ấy có thể nằm ở cửa sổ nào
     // cũng được. Trả giá thật 2026-08-13 08:36, lượt tự đóng sổ của `[AI/tfl5]`:
@@ -1273,9 +1380,10 @@ end tell"#,
 /// có số thì chủ máy không biết nới bao nhiêu là đủ; `24×80` thì biết.
 #[cfg(target_os = "macos")]
 pub fn window_size(window: i64) -> Result<(i64, i64)> {
+    let tab = tab_ref(window);
     let out = osascript(&format!(
         r#"tell application "Terminal"
-  return ((number of rows of selected tab of window id {window}) as text) & "|" & ((number of columns of selected tab of window id {window}) as text)
+  return ((number of rows of {tab}) as text) & "|" & ((number of columns of {tab}) as text)
 end tell"#
     ))?;
     let (r, c) = out
@@ -1339,9 +1447,17 @@ pub fn terminal_pid() -> Result<i32> {
 /// gửi phím nào, nên cái CR của `do script` không dính dáng gì.
 #[cfg(target_os = "macos")]
 pub fn focus_window(window: i64) -> Result<()> {
+    // Tab chung một cửa sổ (11/11): phím đi vào TAB ĐANG CHỌN của cửa sổ nhận
+    // phím, nên phải chọn đúng tab trước. Tay cầm cũ thì `select_tab` rỗng.
+    let wid = window_id(window);
+    let select_tab = match handle_tty(window) {
+        Some(_) => format!("set selected of {} to true\n", tab_ref(window)),
+        None => String::new(),
+    };
     osascript(&format!(
         "tell application \"Terminal\"\n\
-           set frontmost of window id {window} to true\n\
+           {select_tab}\
+           set frontmost of window id {wid} to true\n\
          end tell"
     ))?;
     Ok(())
@@ -1545,10 +1661,79 @@ pub fn screen_scrollback(window: i64, steps: usize, du: impl Fn(&str) -> bool) -
 #[cfg(target_os = "macos")]
 pub fn selected_tab_tty(window: i64) -> Result<String> {
     osascript(&format!(
-        "tell application \"Terminal\" to return tty of selected tab of window id {window}"
+        "tell application \"Terminal\" to return tty of {}",
+        tab_ref(window)
     ))
 }
 
+/// Mốc phân biệt "tay cầm TAB" với id cửa sổ trần. Id cửa sổ Terminal là số
+/// nhỏ (đo 11/11: 184–240; 07/11: 79292), nên không bao giờ chạm tới mốc này.
+const TAB_HANDLE_BASE: i64 = 1 << 40;
+
+/// Tay cầm của MỘT TAB: id cửa sổ + số tty, gói vào đúng cái `i64` mà mọi hàm
+/// của tệp này vẫn nhận (bên Windows con số ấy là pid — nó vốn là tay cầm mờ).
+///
+/// 🔴 Quang 2026-11-11: *"mở chung 1 cửa sổ thôi"*. Một cửa sổ nhiều tab thì
+/// `selected tab of window id W` là tab ĐANG CHỌN — có thể là phiên khác, tức
+/// gõ vào việc của người khác (bẫy đã ghi từ 12/08). Tay cầm mang tty nên mọi
+/// lệnh AppleScript nhắm đúng `first tab of window id W whose tty is …`.
+///
+/// tty không đọc được thì trả id cửa sổ trần — hành vi cũ, không đoán.
+pub fn tab_handle(window: i64, tty: &str) -> i64 {
+    let w = window_id(window);
+    let n = tty
+        .trim()
+        .trim_start_matches("/dev/")
+        .strip_prefix("ttys")
+        .and_then(|s| s.parse::<i64>().ok());
+    match n {
+        Some(n) if (0..4095).contains(&n) && w > 0 && w < (1 << 27) => {
+            TAB_HANDLE_BASE + (w << 12) + n + 1
+        }
+        _ => w,
+    }
+}
+
+/// Id cửa sổ Terminal của một tay cầm (tay cầm cũ = chính nó).
+pub fn window_id(handle: i64) -> i64 {
+    if handle >= TAB_HANDLE_BASE {
+        (handle - TAB_HANDLE_BASE) >> 12
+    } else {
+        handle
+    }
+}
+
+/// tty (`/dev/ttysNNN`) mà tay cầm trỏ tới — `None` với id cửa sổ trần.
+pub fn handle_tty(handle: i64) -> Option<String> {
+    if handle >= TAB_HANDLE_BASE {
+        Some(format!(
+            "/dev/ttys{:03}",
+            ((handle - TAB_HANDLE_BASE) & 0xFFF) - 1
+        ))
+    } else {
+        None
+    }
+}
+
+/// Đặc tả AppleScript của tab mà tay cầm trỏ tới. Tay cầm cũ (không tty) giữ
+/// nguyên nghĩa cũ: tab đang chọn của cửa sổ ấy.
+pub fn tab_ref(handle: i64) -> String {
+    let w = window_id(handle);
+    match handle_tty(handle) {
+        Some(tty) => format!(
+            "(first tab of window id {w} whose tty is {})",
+            as_string(&tty)
+        ),
+        None => format!("(selected tab of window id {w})"),
+    }
+}
+
+/// Tay cầm TAB của phiên đang chạy trên `tty` (xem [`tab_handle`]).
+///
+/// Trả tay cầm tab, không phải id cửa sổ trần: từ 11/11 nhiều phiên chung một
+/// cửa sổ, và mọi lệnh gõ/đọc/đóng phải nhắm đúng tab của phiên này. Bộ nhớ
+/// (`remember_window`/`recall_window`) vẫn giữ id cửa sổ TRẦN; mọi lối `return`
+/// gói lại bằng `tab_handle`.
 #[cfg(target_os = "macos")]
 pub fn window_of(tty: &str) -> Result<Option<i64>> {
     if tty.is_empty() || tty == "??" || tty == "-" {
@@ -1568,14 +1753,15 @@ pub fn window_of(tty: &str) -> Result<Option<i64>> {
     // mới rơi về đúng id cửa sổ đã nhớ (8754), thứ đã đúng ngay từ đầu. Bản cũ chỉ
     // dùng bộ nhớ SAU khi phép quét hỏng, tức trả trọn 45 s mỗi lần Terminal bận.
     //
-    // Phép kiểm là CÂU HỎI mà `do_script` cần đúng: tab ĐANG CHỌN của cửa sổ ấy có
-    // mang tty này không (chữ luôn được gõ vào `selected tab of window id W`).
-    // Khớp ⟹ dùng; lệch (cửa sổ đổi tab, tty bị dùng lại) ⟹ quên và quét như cũ;
+    // Phép kiểm là CÂU HỎI mà `do_script` cần đúng: cửa sổ ấy còn TAB mang tty
+    // này không (từ 11/11 chữ gõ vào `first tab … whose tty is …`, không còn vào
+    // tab đang chọn — nhiều phiên chung một cửa sổ).
+    // Khớp ⟹ dùng; lệch/không còn tab ⟹ quên và quét như cũ;
     // hỏi hỏng (Terminal câm) ⟹ quét như cũ, và đường lùi bộ nhớ bên dưới vẫn còn.
     if let Some(w) = recall_window(&dev) {
-        match selected_tab_tty(w) {
+        match selected_tab_tty(tab_handle(w, &dev)) {
             Ok(t) if t.trim().trim_start_matches("/dev/") == dev.trim_start_matches("/dev/") => {
-                return Ok(Some(w));
+                return Ok(Some(tab_handle(w, &dev)));
             }
             Ok(t) => {
                 forget_window(&dev);
@@ -1603,7 +1789,7 @@ pub fn window_of(tty: &str) -> Result<Option<i64>> {
                     json!({ "tty": dev, "window": w, "err": e.to_string(),
                             "why": "Terminal bận — dùng id cửa sổ đã nhớ, KHÔNG quét từng tab" }),
                 );
-                return Ok(Some(w));
+                return Ok(Some(tab_handle(w, &dev)));
             }
         }
     }
@@ -1618,7 +1804,7 @@ pub fn window_of(tty: &str) -> Result<Option<i64>> {
         Ok(g) => g,
         Err(why) => {
             return match recall_window(&dev) {
-                Some(w) => Ok(Some(w)),
+                Some(w) => Ok(Some(tab_handle(w, &dev))),
                 None => Err(anyhow!(why)),
             }
         }
@@ -1640,7 +1826,7 @@ pub fn window_of(tty: &str) -> Result<Option<i64>> {
             if let Some(w) = id {
                 remember_window(&dev, w);
             }
-            Ok(id)
+            Ok(id.map(|w| tab_handle(w, &dev)))
         }
         // 🔴 Hà 2026-08-14, gõ một câu vào phiên và nhận `⚠ không tìm được cửa
         // sổ: osascript quá 20s`. Cửa sổ ấy vẫn nằm đó — thứ hỏng là phép HỎI:
@@ -1661,7 +1847,7 @@ pub fn window_of(tty: &str) -> Result<Option<i64>> {
                         json!({ "tty": dev, "window": w, "err": e.to_string(),
                             "why": "hỏi Terminal hết giờ — dùng id cửa sổ đã nhớ" }),
                     );
-                    Ok(Some(w))
+                    Ok(Some(tab_handle(w, &dev)))
                 }
                 None => Err(e),
             }
@@ -1704,7 +1890,7 @@ pub fn window_of_any(tty: &str) -> Result<Option<i64>> {
     let bat_dau = std::time::Instant::now();
     let out = osascript(&window_any_script(&dev))
         .inspect_err(|e| QuetCuaSo::hong(bat_dau.elapsed(), &e.to_string()))?;
-    Ok(out.trim().parse::<i64>().ok())
+    Ok(out.trim().parse::<i64>().ok().map(|w| tab_handle(w, &dev)))
 }
 
 /// Tách ra để KIỂM ĐƯỢC — cùng lý do với [`window_script`]: ba lỗi AppleScript
@@ -1743,10 +1929,11 @@ end tell"#,
 /// bao giờ tới.
 #[cfg(target_os = "macos")]
 pub fn tab_proc_count(window: i64) -> Result<usize> {
+    let tab = tab_ref(window);
     let out = osascript(&format!(
         r#"tell application "Terminal"
   try
-    return (count of processes of selected tab of window id {window}) as text
+    return (count of processes of {tab}) as text
   on error
     return "0"
   end try
@@ -2429,11 +2616,12 @@ pub fn alive_tab<'a>(tabs: &'a [Tab], tty: &str) -> Option<&'a Tab> {
 /// `gone` · 99999 id không tồn tại → `gone`.
 #[cfg(target_os = "macos")]
 pub fn tab_state(window: i64) -> Result<TabState> {
+    let (tab, wid) = (tab_ref(window), window_id(window));
     let out = osascript(&format!(
         r#"tell application "Terminal"
   try
-    if (count of tabs of window id {window}) is 0 then return "gone"
-    return (busy of (selected tab of window id {window})) as text
+    if (count of tabs of window id {wid}) is 0 then return "gone"
+    return (busy of {tab}) as text
   on error
     return "gone"
   end try
@@ -2719,9 +2907,14 @@ pub fn frame_is_blank(path: &std::path::Path) -> Option<bool> {
 /// (`runtime::SIGNING_CN`), nên chỗ này là MỘT hàm, hai người gọi.
 #[cfg(target_os = "macos")]
 pub fn bring_to_front(window: i64) -> Result<()> {
+    let wid = window_id(window);
+    let select_tab = match handle_tty(window) {
+        Some(_) => format!("set selected of {} to true\n", tab_ref(window)),
+        None => String::new(),
+    };
     osascript(&format!(
         r#"tell application "Terminal"
-  set index of window id {window} to 1
+  {select_tab}set index of window id {wid} to 1
   activate
 end tell"#
     ))?;
@@ -2739,13 +2932,22 @@ end tell"#
 /// `Err` (không hỏi được).
 #[cfg(target_os = "macos")]
 pub fn front_window() -> Result<Option<i64>> {
+    // Trả tay cầm TAB (cửa sổ + tab đang chọn của nó): trả lại "cái đang đứng
+    // trước" sau khi gửi phím phải chọn lại đúng tab cũ, không chỉ cửa sổ.
     let out = osascript(
         r#"tell application "Terminal"
   if (count of windows) is 0 then return ""
-  return id of front window as text
+  set t to ""
+  try
+    set t to tty of selected tab of front window
+  end try
+  return (id of front window as text) & "|" & t
 end tell"#,
     )?;
-    Ok(out.trim().parse::<i64>().ok())
+    let mut phan = out.trim().splitn(2, '|');
+    let id = phan.next().and_then(|s| s.trim().parse::<i64>().ok());
+    let tty = phan.next().unwrap_or("").trim();
+    Ok(id.map(|w| tab_handle(w, tty)))
 }
 
 #[cfg(target_os = "macos")]
@@ -2807,10 +3009,20 @@ pub fn photograph_window(window: i64, path: &std::path::Path) -> Result<()> {
 /// máy trước khi kiểm lại. Thứ nói đúng chuyện là **số tab** và **`visible`**.
 #[cfg(target_os = "macos")]
 pub fn window_gone(window: i64) -> Result<bool> {
+    // Tay cầm TAB: "đã đi" = tab mang tty ấy không còn trong cửa sổ (các tab
+    // của phiên khác vẫn ở đó — đếm cả cửa sổ là không bao giờ thấy "đi").
+    let wid = window_id(window);
+    let tabs = match handle_tty(window) {
+        Some(tty) => format!(
+            "(count of (tabs of window id {wid} whose tty is {}))",
+            as_string(&tty)
+        ),
+        None => format!("(count of tabs of window id {wid})"),
+    };
     let out = osascript(&format!(
         r#"tell application "Terminal"
   try
-    return ((count of tabs of window id {window}) as text) & "/" & ((visible of window id {window}) as text)
+    return ({tabs} as text) & "/" & ((visible of window id {wid}) as text)
   on error
     return "0/false"
   end try
@@ -2875,8 +3087,63 @@ pub fn exit_and_close_shell(window: i64, cho: std::time::Duration) -> Result<Clo
     close_window(window)
 }
 
+/// Đóng MỘT tab rồi hỏi lại nó đã đi chưa. Không bao giờ đóng hay ẩn cửa sổ
+/// đang còn tab của phiên khác.
+#[cfg(target_os = "macos")]
+fn close_tab(handle: i64) -> Result<Closed> {
+    let wid = window_id(handle);
+    let tab = tab_ref(handle);
+    let tty = handle_tty(handle).unwrap_or_default();
+    let out = osascript(&format!(
+        r#"tell application "Terminal"
+  try
+    set con to count of (tabs of window id {wid} whose tty is {tty_s})
+  on error
+    return "gone"
+  end try
+  if con is 0 then return "gone"
+  if (count of tabs of window id {wid}) is 1 then
+    close window id {wid}
+    return "window"
+  end if
+  try
+    close {tab}
+    return "tab"
+  on error errm
+    return "hong: " & errm
+  end try
+end tell"#,
+        tty_s = as_string(&tty)
+    ))?;
+    let cach = out.trim().to_string();
+    if cach == "gone" {
+        return Ok(Closed::Gone);
+    }
+    for _ in 0..6 {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        if window_gone(handle)? {
+            logging::info(
+                "tab_closed",
+                json!({ "window": wid, "tty": tty, "cach": cach }),
+            );
+            return Ok(Closed::Gone);
+        }
+    }
+    anyhow::bail!(
+        "Terminal không đóng được tab {tty} trong cửa sổ {wid} ({cach}). Cửa sổ còn tab của \
+         phiên khác nên huba KHÔNG đóng/ẩn cả cửa sổ — đóng tay tab ấy bằng ⌘W."
+    )
+}
+
 #[cfg(target_os = "macos")]
 pub fn close_window(window: i64) -> Result<Closed> {
+    // 🔴 Tab chung một cửa sổ (11/11): `close` CẢ cửa sổ là đóng luôn tab của
+    // các phiên khác. Tay cầm TAB ⟹ chỉ đóng đúng tab ấy; cửa sổ chỉ được đóng
+    // khi tab này là tab CUỐI của nó. (Thường tới đây tab đã tự đi: shell vừa
+    // nhận `exit` — xem `exit_and_close_shell`.)
+    if handle_tty(window).is_some() {
+        return close_tab(window);
+    }
     osascript(&format!(
         r#"tell application "Terminal" to close (first window whose id is {window})"#
     ))?;
@@ -2944,10 +3211,11 @@ end tell"#
 /// có ít nhất cái shell, nên `Some(0)` là "không còn gì để mất".
 #[cfg(target_os = "macos")]
 pub fn tab_process_count(window: i64) -> Result<Option<usize>> {
+    let tab = tab_ref(window);
     let out = osascript(&format!(
         r#"tell application "Terminal"
   try
-    return (count of processes of (selected tab of window id {window})) as text
+    return (count of processes of {tab}) as text
   on error
     return "gone"
   end try
@@ -3522,8 +3790,9 @@ pub enum Delivered {
 fn do_script(window: i64, applescript_string: &str) -> String {
     format!(
         r#"tell application "Terminal"
-  do script {applescript_string} in selected tab of window id {window}
-end tell"#
+  do script {applescript_string} in {tab}
+end tell"#,
+        tab = tab_ref(window)
     )
 }
 
@@ -3948,8 +4217,9 @@ fn write_payload(keys: &[String]) -> Result<String> {
 pub fn screen_text(window: i64) -> Result<String> {
     let script = format!(
         r#"tell application "Terminal"
-  return contents of selected tab of window id {window}
-end tell"#
+  return contents of {tab}
+end tell"#,
+        tab = tab_ref(window)
     );
     osascript(&script)
 }
