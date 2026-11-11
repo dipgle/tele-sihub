@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 // `TIERS` and `ALWAYS_HUMAN_ACTIONS` lived here until 2026-08-08. They were the
 // vocabulary of `policy.rs` — how much the robot could do unattended, and the
@@ -303,6 +304,13 @@ pub struct Config {
     /// The `claude` executable used to LIST sessions (`sessions.rs`).
     #[serde(default = "default_claude_cli")]
     pub claude_cli: String,
+    /// The `opencode` executable used by accounts whose `cli` is `opencode`.
+    ///
+    /// A path, not a bare name: `hubad` runs under launchd, whose PATH is the
+    /// short system one — `~/.opencode/bin` is not in it. `$HOME/...` is
+    /// expanded by the shell that runs the launch line.
+    #[serde(default = "default_opencode_cli")]
+    pub opencode_cli: String,
     /// Accounts to enumerate. Empty = just the ambient account, which is the
     /// only thing true on a fresh machine; this Mac has three, declared in
     /// `huba.config.json`. Mechanism, not policy — the code must not know a
@@ -386,6 +394,7 @@ impl Default for Config {
             projects: BTreeMap::new(),
             notify: NotifyCfg::default(),
             claude_cli: default_claude_cli(),
+            opencode_cli: default_opencode_cli(),
             claude_accounts: vec![],
             claude_transcript_root: String::new(),
             new_in_terminal: true,
@@ -468,6 +477,37 @@ pub fn validate(cfg: &Config) -> Result<()> {
     }
     if cfg.call.timeout_sec < 10 {
         problems.push("call.timeout_sec must be >= 10".into());
+    }
+    if cfg.opencode_cli.trim().is_empty() {
+        problems.push("opencode_cli must not be empty".into());
+    }
+    for a in &cfg.claude_accounts {
+        if let Some(cli) = a.cli.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            if !cli.eq_ignore_ascii_case("claude") && !cli.eq_ignore_ascii_case("opencode") {
+                problems.push(format!(
+                    "tài khoản `{}`: cli `{cli}` không hợp lệ (chỉ `claude` hoặc `opencode`)",
+                    a.name
+                ));
+            }
+        }
+        if let Some(Value::Object(_)) = &a.opencode_config {
+            // ổn
+        } else if a.opencode_config.is_some() {
+            problems.push(format!(
+                "tài khoản `{}`: opencode_config phải là một object JSON",
+                a.name
+            ));
+        }
+        if a.is_opencode() {
+            if let Some(m) = a.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+                if !m.contains('/') {
+                    problems.push(format!(
+                        "tài khoản `{}`: model `{m}` phải có dạng `provider/model` cho opencode",
+                        a.name
+                    ));
+                }
+            }
+        }
     }
     // 🔴 Hai luật của phòng chat tfl5 (`app_tid` phải có, `trust.tfl5_user_tids`
     // không được rỗng) đã đi theo cái kênh, 2026-08-14. Cổng của Telegram không
@@ -731,6 +771,10 @@ pub fn default_claude_cli() -> String {
     "claude".into()
 }
 
+pub fn default_opencode_cli() -> String {
+    "$HOME/.opencode/bin/opencode".into()
+}
+
 /// One Claude CLI account. `config_dir` empty/absent means the AMBIENT account:
 /// the CLI selects it by `CLAUDE_CONFIG_DIR` being unset, and setting the
 /// variable to the default directory reports "not logged in" — so this is a
@@ -788,6 +832,22 @@ pub struct ClaudeAccountCfg {
     /// `modelSettings.<model>.effortLevel`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// CLI của tài khoản: `claude` (mặc định) hoặc `opencode`.
+    ///
+    /// Tên trường là `cli` vì nó chọn CHƯƠNG TRÌNH, không chọn nhà cung cấp.
+    /// `opencode` dựng dòng lệnh theo khuôn riêng ([`crate::accounts::launch_line`]):
+    /// mỗi tài khoản một phân vùng `~/.opencode-<tên>/` (XDG), key đọc từ
+    /// `env_file`, model từ ô `model`, còn cấu hình runtime đi qua
+    /// `OPENCODE_CONFIG_CONTENT` — không có tệp cấu hình tĩnh nào để lệch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli: Option<String>,
+    /// JSON (object, KHÔNG chứa bí mật) merge vào `OPENCODE_CONFIG_CONTENT`
+    /// của riêng tài khoản — đủ để khai provider/baseURL/model riêng.
+    ///
+    /// Bộ chặn của huba (`DENIED_TOOLS`) luôn được áp SAU, nên tệp này không
+    /// mở lại được thứ huba đã đóng.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opencode_config: Option<serde_json::Value>,
     /// Biến env thêm, đã sắp theo tên. KHÔNG chứa bí mật (luật 4) —
     /// `accounts::env_for_child` bỏ qua mọi tên kết thúc `_KEY`/`_TOKEN`/`_SECRET`.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -806,6 +866,25 @@ pub struct ClaudeAccountCfg {
     /// cấu hình cũ đọc vào y nguyên.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub locked: bool,
+}
+
+impl ClaudeAccountCfg {
+    /// Hàng này chạy `opencode` thay vì `claude`.
+    pub fn is_opencode(&self) -> bool {
+        self.cli
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|v| v.eq_ignore_ascii_case("opencode"))
+    }
+
+    /// Nhãn CLI đã chuẩn hoá — dùng cho trang và `--print`.
+    pub fn cli_name(&self) -> &'static str {
+        if self.is_opencode() {
+            "opencode"
+        } else {
+            "claude"
+        }
+    }
 }
 
 impl Config {

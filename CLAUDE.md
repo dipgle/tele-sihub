@@ -354,6 +354,13 @@ intervened.
 The `ack_live` book is only valid while that sentence is at the BOTTOM. Every new
 send path must call `forget_ack_live()`, or it edits a line the reader scrolled past.
 
+## Một cổng bảo mật dùng chung (2026-11-11)
+
+- Luật nằm ở `~/projects/scripts/cong_bao_mat.py` + `bao-mat-policy.json`; adapter **không** chép luật.
+- Claude: `guard-write-path.py` (`PreToolUse`) gọi cổng; `--disallowedTools` đọc `sessions::denied_tools()` từ cùng policy.
+- opencode: plugin `scripts/cong-bao-mat-plugin` gọi cổng ở `tool.execute.before` / `chat.message` / `permission.ask`; `accounts::opencode_config_content` tự chèn plugin cho mọi acc `cli:"opencode"`.
+- Nâng cấp một lần: sửa policy/cổng rồi `python3 scripts/cong_bao_mat.py --tu-kiem`. `FALLBACK_DENIED_TOOLS` chỉ dùng khi policy biến mất; bài test khoá nó khớp policy.
+
 ## When you change something
 
 - Changed the snapshot shape or a chat verb? `install_update.sh` in the same

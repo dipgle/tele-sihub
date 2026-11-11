@@ -1242,6 +1242,7 @@ fn open_tab(cmd: &str) -> Result<Option<(i64, String)>> {
 /// Terminal thoát, nên sổ cũng không cần sống qua lần khởi động lại máy — nhưng
 /// phải sống qua lần khởi động lại hubd (`/upgrade`), kẻo mỗi lần cài là một
 /// nhóm tab mới.
+#[cfg(target_os = "macos")]
 const SO_NHA_TOI_DA: usize = 8;
 
 #[cfg(target_os = "macos")]

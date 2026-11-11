@@ -56,11 +56,228 @@ pub fn structured_fields(acc: &ClaudeAccountCfg) -> Vec<&'static str> {
     if !acc.extra_args.is_empty() {
         v.push("extra_args");
     }
+    if some(&acc.cli).is_some() {
+        v.push("cli");
+    }
+    if acc.opencode_config.is_some() {
+        v.push("opencode_config");
+    }
     v
 }
 
 fn some(o: &Option<String>) -> Option<&str> {
     o.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Tên thư mục phân vùng của một tài khoản opencode — chỉ chữ/số/`-`/`_`.
+///
+/// Tên tài khoản là thứ duy nhất phân biệt hai phân vùng, nên nó phải thành
+/// một tên thư mục an toàn. Tên có dấu cách (hàng \"mặc định\") hoặc ký tự lạ
+/// được thay bằng `_`, không bao giờ xoá — hai tên khác nhau không được gặp
+/// nhau ở cùng một thư mục.
+pub fn opencode_slug(acc: &ClaudeAccountCfg) -> String {
+    let mut s: String = acc
+        .name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if s.is_empty() {
+        s.push_str("default");
+    }
+    s
+}
+
+/// Phân vùng riêng của một tài khoản opencode: `~/.opencode-<tên>/`.
+///
+/// Bốn thư mục con là bốn biến XDG mà opencode đọc: `config`, `data`, `cache`,
+/// `state`. Tách hẳn khỏi `~/.local/share/opencode` để hai tài khoản không
+/// nhìn thấy phiên hay khoá của nhau.
+pub fn opencode_profile_dir(acc: &ClaudeAccountCfg) -> PathBuf {
+    match home_dir() {
+        Some(h) => h.join(format!(".opencode-{}", opencode_slug(acc))),
+        None => PathBuf::from(format!(".opencode-{}", opencode_slug(acc))),
+    }
+}
+
+/// Bộ chặn quyền cho opencode, suy từ CHÍNH `DENIED_TOOLS` của huba.
+///
+/// Một nguồn duy nhất: danh sách Claude ở `sessions.rs` là thứ `/new` vẫn dùng;
+/// nếu nó đổi mà bản opencode không đổi thì cửa sổ mở bằng hai CLI sẽ có hai
+/// bức tường khác nhau. Phép biến đổi:
+/// * `Bash(git push:*)` → shell pattern `git push *` (opencode V1: `permission.bash`).
+/// * `Bash(*deploy*)`   → shell pattern `*deploy*` (đã là pattern).
+/// * `WebFetch`/`WebSearch` → `webfetch`/`websearch: deny`.
+fn opencode_permission_wall() -> Value {
+    let mut bash = serde_json::Map::new();
+    bash.insert("*".to_string(), json!("allow"));
+    let mut extra = serde_json::Map::new();
+    for tool in crate::sessions::denied_tools() {
+        if let Some(body) = tool.strip_prefix("Bash(").and_then(|s| s.strip_suffix(")")) {
+            let cmd = body.strip_suffix(":*").unwrap_or(body);
+            let pattern = if cmd.contains('*') {
+                cmd.to_string()
+            } else {
+                format!("{cmd} *")
+            };
+            bash.insert(pattern, json!("deny"));
+        }
+    }
+    for tool in crate::sessions::denied_tools() {
+        match tool.as_str() {
+            "WebFetch" => {
+                extra.insert("webfetch".to_string(), json!("deny"));
+            }
+            "WebSearch" => {
+                extra.insert("websearch".to_string(), json!("deny"));
+            }
+            _ => {}
+        }
+    }
+    let mut permission = serde_json::Map::new();
+    permission.insert("bash".to_string(), Value::Object(bash));
+    for (k, v) in extra {
+        permission.insert(k, v);
+    }
+    Value::Object(permission)
+}
+
+/// Object JSON cuối cùng đi vào `OPENCODE_CONFIG_CONTENT`.
+///
+/// Thứ tự áp: cấu hình riêng của tài khoản trước, bộ chặn của huba SAU. Nhờ
+/// vậy `opencode_config` thêm được provider/baseURL/agent, nhưng không mở lại
+/// được `git push`, `sudo`, `rm`, WebFetch… — bức tường không phụ thuộc vào
+/// một tệp người dùng sửa tay.
+pub fn opencode_security_plugin() -> String {
+    std::env::var("HUBA_OPENCODE_PLUGIN")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            home_dir()
+                .map(|h| {
+                    h.join("projects")
+                        .join("scripts")
+                        .join("cong-bao-mat-plugin")
+                        .to_string_lossy()
+                        .to_string()
+                })
+                .unwrap_or_default()
+        })
+}
+
+pub fn opencode_config_content(acc: &ClaudeAccountCfg) -> Value {
+    let mut root = match &acc.opencode_config {
+        Some(Value::Object(o)) => Value::Object(o.clone()),
+        Some(_) => {
+            crate::logging::warn(
+                "account_opencode_config_ignored",
+                json!({ "account": acc.name, "why": "opencode_config không phải object JSON" }),
+            );
+            json!({})
+        }
+        None => json!({}),
+    };
+    // Agent chỉ-đọc cho /ask + /handover. Đặt trước bộ chặn để tài khoản vẫn
+    // có thể thêm agent riêng, nhưng agent này thì luôn có.
+    let obj = root.as_object_mut().expect("root luôn là object");
+    let agents = obj.entry("agent").or_insert_with(|| json!({}));
+    if let Some(agents) = agents.as_object_mut() {
+        agents.insert(
+            "huba-fork".to_string(),
+            json!({
+                "description": "Huba: fork chỉ-đọc để hỏi một phiên đang sống",
+                "mode": "primary",
+                "permission": {
+                    "bash": "deny",
+                    "edit": "deny",
+                    "webfetch": "deny",
+                    "websearch": "deny",
+                    "task": "deny"
+                }
+            }),
+        );
+    }
+    let wall = opencode_permission_wall();
+    let permission = obj.entry("permission").or_insert_with(|| json!({}));
+    let allow = permission
+        .as_object_mut()
+        .expect("permission luôn là object");
+    if let Some(wall) = wall.as_object() {
+        for (k, v) in wall {
+            if k == "bash" {
+                let bash = allow.entry("bash").or_insert_with(|| json!({}));
+                if let Some(bash) = bash.as_object_mut() {
+                    if let Some(w) = v.as_object() {
+                        for (pat, eff) in w {
+                            // Chỉ áp các DENY; pattern "*" của bộ chặn không
+                            // được đè lên lựa chọn rộng hơn của tài khoản.
+                            if eff == "deny" {
+                                bash.insert(pat.clone(), eff.clone());
+                            }
+                        }
+                    }
+                }
+            } else {
+                allow.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    // `external_directory`: mặc định KHÔNG hỏi lại khi đụng thư mục ngoài
+    // project đang mở, cho đúng cây workspace + vùng tạm. Đây là quyền ĐỌC/ĐI
+    // thư mục; quyền GHI vẫn do cổng bảo mật (`cong_bao_mat.py`) quyết.
+    // Không ghi đè lựa chọn chặt hơn của chủ máy trong `opencode_config`.
+    if let Some(h) = home_dir() {
+        if let Some(obj) = root.as_object_mut() {
+            let perm = obj.entry("permission").or_insert_with(|| json!({}));
+            if let Some(p) = perm.as_object_mut() {
+                if !p.contains_key("external_directory") {
+                    let ws = h.join("projects");
+                    let ws_s = ws.to_string_lossy().to_string();
+                    let mut m = serde_json::Map::new();
+                    m.insert(ws_s.clone(), json!("allow"));
+                    m.insert(format!("{ws_s}/*"), json!("allow"));
+                    m.insert("/tmp/*".to_string(), json!("allow"));
+                    m.insert("/private/tmp/*".to_string(), json!("allow"));
+                    m.insert("/private/var/folders/*".to_string(), json!("allow"));
+                    p.insert("external_directory".to_string(), Value::Object(m));
+                }
+            }
+        }
+    }
+    // Model là trường `model` của tài khoản — TUI `opencode` không có cờ
+    // `--model`, nên đây là cửa DUY NHẤT để cả `/new` lẫn `opencode run` dùng
+    // đúng model. Trường này thắng `opencode_config.model` (nguồn sự thật).
+    if let Some(m) = some(&acc.model) {
+        if let Some(obj) = root.as_object_mut() {
+            obj.insert("model".to_string(), json!(m));
+        }
+    }
+    // Plugin bảo mật là MẶC ĐỊNH của mọi tài khoản opencode — không phụ thuộc
+    // việc chủ máy nhớ khai nó trong `opencode_config`. Một cổng, mọi acc.
+    let plugin = opencode_security_plugin();
+    if !plugin.is_empty() {
+        if !Path::new(&plugin).is_dir() {
+            crate::logging::warn(
+                "opencode_security_plugin_missing",
+                json!({ "account": acc.name, "path": plugin,
+                        "effect": "opencode sẽ không gọi được cổng bảo mật — sửa đường dẫn" }),
+            );
+        }
+        if let Some(obj) = root.as_object_mut() {
+            let arr = obj.entry("plugin").or_insert_with(|| json!([]));
+            if let Some(arr) = arr.as_array_mut() {
+                if !arr.iter().any(|v| v.as_str() == Some(plugin.as_str())) {
+                    arr.push(json!(plugin));
+                }
+            }
+        }
+    }
+    root
 }
 
 /// Dòng shell chủ máy VIẾT TAY (`launch`), đã cắt khoảng trắng thừa.
@@ -122,6 +339,9 @@ pub fn launch_line(cfg: &Config, acc: Option<&ClaudeAccountCfg>) -> String {
     let Some(acc) = acc else {
         return shell_quote(&cfg.claude_cli);
     };
+    if acc.is_opencode() {
+        return opencode_launch_line(cfg, acc);
+    }
     let dir = some(&acc.config_dir);
     if structured_fields(acc).is_empty() {
         return match dir {
@@ -163,6 +383,66 @@ pub fn launch_line(cfg: &Config, acc: Option<&ClaudeAccountCfg>) -> String {
     parts.join(" ")
 }
 
+/// Dòng lệnh của một tài khoản `opencode` — mỗi tài khoản MỘT phân vùng.
+///
+/// Không có tệp cấu hình tĩnh: mọi thứ thay đổi được (khoá, model, provider)
+/// đi qua `env`/`--model`, còn cấu hình runtime đi qua `OPENCODE_CONFIG_CONTENT`.
+/// Nhờ vậy sửa trên trang `huba accounts` là lần mở SAU dùng ngay, không có bản
+/// sao thứ hai để lệch.
+///
+/// Bốn biến XDG là ranh giới phân vùng: `~/.opencode-<tên>/{config,data,cache,state}`.
+/// Khoá đọc từ `env_file` (chỉ ĐƯỜNG DẪN nằm trong cấu hình), model từ ô
+/// `model`, và bức tường quyền từ [`opencode_permission_wall`].
+fn opencode_launch_line(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
+    let mut parts: Vec<String> = vec!["env".to_string()];
+    if let Some(f) = some(&acc.env_file) {
+        parts.push(env_load(f, some(&acc.api_key_env), some(&acc.api_key_as)));
+    } else if some(&acc.api_key_env).is_some() {
+        crate::logging::warn(
+            "account_opencode_key_without_file",
+            json!({ "account": acc.name,
+                    "why": "khai api_key_env mà thiếu env_file — biến chỉ có nếu môi trường ngoài đã đặt" }),
+        );
+    }
+    let base = format!("$HOME/.opencode-{}", opencode_slug(acc));
+    for (var, sub) in [
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_STATE_HOME", "state"),
+    ] {
+        parts.push(assign_path(var, &format!("{base}/{sub}")));
+    }
+    parts.push("OPENCODE_DISABLE_AUTOUPDATE=1".to_string());
+    let content = serde_json::to_string(&opencode_config_content(acc)).unwrap_or_else(|e| {
+        crate::logging::error(
+            "account_opencode_config_encode_failed",
+            json!({ "account": acc.name, "err": e.to_string() }),
+        );
+        "{}".to_string()
+    });
+    parts.push(format!("OPENCODE_CONFIG_CONTENT={}", shell_quote(&content)));
+    for (k, v) in &acc.extra_env {
+        if looks_secret(k) {
+            crate::logging::warn(
+                "account_env_secret_skipped",
+                json!({ "account": acc.name, "var": k,
+                        "why": "giá trị bí mật không đi qua dòng lệnh — dùng env_file" }),
+            );
+            continue;
+        }
+        parts.push(assign(k, v));
+    }
+    parts.push(path_token(&cfg.opencode_cli));
+    for a in &acc.extra_args {
+        parts.push(value_token(a));
+    }
+    // KHÔNG đặt `--model` ở đây: TUI `opencode` không nhận cờ này (chỉ
+    // `opencode run` nhận), và cờ ấy làm cửa sổ `/new` chết ngay dòng đầu.
+    // Model đi qua `OPENCODE_CONFIG_CONTENT` bên trên — một nguồn, cả TUI lẫn run.
+    parts.join(" ")
+}
+
 /// [`launch_line`] cho Windows PowerShell.
 ///
 /// `env_file` CHƯA có đường nạp trên Windows (`& claude` chạy không qua một
@@ -172,6 +452,9 @@ pub fn launch_line_ps(cfg: &Config, acc: Option<&ClaudeAccountCfg>) -> String {
     let Some(acc) = acc else {
         return format!("& {}", ps_quote(&cfg.claude_cli));
     };
+    if acc.is_opencode() {
+        return opencode_launch_line_ps(cfg, acc);
+    }
     let dir = some(&acc.config_dir);
     if structured_fields(acc).is_empty() {
         return match dir {
@@ -221,12 +504,59 @@ pub fn launch_line_ps(cfg: &Config, acc: Option<&ClaudeAccountCfg>) -> String {
     }
 }
 
+fn opencode_launch_line_ps(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
+    use crate::win_procs::ps_quote;
+    if some(&acc.env_file).is_some() {
+        crate::logging::warn(
+            "account_env_file_unsupported",
+            json!({ "account": acc.name,
+                    "why": "Windows: env_file chưa có đường nạp — biến trong tệp KHÔNG được đặt" }),
+        );
+    }
+    let base = opencode_profile_dir(acc);
+    let mut pre: Vec<String> = Vec::new();
+    for (var, sub) in [
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_STATE_HOME", "state"),
+    ] {
+        pre.push(format!(
+            "$env:{var} = {}",
+            ps_quote(&base.join(sub).to_string_lossy())
+        ));
+    }
+    pre.push("$env:OPENCODE_DISABLE_AUTOUPDATE = '1'".to_string());
+    let content =
+        serde_json::to_string(&opencode_config_content(acc)).unwrap_or_else(|_| "{}".into());
+    pre.push(format!(
+        "$env:OPENCODE_CONFIG_CONTENT = {}",
+        ps_quote(&content)
+    ));
+    for (k, v) in &acc.extra_env {
+        if looks_secret(k) {
+            continue;
+        }
+        pre.push(format!("$env:{k} = {}", ps_quote(v)));
+    }
+    let mut call = format!("& {}", ps_quote(&cfg.opencode_cli));
+    for a in &acc.extra_args {
+        call.push(' ');
+        call.push_str(&ps_quote(a));
+    }
+    // Model đi qua `OPENCODE_CONFIG_CONTENT` — TUI opencode không nhận `--model`.
+    format!("{}; {}", pre.join("; "), call)
+}
+
 /// Biến môi trường cho một tiến trình CON của tài khoản này.
 ///
 /// Khác với dòng lệnh: giá trị phải có THẬT ở đây (đó là môi trường), nên
 /// tuyệt đối không có giá trị bí mật — tên kết thúc `_KEY`/`_TOKEN`/`_SECRET`/
 /// `_PASSWORD` bị BỎ và ghi `warn`. Khoá thì `env_file` + `apiKeyHelper` lo.
 pub fn env_for_child(acc: &ClaudeAccountCfg) -> Vec<(String, Option<String>)> {
+    if acc.is_opencode() {
+        return opencode_env_for_child(acc);
+    }
     let dir = some(&acc.config_dir).map(|d| expand_home(Path::new(d)).display().to_string());
     let mut out = vec![("CLAUDE_CONFIG_DIR".to_string(), dir)];
     if let Some(b) = some(&acc.base_url) {
@@ -237,6 +567,42 @@ pub fn env_for_child(acc: &ClaudeAccountCfg) -> Vec<(String, Option<String>)> {
             crate::logging::warn(
                 "account_env_secret_skipped",
                 json!({ "account": acc.name, "var": k, "why": "giá trị bí mật không đi qua env của tiến trình con" }),
+            );
+            continue;
+        }
+        out.push((k.clone(), Some(v.clone())));
+    }
+    out
+}
+
+fn opencode_env_for_child(acc: &ClaudeAccountCfg) -> Vec<(String, Option<String>)> {
+    let base = opencode_profile_dir(acc);
+    let mut out = Vec::new();
+    for (var, sub) in [
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_STATE_HOME", "state"),
+    ] {
+        out.push((
+            var.to_string(),
+            Some(base.join(sub).to_string_lossy().to_string()),
+        ));
+    }
+    out.push(("OPENCODE_DISABLE_AUTOUPDATE".to_string(), Some("1".into())));
+    out.push((
+        "OPENCODE_CONFIG_CONTENT".to_string(),
+        Some(
+            serde_json::to_string(&opencode_config_content(acc))
+                .unwrap_or_else(|_| "{}".to_string()),
+        ),
+    ));
+    for (k, v) in &acc.extra_env {
+        if looks_secret(k) {
+            crate::logging::warn(
+                "account_env_secret_skipped",
+                json!({ "account": acc.name, "var": k,
+                        "why": "giá trị bí mật không đi qua env của tiến trình con" }),
             );
             continue;
         }
@@ -286,6 +652,15 @@ pub struct SettingsPatch {
 /// Dựng bản vá `settings.json` từ trường cấu trúc. `launch` legacy không tham
 /// gia: dòng viết tay đã tự mang mọi thứ nó cần, chép vào settings là đoán.
 pub fn settings_patch(acc: &ClaudeAccountCfg) -> SettingsPatch {
+    if acc.is_opencode() {
+        return SettingsPatch {
+            set: Vec::new(),
+            unsupported: vec![
+                "opencode: cấu hình runtime đi qua OPENCODE_CONFIG_CONTENT, không dùng settings.json"
+                    .to_string(),
+            ],
+        };
+    }
     let mut p = SettingsPatch::default();
     if let Some(b) = some(&acc.base_url) {
         p.set
@@ -413,6 +788,25 @@ pub enum AccountWrite {
 /// trong `env_file` (chmod 600), không bao giờ vào `huba.config.json`.
 pub fn upsert_account(cfg: &Config, row: ClaudeAccountCfg) -> Result<AccountWrite, String> {
     validate_row(&row.name)?;
+    if let Some(cli) = some(&row.cli) {
+        if !cli.eq_ignore_ascii_case("claude") && !cli.eq_ignore_ascii_case("opencode") {
+            return Err(format!("CLI `{cli}` không hợp lệ (chỉ claude/opencode)"));
+        }
+    }
+    if let Some(v) = &row.opencode_config {
+        if !v.is_object() {
+            return Err("opencode_config phải là một object JSON".into());
+        }
+    }
+    if row.is_opencode() {
+        if let Some(m) = some(&row.model) {
+            if !m.contains('/') {
+                return Err(format!(
+                    "model `{m}` phải có dạng `provider/model` cho opencode"
+                ));
+            }
+        }
+    }
     let mut moi = row;
     moi.name = moi.name.trim().to_string();
     let ten = moi.name.clone();
@@ -508,6 +902,17 @@ pub fn set_locked(cfg: &Config, name: &str, locked: bool, via: &str) -> anyhow::
 /// là trong đó có thể đã có nhật ký phiên thật. Gộp hai kho nhật ký là việc phải
 /// nhìn tận mắt — hàm này DỪNG và nói số mục, không tự xoá.
 pub fn ensure_dirs(acc: &ClaudeAccountCfg) -> Result<Vec<String>, String> {
+    if acc.is_opencode() {
+        let base = opencode_profile_dir(acc);
+        let mut notes = Vec::new();
+        for sub in ["config", "data", "cache", "state"] {
+            let p = base.join(sub);
+            std::fs::create_dir_all(&p)
+                .map_err(|e| format!("không tạo được thư mục {}: {e}", p.display()))?;
+            notes.push(format!("phân vùng opencode: {}", p.display()));
+        }
+        return Ok(notes);
+    }
     if acc.config_dir.as_deref().unwrap_or("").trim().is_empty() {
         return Err(
             "không có `config_dir` — trang không dựng thư mục cho tài khoản MẶC ĐỊNH (nó là `~/.claude`)"
@@ -708,6 +1113,11 @@ fn assign(key: &str, value: &str) -> String {
     format!("{key}={}", value_token(value))
 }
 
+/// Gán một biến là ĐƯỜNG DẪN — `$HOME/...` phải còn `$` để shell giãn.
+fn assign_path(key: &str, value: &str) -> String {
+    format!("{key}={}", path_token(value))
+}
+
 /// Từ an toàn để để TRẦN trên dòng lệnh. Không có `$`, nháy, khoảng trắng,
 /// `;`, `|`, `&` ⇒ shell không có gì để giãn.
 fn is_safe_token(s: &str) -> bool {
@@ -899,7 +1309,11 @@ fn file_mode(_: &std::fs::Metadata) -> Option<u32> {
 pub fn probe(acc: &ClaudeAccountCfg, quota: Option<Quota>) -> Probe {
     use std::io::ErrorKind;
 
-    let dir = crate::api_key::thu_muc(acc);
+    let dir = if acc.is_opencode() {
+        opencode_profile_dir(acc)
+    } else {
+        crate::api_key::thu_muc(acc)
+    };
     let dir_s = dir.display().to_string();
     let dir_exists = dir.is_dir();
 
@@ -961,6 +1375,14 @@ pub fn probe(acc: &ClaudeAccountCfg, quota: Option<Quota>) -> Probe {
         },
     };
 
+    let (live_sessions, blind) = if acc.is_opencode() {
+        match crate::opencode::count_sessions(acc) {
+            Ok(n) => (Some(n), None),
+            Err(e) => (None, Some(e)),
+        }
+    } else {
+        (None, None)
+    };
     Probe {
         dir: dir_s,
         dir_exists,
@@ -968,9 +1390,13 @@ pub fn probe(acc: &ClaudeAccountCfg, quota: Option<Quota>) -> Probe {
         env_file,
         settings,
         quota,
-        api_key: crate::api_key::nhan(&dir),
-        live_sessions: None,
-        blind: None,
+        api_key: if acc.is_opencode() {
+            None
+        } else {
+            crate::api_key::nhan(&dir)
+        },
+        live_sessions,
+        blind,
     }
 }
 
@@ -990,6 +1416,9 @@ fn env_var_names(text: &str) -> Vec<String> {
 /// Thứ tự cố định: thư mục → nhật ký → đăng nhập → API key → tệp env →
 /// `settings.json` → `launch` → phiên sống.
 pub fn checks(acc: &ClaudeAccountCfg, p: &Probe) -> Vec<Check> {
+    if acc.is_opencode() {
+        return checks_opencode(acc, p);
+    }
     vec![
         check_dir(p),
         check_projects(p),
@@ -1000,6 +1429,120 @@ pub fn checks(acc: &ClaudeAccountCfg, p: &Probe) -> Vec<Check> {
         check_launch(acc),
         check_live(p),
     ]
+}
+
+/// Chẩn đoán cho một hàng `opencode`: không có `settings.json`, không có
+/// OAuth, không có sổ nhật ký Claude — nên 8 mục của Claude sẽ báo đỏ oan.
+fn checks_opencode(acc: &ClaudeAccountCfg, p: &Probe) -> Vec<Check> {
+    vec![
+        check_profile(p),
+        check_env_file(acc, p),
+        check_opencode_key(acc, p),
+        check_opencode_model(acc),
+        check_opencode_config(acc),
+        check_launch(acc),
+        check_live(p),
+    ]
+}
+
+fn check_profile(p: &Probe) -> Check {
+    let state = if p.dir_exists {
+        CheckState::Ok
+    } else {
+        // Không phải lỗi: lần mở đầu tiên tạo phân vùng. Nói đúng trạng thái.
+        CheckState::Unknown
+    };
+    Check {
+        code: "profile",
+        state,
+        text: if p.dir_exists {
+            format!("phân vùng opencode: {}", p.dir)
+        } else {
+            format!("phân vùng CHƯA có (sẽ tạo ở lần mở đầu): {}", p.dir)
+        },
+        path: p.dir.clone(),
+    }
+}
+
+fn check_opencode_key(acc: &ClaudeAccountCfg, p: &Probe) -> Check {
+    let want = some(&acc.api_key_env);
+    let (state, text) = match (&p.env_file, want) {
+        (EnvFileState::NotDeclared, _) => (
+            CheckState::Fail,
+            "chưa khai `env_file` — opencode không có khoá".to_string(),
+        ),
+        (EnvFileState::Missing(f), _) => (CheckState::Fail, format!("tệp env không tồn tại: {f}")),
+        (EnvFileState::Unreadable { path, why }, _) => {
+            (CheckState::Fail, format!("không đọc được {path}: {why}"))
+        }
+        (EnvFileState::Found { path, vars, .. }, Some(k)) => {
+            if vars.iter().any(|v| v == k) {
+                (CheckState::Ok, format!("tệp env có biến `{k}`: {path}"))
+            } else {
+                (
+                    CheckState::Fail,
+                    format!("tệp env KHÔNG có biến `{k}`: {path}"),
+                )
+            }
+        }
+        (EnvFileState::Found { path, .. }, None) => (
+            CheckState::Unknown,
+            format!("có tệp env nhưng chưa khai `api_key_env`: {path}"),
+        ),
+    };
+    Check {
+        code: "opencode_key",
+        state,
+        text,
+        path: acc
+            .env_file
+            .clone()
+            .unwrap_or_else(|| "(chưa khai env_file)".into()),
+    }
+}
+
+fn check_opencode_model(acc: &ClaudeAccountCfg) -> Check {
+    let model = some(&acc.model);
+    let (state, text) = match model {
+        None => (
+            CheckState::Fail,
+            "chưa khai `model` — mở phiên sẽ dùng mặc định của opencode".to_string(),
+        ),
+        Some(m) if m.contains('/') => (CheckState::Ok, format!("model: {m}")),
+        Some(m) => (
+            CheckState::Fail,
+            format!("model `{m}` thiếu `provider/` — opencode cần dạng provider/model"),
+        ),
+    };
+    Check {
+        code: "opencode_model",
+        state,
+        text,
+        path: "(cấu hình tài khoản)".into(),
+    }
+}
+
+fn check_opencode_config(acc: &ClaudeAccountCfg) -> Check {
+    let (state, text) = match &acc.opencode_config {
+        None => (
+            CheckState::Ok,
+            "cấu hình riêng: không khai (dùng mặc định)".to_string(),
+        ),
+        Some(Value::Object(_)) => (
+            CheckState::Ok,
+            "cấu hình riêng: object JSON hợp lệ".to_string(),
+        ),
+        Some(_) => (
+            CheckState::Fail,
+            "`opencode_config` phải là một object JSON".to_string(),
+        ),
+    };
+    Check {
+        code: "opencode_config",
+        state,
+        text,
+        path: "(cấu hình tài khoản)".into(),
+    }
 }
 
 /// Các mục KHÔNG đạt (hỏng hoặc không đo được), theo đúng thứ tự của [`checks`].
@@ -1767,5 +2310,47 @@ mod tests {
         assert!(tim(&c2, "env_file").text.contains("644"));
 
         let _ = std::fs::remove_dir_all(&goc);
+    }
+
+    /// Một policy, hai đầu ra: dòng launch của opencode và bức tường quyền.
+    #[test]
+    fn opencode_launch_va_tuong_dung_mot_policy() {
+        let mut a = acc("acc8");
+        a.cli = Some("opencode".into());
+        a.env_file = Some("~/.opencode_acc8.env".into());
+        a.api_key_env = Some("OPENCODE_API_KEY".into());
+        a.model = Some("opencode-go/deepseek-v4.1-flash".into());
+        a.opencode_config = Some(json!({"plugin":["/x/plugin"],"provider":{"p":{"x":1}}}));
+        let line = launch_line(&cfg(), Some(&a));
+        assert!(
+            line.contains("XDG_DATA_HOME=$HOME/.opencode-acc8/data"),
+            "{line}"
+        );
+        assert!(line.contains("OPENCODE_CONFIG_CONTENT="), "{line}");
+        assert!(!line.contains("--model"), "{line}");
+        assert!(!line.contains("CLAUDE_CONFIG_DIR"), "{line}");
+        assert!(!line.contains("ANTHROPIC_BASE_URL"), "{line}");
+        let c = opencode_config_content(&a);
+        assert_eq!(
+            c.pointer("/model"),
+            Some(&json!("opencode-go/deepseek-v4.1-flash")),
+            "model phải đi qua OPENCODE_CONFIG_CONTENT"
+        );
+        assert_eq!(c.pointer("/permission/bash/*deploy*"), Some(&json!("deny")));
+        assert_eq!(c.pointer("/permission/webfetch"), Some(&json!("deny")));
+        assert_eq!(c.pointer("/plugin/0"), Some(&json!("/x/plugin")));
+        assert!(c.pointer("/agent/huba-fork").is_some());
+        let ext = c
+            .pointer("/permission/external_directory")
+            .and_then(Value::as_object)
+            .expect("external_directory phải có mặt");
+        assert!(
+            ext.keys().any(|k| k.ends_with("/projects/*")),
+            "phải cho cây workspace: {ext:?}"
+        );
+        assert_eq!(ext.get("/tmp/*"), Some(&json!("allow")));
+        let claude = acc("acc3");
+        assert!(!claude.is_opencode());
+        assert!(!launch_line(&cfg(), Some(&claude)).contains("OPENCODE"));
     }
 }

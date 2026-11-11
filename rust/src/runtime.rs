@@ -266,8 +266,17 @@ pub fn account_detail_say(
         .as_deref()
         .filter(|d| !d.is_empty())
         .map(|d| crate::config::expand_home(Path::new(d)));
-    let q = crate::quota::read(&acc.name, dir.as_deref());
-    let id = crate::quota::identity(dir.as_deref());
+    let (q, id) = if acc.is_opencode() {
+        (
+            crate::quota::khong_do_duoc(&acc.name, "opencode: không dùng sổ Claude"),
+            Err("opencode: không có danh tính Claude".to_string()),
+        )
+    } else {
+        (
+            crate::quota::read(&acc.name, dir.as_deref()),
+            crate::quota::identity(dir.as_deref()),
+        )
+    };
     let email = id.as_ref().ok().and_then(|i| i.email.clone());
     let probe = lam_probe(Some(q.clone()));
     let mut out = account_detail_text_voi_probe(
@@ -439,40 +448,48 @@ pub fn account_detail_text_voi_probe(
             ""
         }
     );
-    match id {
-        Ok(i) => {
-            out.push_str(&format!(
-                "email: {}\n",
-                i.email.as_deref().unwrap_or("(sổ không ghi)")
-            ));
-            let mut ai: Vec<String> = Vec::new();
-            if let Some(v) = i.display_name {
-                ai.push(format!("tên {v}"));
+    if acc.is_opencode() {
+        out.push_str(&format!(
+            "CLI: opencode · model: {}\nphân vùng: {}\n",
+            acc.model.as_deref().unwrap_or("(chưa khai)"),
+            crate::accounts::opencode_profile_dir(acc).display()
+        ));
+    } else {
+        match id {
+            Ok(i) => {
+                out.push_str(&format!(
+                    "email: {}\n",
+                    i.email.as_deref().unwrap_or("(sổ không ghi)")
+                ));
+                let mut ai: Vec<String> = Vec::new();
+                if let Some(v) = i.display_name {
+                    ai.push(format!("tên {v}"));
+                }
+                if let Some(v) = i.org {
+                    ai.push(format!("tổ chức {v}"));
+                }
+                if let Some(v) = i.role {
+                    ai.push(format!("vai trò {v}"));
+                }
+                if let Some(v) = i.billing {
+                    ai.push(format!("gói {v}"));
+                }
+                if !ai.is_empty() {
+                    out.push_str(&format!("{}\n", ai.join(" · ")));
+                }
             }
-            if let Some(v) = i.org {
-                ai.push(format!("tổ chức {v}"));
-            }
-            if let Some(v) = i.role {
-                ai.push(format!("vai trò {v}"));
-            }
-            if let Some(v) = i.billing {
-                ai.push(format!("gói {v}"));
-            }
-            if !ai.is_empty() {
-                out.push_str(&format!("{}\n", ai.join(" · ")));
-            }
+            // Không đọc được danh tính thì NÓI vì sao, đừng in một dòng email trống.
+            Err(why) => out.push_str(&format!("email: chưa đọc được — {why}\n")),
         }
-        // Không đọc được danh tính thì NÓI vì sao, đừng in một dòng email trống.
-        Err(why) => out.push_str(&format!("email: chưa đọc được — {why}\n")),
+        out.push_str(&format!(
+            "thư mục: {} · gõ ở terminal: {}\n",
+            acc.config_dir
+                .as_deref()
+                .filter(|d| !d.is_empty())
+                .unwrap_or("~ (không đặt CLAUDE_CONFIG_DIR)"),
+            acc.launch.as_deref().unwrap_or("(không khai launch)")
+        ));
     }
-    out.push_str(&format!(
-        "thư mục: {} · gõ ở terminal: {}\n",
-        acc.config_dir
-            .as_deref()
-            .filter(|d| !d.is_empty())
-            .unwrap_or("~ (không đặt CLAUDE_CONFIG_DIR)"),
-        acc.launch.as_deref().unwrap_or("(không khai launch)")
-    ));
     // Chẩn đoán (GĐ 2): "tài khoản này thiếu gì" — tối đa 3 mục trên điện thoại,
     // phần còn lại trỏ về trang. Mục KHÔNG ĐO ĐƯỢC hiện với ⚠, không bị gộp
     // vào ✗ (luật 13②).
@@ -962,15 +979,22 @@ pub fn usage_lam_moi(cfg: &Config, db: &Db, cu_ms: i64) -> Value {
         .filter(|a| crate::api_key::nhan(&crate::api_key::thu_muc(a)).is_some())
         .map(|a| a.name.clone())
         .collect();
+    // opencode không có `claude -p /usage`; dò bằng dòng lệnh của nó là chạy
+    // `opencode -p /usage` (trong opencode `-p` là password) — nói không.
+    let oc: Vec<String> = accounts
+        .iter()
+        .filter(|a| a.is_opencode())
+        .map(|a| a.name.clone())
+        .collect();
     let can: Vec<&crate::config::ClaudeAccountCfg> = accounts
         .iter()
-        .filter(|a| !a.locked && !api.contains(&a.name))
+        .filter(|a| !a.locked && !api.contains(&a.name) && !oc.contains(&a.name))
         .filter(|a| can_do_lai(tuoi_cua(&so, &so_cli, &a.name, now), cu_ms))
         .collect();
     crate::logging::info(
         "usage_do_lai",
         json!({ "cu_hon_ms": cu_ms, "mau_so": accounts.len(),
-                "bo_qua_khoa": khoa, "bo_qua_api_key": api,
+                "bo_qua_khoa": khoa, "bo_qua_api_key": api, "bo_qua_opencode": oc,
                 "do_lai": can.iter().map(|a| a.name.clone()).collect::<Vec<_>>() }),
     );
     if can.is_empty() {
@@ -996,6 +1020,13 @@ pub fn usage_lam_moi_mot(cfg: &Config, db: &Db, ten: &str, cu_ms: i64) -> Value 
     let Some(acc) = accounts.iter().find(|a| a.name == ten) else {
         return usage_cached(cfg, db);
     };
+    if acc.is_opencode() {
+        crate::logging::info(
+            "usage_skip_opencode",
+            json!({ "account": ten, "why": "opencode không có lệnh quota — không dò bằng cú pháp Claude" }),
+        );
+        return usage_cached(cfg, db);
+    }
     let tuoi = tuoi_cua(&so, &so_cli, ten, now);
     let do_lai = can_do_lai(tuoi, cu_ms);
     crate::logging::info(
@@ -1156,6 +1187,9 @@ pub fn xep_hang_tai_khoan(cfg: &Config, db: &Db, cu_ms: Option<i64>) -> Vec<crat
 /// khoản có số cũ. (Nhịp 5′ cho mọi tài khoản — Hà 10/08 *"chỉ cần 5p 1 lần là
 /// được"* — đã thay bằng "đo khi sắp chọn" ngày 24/09; xem [`USAGE_CU_MO_PHIEN_MS`].)
 fn usage_one(cfg: &Config, acc: &crate::config::ClaudeAccountCfg) -> Value {
+    if acc.is_opencode() {
+        return json!({ "err": "opencode: không có lệnh quota; không dò bằng cú pháp Claude" });
+    }
     let env = account_env(acc);
     // Chạy TRONG thư mục mà `sessions::is_hub_own_probe` nhận ra — trên macOS đó
     // cũng là thư mục launchd đặt hubad nên không đổi gì; trên Windows hubd đứng
@@ -1323,6 +1357,11 @@ pub fn auth_status_run(
     acc: &crate::config::ClaudeAccountCfg,
     timeout: Duration,
 ) -> anyhow::Result<crate::exec::RunOut> {
+    if acc.is_opencode() {
+        anyhow::bail!(
+            "opencode không có `auth status` của Claude — kiểm bằng `huba accounts` / trang quản lý"
+        );
+    }
     let (prog, argv) = crate::sessions::account_call(cfg, Some(&acc.name), &["auth", "status"]);
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
     run(
@@ -1354,6 +1393,14 @@ pub fn auth_status_run(
 fn auth_block(cfg: &Config) -> Value {
     let mut map = serde_json::Map::new();
     for acc in cfg.claude_accounts_or_ambient() {
+        if acc.is_opencode() {
+            map.insert(
+                acc.name.clone(),
+                json!({ "opencode": true,
+                        "err": "opencode: không có OAuth Claude — kiểm bằng /accounts" }),
+            );
+            continue;
+        }
         let out = auth_status_run(cfg, &acc, Duration::from_secs(20));
         let row = match out {
             Ok(r) => match serde_json::from_str::<Value>(r.stdout.trim()) {

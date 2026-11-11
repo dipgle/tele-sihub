@@ -256,11 +256,11 @@ pub fn route(req: &Req, st: &mut PageState) -> Resp {
         }
         ("POST", ["acc", name, "login"]) => {
             let name = percent_decode(name);
-            login_start(&name, st)
+            login_start(&cfg, &name, st)
         }
         ("POST", ["acc", name, "login-code"]) => {
             let name = percent_decode(name);
-            login_finish(&name, &form, st)
+            login_finish(&cfg, &name, &form, st)
         }
         ("POST", ["acc", name, "settings-sync"]) => {
             let name = percent_decode(name);
@@ -330,10 +330,14 @@ fn detail(cfg: &Config, name: &str, st: &mut PageState, err: Option<String>) -> 
     let (_, _, hong) = check_summary(acc);
     let p = accounts::probe(
         acc,
-        Some(crate::quota::read(
-            &acc.name,
-            Some(crate::api_key::thu_muc(acc).as_path()),
-        )),
+        if acc.is_opencode() {
+            None
+        } else {
+            Some(crate::quota::read(
+                &acc.name,
+                Some(crate::api_key::thu_muc(acc).as_path()),
+            ))
+        },
     );
     for c in accounts::checks(acc, &p) {
         checks.push_str(&format!(
@@ -381,7 +385,19 @@ fn detail(cfg: &Config, name: &str, st: &mut PageState, err: Option<String>) -> 
             .to_string()
     };
 
-    let actions = if in_config {
+    let actions = if in_config && acc.is_opencode() {
+        format!(
+            "<div class=\"row\">\
+             <form method=\"POST\" action=\"/acc/{n}/lock\"><input type=\"hidden\" name=\"t\" value=\"{tk}\">\
+             <input type=\"hidden\" name=\"locked\" value=\"{to}\"><button class=\"sec\">{khoa}</button></form></div>\
+             <div class=\"note\">opencode dùng khoá trong <code>env_file</code>; không có OAuth Claude \
+             và không dùng <code>settings.json</code>.</div>",
+            n = url_encode(name),
+            tk = esc(&st.ticket),
+            to = khoa_to,
+            khoa = khoa,
+        )
+    } else if in_config {
         format!(
             "<div class=\"row\">\
              <form method=\"POST\" action=\"/acc/{n}/lock\"><input type=\"hidden\" name=\"t\" value=\"{tk}\">\
@@ -399,19 +415,24 @@ fn detail(cfg: &Config, name: &str, st: &mut PageState, err: Option<String>) -> 
         String::new()
     };
 
+    let dir = if acc.is_opencode() {
+        accounts::opencode_profile_dir(acc).display().to_string()
+    } else {
+        acc.config_dir
+            .clone()
+            .unwrap_or_else(|| "(mặc định)".into())
+    };
     let body = format!(
         "{err}\
-         <p><code>{ten}</code> · <code>{dir}</code></p>{dong_khoa}{actions}\
+         <p><code>{ten}</code> · <code>{cli}</code> · <code>{dir}</code></p>{dong_khoa}{actions}\
          <h2>Chẩn đoán ({}/{})</h2><ul class=\"checks\">{checks}</ul>\
          <p class=\"muted\">Hạn mức và email: gõ <code>/accounts {ten}</code> trên Telegram \
          (trang này chỉ đọc đĩa, không gọi mạng).</p>{form_html}",
         hong.len(),
         accounts::checks(acc, &p).len(),
         ten = esc(name),
-        dir = esc(&acc
-            .config_dir
-            .clone()
-            .unwrap_or_else(|| "(mặc định)".into())),
+        cli = esc(acc.cli_name()),
+        dir = esc(&dir),
         err = err
             .map(|e| format!("<div class=\"err\">{}</div>", esc(&e)))
             .unwrap_or_default(),
@@ -441,7 +462,10 @@ fn add(cfg: &Config, form: &BTreeMap<String, String>, st: &mut PageState) -> Res
     if let Err(e) = accounts::validate_row(&name) {
         return new_form(Some(e), Some(form)).with_status("400 Bad Request");
     }
-    let mut row = row_from_form(form, None);
+    let mut row = match row_from_form(form, None) {
+        Ok(r) => r,
+        Err(e) => return new_form(Some(e), Some(form)).with_status("400 Bad Request"),
+    };
     row.name = name.clone();
     if row.config_dir.as_deref().unwrap_or("").trim().is_empty() {
         row.config_dir = Some(derived_config_dir(&name));
@@ -493,7 +517,10 @@ fn update(cfg: &Config, name: &str, form: &BTreeMap<String, String>, st: &mut Pa
         )
         .with_status("400 Bad Request");
     }
-    let mut row = row_from_form(form, Some(existing));
+    let mut row = match row_from_form(form, Some(existing)) {
+        Ok(r) => r,
+        Err(e) => return detail(cfg, name, st, Some(e)).with_status("400 Bad Request"),
+    };
     row.name = name.to_string();
     // Tên không đổi được qua biểu mẫu (nó là `~/.claude-<tên>`); giữ `config_dir`
     // cũ khi ô để trống — đổi thư mục là chuyện của người sửa tay.
@@ -557,12 +584,45 @@ fn lock(cfg: &Config, name: &str, form: &BTreeMap<String, String>, st: &mut Page
     Resp::redirect(&format!("/acc/{}", url_encode(name)))
 }
 
-fn login_start(name: &str, st: &mut PageState) -> Resp {
+fn mo_khoa_opencode(cfg: &Config, name: &str) -> Option<Resp> {
+    let acc = cfg
+        .claude_accounts_or_ambient()
+        .into_iter()
+        .find(|a| a.name == name)?;
+    if !acc.is_opencode() {
+        return None;
+    }
+    Some(Resp::html(page_shell(
+        "opencode",
+        Some(("opencode dùng khoá trong env_file — không có OAuth Claude".to_string(), false)),
+        &format!(
+            "<p><code>{}</code> đọc khoá từ <code>{}</code> (biến <code>{}</code>).</p>             <p><a class=\"btn\" href=\"/acc/{}\">← về {}</a></p>",
+            esc(name),
+            esc(acc.env_file.as_deref().unwrap_or("(chưa khai env_file)")),
+            esc(acc.api_key_env.as_deref().unwrap_or("(chưa khai api_key_env)")),
+            url_encode(name),
+            esc(name)
+        ),
+    )))
+}
+
+fn login_start(cfg: &Config, name: &str, st: &mut PageState) -> Resp {
+    if let Some(r) = mo_khoa_opencode(cfg, name) {
+        return r;
+    }
     let msg = st.login.start(name);
     Resp::html(login_page(name, &msg, st.ticket.as_str(), None))
 }
 
-fn login_finish(name: &str, form: &BTreeMap<String, String>, st: &mut PageState) -> Resp {
+fn login_finish(
+    cfg: &Config,
+    name: &str,
+    form: &BTreeMap<String, String>,
+    st: &mut PageState,
+) -> Resp {
+    if let Some(r) = mo_khoa_opencode(cfg, name) {
+        return r;
+    }
     let code = form.get("code").cloned().unwrap_or_default();
     if code.trim().is_empty() {
         return Resp::html(login_page(
@@ -589,6 +649,13 @@ fn settings_sync(cfg: &Config, name: &str, st: &mut PageState) -> Resp {
     let Some(acc) = accs.iter().find(|a| a.name == name) else {
         return Resp::not_found(&format!("không có tài khoản '{name}'"));
     };
+    if acc.is_opencode() {
+        st.flash = Some((
+            "opencode không dùng settings.json — cấu hình nằm trong ô JSON của tài khoản".into(),
+            true,
+        ));
+        return Resp::redirect(&format!("/acc/{}", url_encode(name)));
+    }
     match accounts::apply_settings(acc) {
         Ok(a) if a.set.is_empty() => {
             st.flash = Some((format!("không có khoá nào cần ghi vào {}", a.path), false));
@@ -616,10 +683,14 @@ fn settings_sync(cfg: &Config, name: &str, st: &mut PageState) -> Resp {
 fn check_summary(acc: &ClaudeAccountCfg) -> (usize, usize, Vec<accounts::Check>) {
     let p = accounts::probe(
         acc,
-        Some(crate::quota::read(
-            &acc.name,
-            Some(crate::api_key::thu_muc(acc).as_path()),
-        )),
+        if acc.is_opencode() {
+            None
+        } else {
+            Some(crate::quota::read(
+                &acc.name,
+                Some(crate::api_key::thu_muc(acc).as_path()),
+            ))
+        },
     );
     let c = accounts::checks(acc, &p);
     let hong: Vec<accounts::Check> = accounts::problems(&c).into_iter().cloned().collect();
@@ -636,6 +707,7 @@ fn edit_fields(acc: &ClaudeAccountCfg) -> String {
         .join("\n");
     edit_fields_values(
         &acc.name,
+        acc.cli.as_deref().unwrap_or("claude"),
         acc.config_dir.as_deref().unwrap_or(""),
         acc.base_url.as_deref().unwrap_or(""),
         acc.env_file.as_deref().unwrap_or(""),
@@ -645,6 +717,10 @@ fn edit_fields(acc: &ClaudeAccountCfg) -> String {
         acc.effort.as_deref().unwrap_or(""),
         &env_lines,
         &acc.extra_args.join("\n"),
+        &acc.opencode_config
+            .as_ref()
+            .map(|v| serde_json::to_string_pretty(v).unwrap_or_default())
+            .unwrap_or_default(),
         acc.launch.as_deref(),
     )
 }
@@ -654,6 +730,9 @@ fn edit_fields_form(form: Option<&BTreeMap<String, String>>) -> String {
     let g = |k: &str| form.and_then(|f| f.get(k)).cloned().unwrap_or_default();
     edit_fields_values(
         &g("name"),
+        form.and_then(|f| f.get("cli"))
+            .map(String::as_str)
+            .unwrap_or("claude"),
         &g("config_dir"),
         &g("base_url"),
         &g("env_file"),
@@ -663,6 +742,7 @@ fn edit_fields_form(form: Option<&BTreeMap<String, String>>) -> String {
         &g("effort"),
         &g("extra_env"),
         &g("extra_args"),
+        &g("opencode_config"),
         None,
     )
 }
@@ -670,6 +750,7 @@ fn edit_fields_form(form: Option<&BTreeMap<String, String>>) -> String {
 #[allow(clippy::too_many_arguments)]
 fn edit_fields_values(
     name: &str,
+    cli: &str,
     config_dir: &str,
     base_url: &str,
     env_file: &str,
@@ -679,6 +760,7 @@ fn edit_fields_values(
     effort: &str,
     extra_env: &str,
     extra_args: &str,
+    opencode_config: &str,
     launch: Option<&str>,
 ) -> String {
     let name_ro = if name.is_empty() {
@@ -686,17 +768,28 @@ fn edit_fields_values(
             "name",
             "Tên tài khoản",
             "",
-            "chữ, số, `_` và `-`; thành `~/.claude-<tên>`",
+            "chữ, số, `_` và `-`; thành `~/.claude-<tên>` (hoặc `~/.opencode-<tên>` với opencode)",
         )
     } else {
         // Sửa thì tên cố định (nó là thư mục); hiện để đọc, không cho gõ.
         format!(
-            "<label>Tên tài khoản</label><small>tên không đổi được — nó là <code>~/.claude-{}</code></small>\
+            "<label>Tên tài khoản</label><small>tên không đổi được — nó là <code>~/.claude-{}</code> / <code>~/.opencode-{}</code></small>\
              <input type=\"text\" value=\"{}\" disabled>",
+            esc(name),
             esc(name),
             esc(name)
         )
     };
+    let oc = cli.eq_ignore_ascii_case("opencode");
+    let cli_select = format!(
+        "<label>CLI</label><small>opencode: phân vùng riêng <code>~/.opencode-&lt;tên&gt;/{{config,data,cache,state}}</code> — nhiều acc, nhiều API/model không trộn nhau</small>\
+         <select name=\"cli\">\
+         <option value=\"claude\"{c}>claude</option>\
+         <option value=\"opencode\"{o}>opencode</option>\
+         </select>",
+        c = if oc { "" } else { " selected" },
+        o = if oc { " selected" } else { "" },
+    );
     let launch_note = match launch {
         Some(l) => format!(
             "<div class=\"note\">⚠ Hàng này có <code>launch</code> viết tay đang ĐÈ trường cấu trúc: \
@@ -707,7 +800,7 @@ fn edit_fields_values(
         None => String::new(),
     };
     format!(
-        "{name_ro}{launch_note}\
+        "{name_ro}{launch_note}{cli_select}\
          {config_dir}\
          {base_url}\
          {env_file}\
@@ -719,21 +812,25 @@ fn edit_fields_values(
          <small>KHÔNG đặt bí mật ở đây — bí mật thuộc <code>env_file</code>. Dòng chứa tên kết thúc \
          <code>_KEY</code>/<code>_TOKEN</code>/<code>_SECRET</code>/<code>_PASSWORD</code> bị từ chối.</small>\
          <textarea name=\"extra_env\" rows=\"3\" spellcheck=\"false\">{extra_env}</textarea>\
-         <label>Đối số thêm cho <code>claude</code> (mỗi dòng một đối số)</label>\
+         <label>Cấu hình opencode riêng (JSON object, để trống nếu không cần)</label>\
+         <small>Merge vào <code>OPENCODE_CONFIG_CONTENT</code> — provider/baseURL/agent riêng. KHÔNG chứa bí mật; \
+         bộ chặn <code>git push</code>/<code>sudo</code>/<code>rm</code>/WebFetch… của huba luôn được áp sau.</small>\
+         <textarea name=\"opencode_config\" rows=\"6\" spellcheck=\"false\">{opencode_config}</textarea>\
+         <label>Đối số thêm cho CLI (mỗi dòng một đối số)</label>\
          <small>ví dụ <code>--debug</code>. Không đặt <code>--model</code> ở đây — có ô riêng.</small>\
          <textarea name=\"extra_args\" rows=\"2\" spellcheck=\"false\">{extra_args}</textarea>",
         config_dir = text_input(
             "config_dir",
-            "Thư mục cấu hình",
+            "Thư mục cấu hình (Claude)",
             config_dir,
-            "để trống khi THÊM = `~/.claude-<tên>`; sửa tay nếu thư mục nằm chỗ khác",
+            "để trống khi THÊM = `~/.claude-<tên>`; opencode dùng phân vùng riêng, không dùng ô này",
         ),
-        base_url = text_input("base_url", "Base URL (ANTHROPIC_BASE_URL)", base_url, "để trống = API của Claude"),
+        base_url = text_input("base_url", "Base URL (ANTHROPIC_BASE_URL)", base_url, "để trống = API của Claude; opencode khai provider trong ô JSON bên dưới"),
         env_file = text_input("env_file", "Tệp env (chmod 600)", env_file, "ĐƯỜNG DẪN tới tệp giữ khoá — không phải giá trị"),
-        api_key_env = text_input("api_key_env", "Tên biến giữ khoá", api_key_env, "TÊN biến trong tệp env, ví dụ OPENCODE_API_KEY — không phải giá trị"),
-        api_key_as = text_input("api_key_as", "Đổi tên biến khi nạp (tuỳ chọn)", api_key_as, "cơ chế acc8: OPENCODE_API_KEY → ANTHROPIC_API_KEY"),
-        model = text_input("model", "Model", model, "ví dụ deepseek-v4.1-flash; cũng ghi `model` vào settings.json"),
-        effort = text_input("effort", "Effort", effort, "ghi `modelSettings.<model>.effortLevel`"),
+        api_key_env = text_input("api_key_env", "Tên biến giữ khoá", api_key_env, "TÊN biến trong tệp env, ví dụ OPENCODE_API_KEY / OPENROUTER_API_KEY — không phải giá trị"),
+        api_key_as = text_input("api_key_as", "Đổi tên biến khi nạp (tuỳ chọn)", api_key_as, "cơ chế acc8 cũ: OPENCODE_API_KEY → ANTHROPIC_API_KEY"),
+        model = text_input("model", "Model (provider/model với opencode)", model, "ví dụ opencode-go/deepseek-v4.1-flash; với claude cũng ghi `model` vào settings.json"),
+        effort = text_input("effort", "Effort (chỉ Claude)", effort, "ghi `modelSettings.<model>.effortLevel`"),
     )
 }
 
@@ -771,12 +868,36 @@ fn login_page(name: &str, msg: &str, ticket: &str, err: Option<&str>) -> String 
 fn row_from_form(
     form: &BTreeMap<String, String>,
     existing: Option<&ClaudeAccountCfg>,
-) -> ClaudeAccountCfg {
+) -> Result<ClaudeAccountCfg, String> {
+    let cli = form
+        .get("cli")
+        .map(|s| s.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    let cli = match cli.as_str() {
+        "" | "claude" => None,
+        "opencode" => Some("opencode".to_string()),
+        other => return Err(format!("CLI `{other}` không hợp lệ (chỉ claude/opencode)")),
+    };
+    let oc_text = form
+        .get("opencode_config")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let opencode_config = if oc_text.is_empty() {
+        None
+    } else {
+        let v: serde_json::Value = serde_json::from_str(&oc_text)
+            .map_err(|e| format!("opencode_config không phải JSON: {e}"))?;
+        if !v.is_object() {
+            return Err("opencode_config phải là một object JSON".into());
+        }
+        Some(v)
+    };
     let mut r = ClaudeAccountCfg {
         name: form
             .get("name")
             .map(|s| s.trim().to_string())
             .unwrap_or_default(),
+        cli,
         config_dir: opt(form, "config_dir"),
         base_url: opt(form, "base_url"),
         env_file: opt(form, "env_file"),
@@ -784,6 +905,7 @@ fn row_from_form(
         api_key_as: opt(form, "api_key_as"),
         model: opt(form, "model"),
         effort: opt(form, "effort"),
+        opencode_config,
         extra_env: parse_env_lines(form.get("extra_env").map(String::as_str).unwrap_or("")),
         extra_args: parse_arg_lines(form.get("extra_args").map(String::as_str).unwrap_or("")),
         ..Default::default()
@@ -795,7 +917,7 @@ fn row_from_form(
         r.launch = e.launch.clone();
         r.locked = e.locked;
     }
-    r
+    Ok(r)
 }
 
 fn opt(form: &BTreeMap<String, String>, key: &str) -> Option<String> {
@@ -999,14 +1121,19 @@ pub fn print_table(cfg: &Config) -> String {
     let mut out = format!("accounts: {}\n", accs.len());
     for acc in &accs {
         let (ok, total, hong) = check_summary(acc);
-        let dir = acc
-            .config_dir
-            .as_deref()
-            .filter(|d| !d.trim().is_empty())
-            .unwrap_or("(mặc định)");
+        let dir = if acc.is_opencode() {
+            accounts::opencode_profile_dir(acc).display().to_string()
+        } else {
+            acc.config_dir
+                .as_deref()
+                .filter(|d| !d.trim().is_empty())
+                .unwrap_or("(mặc định)")
+                .to_string()
+        };
         out.push_str(&format!(
-            "  {:<10} {}/{} OK{:<2}  {}{}\n",
+            "  {:<10} {:<9} {}/{} OK{:<2}  {}{}\n",
             acc.name,
+            acc.cli_name(),
             ok,
             total,
             if acc.locked { "🔒" } else { "" },

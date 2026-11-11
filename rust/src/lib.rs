@@ -61,6 +61,7 @@ pub mod keys_win;
 /// (`huba setup`, `huba accounts`) — xem đầu tệp trước khi thêm trang thứ ba.
 pub mod localserver;
 pub mod logging;
+pub mod opencode;
 pub mod pipeline;
 /// Tài khoản nào còn nhiều hạn mức nhất — đọc `cachedUsageUtilization` trong
 /// `<config_dir>/.claude.json`, thứ chính CLI ghi. Không spawn, không tốn quota.

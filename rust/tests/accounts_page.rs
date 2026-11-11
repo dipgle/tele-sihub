@@ -493,3 +493,43 @@ fn http_that_qua_socket_dat_cookie_roi_tra_bang() {
     assert!(second.starts_with("HTTP/1.1 200"), "{second}");
     assert!(second.contains("acc9"), "{second}");
 }
+
+// ── ⑨ opencode: không có OAuth Claude, có ô JSON + CLI ────────────────────
+
+#[test]
+fn trang_opencode_an_dang_nhap_va_giu_o_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let accdir = tempfile::tempdir().unwrap();
+    let mut a = acc_at("acc8", accdir.path());
+    a.cli = Some("opencode".into());
+    a.env_file = Some("~/.opencode_acc8.env".into());
+    a.api_key_env = Some("OPENCODE_API_KEY".into());
+    a.model = Some("opencode-go/deepseek-v4.1-flash".into());
+    a.opencode_config = Some(serde_json::json!({"plugin": ["/x/plugin"]}));
+    let cfg = config_with(dir.path(), vec![a]);
+    let mut login = FakeLogin::default();
+    let mut st = page(&cfg, &mut login);
+
+    let r = route(&req("GET", "/acc/acc8", &[COOKIE], ""), &mut st);
+    assert_eq!(r.status, "200 OK");
+    assert!(r.body.contains("CLI"), "phải có ô chọn CLI: {}", r.body);
+    assert!(r.body.contains("opencode"), "{}", r.body);
+    assert!(
+        r.body.contains("opencode_config"),
+        "phải có ô JSON riêng: {}",
+        r.body
+    );
+    assert!(
+        !r.body.contains("Đăng nhập / đăng nhập lại"),
+        "opencode không có OAuth Claude — không được bày nút đăng nhập"
+    );
+
+    // Vế ngược: bấm ĐĂNG NHẬP vẫn không gọi hook Claude.
+    let r2 = route(
+        &req("POST", "/acc/acc8/login", &[COOKIE, ORIGIN], ""),
+        &mut st,
+    );
+    assert_eq!(r2.status, "200 OK");
+    assert!(r2.body.contains("không có OAuth Claude"), "{}", r2.body);
+    assert!(login.started.is_empty(), "không được gọi login.start");
+}

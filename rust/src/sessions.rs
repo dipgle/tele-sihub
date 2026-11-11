@@ -937,8 +937,9 @@ pub fn label_sessions(rows: &mut [LiveSession], root: &Path) {
         row.label = if doing_tells_apart {
             format!("{}·{}", base[i], doing[i])
         } else if !same_base.is_empty() {
-            let short = row.session_id.split('-').next().unwrap_or(&row.session_id);
-            format!("{}·{short}", base[i])
+            // Mã ngắn phải đi qua `short_id`: id opencode (`ses_…`) không bị
+            // dấu `-` cắt, nên bản cũ nhét nguyên 30 ký tự vào nhãn.
+            format!("{}·{}", base[i], short_id(&row.session_id))
         } else {
             base[i].clone()
         };
@@ -1365,7 +1366,13 @@ const SECRET_LABELS: [&str; 4] = [
 /// `!<lệnh>` là chế độ bash của chính TUI — đúng cái ngón tay chủ máy gõ, không
 /// đi qua tầng công cụ nào. Hai thứ khác hẳn nhau, và tôi đã suýt đẻ ra con
 /// đường thứ hai cho cùng một cái nút vì lẫn chúng làm một.
-pub const DENIED_TOOLS: [&str; 17] = [
+/// Danh sách DỰ PHÒNG khi không đọc được policy dùng chung.
+///
+/// Nguồn sự thật là `~/projects/scripts/bao-mat-policy.json` (cùng tệp cổng
+/// `cong_bao_mat.py` dùng), để nâng cấp luật một lần cho cả Claude lẫn opencode.
+/// Danh sách này chỉ để huba KHÔNG mất tường khi tệp ấy biến mất; lệch với tệp
+/// là một lỗi cần sửa, không phải một lựa chọn.
+pub const FALLBACK_DENIED_TOOLS: [&str; 17] = [
     "Bash(git push:*)",
     "Bash(git merge:*)",
     "Bash(git rebase:*)",
@@ -1384,6 +1391,73 @@ pub const DENIED_TOOLS: [&str; 17] = [
     "WebFetch",
     "WebSearch",
 ];
+
+/// Đọc một lần cho cả tiến trình: policy đổi thì khởi động lại hubad (hoặc
+/// `install_update.sh`), đúng như mọi thay đổi cấu hình khác.
+static DENIED_CACHE: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// Tường lệnh của huba, đọc từ policy DÙNG CHUNG với cổng bảo mật.
+///
+/// `BAO_MAT_POLICY` cho phép trỏ tệp khác (bài kiểm, máy khác). Không đọc được
+/// ⇒ dùng [`FALLBACK_DENIED_TOOLS`] và GHI log — không im lặng đổi luật.
+pub fn denied_tools() -> Vec<String> {
+    DENIED_CACHE.get_or_init(load_denied_tools).clone()
+}
+
+fn load_denied_tools() -> Vec<String> {
+    let path = std::env::var("BAO_MAT_POLICY")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            crate::config::home_dir()
+                .map(|h| {
+                    h.join("projects")
+                        .join("scripts")
+                        .join("bao-mat-policy.json")
+                })
+                .unwrap_or_default()
+        });
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            logging::warn(
+                "bao_mat_policy_unreadable",
+                json!({ "path": path.display().to_string(), "err": e.to_string(),
+                        "effect": "dùng danh sách dự phòng — nâng cấp luật sẽ không tới được huba" }),
+            );
+            return FALLBACK_DENIED_TOOLS
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+        }
+    };
+    match serde_json::from_str::<Value>(&text)
+        .ok()
+        .and_then(|v| v.get("deny_tools").and_then(Value::as_array).cloned())
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|v| !v.is_empty())
+    {
+        Some(v) => v,
+        None => {
+            logging::warn(
+                "bao_mat_policy_bad",
+                json!({ "path": path.display().to_string(),
+                        "why": "thiếu mảng `deny_tools` hoặc mảng rỗng",
+                        "effect": "dùng danh sách dự phòng" }),
+            );
+            FALLBACK_DENIED_TOOLS
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        }
+    }
+}
 
 /// Where a live session is hosted, decided by the process behind its pid.
 ///
@@ -1955,6 +2029,44 @@ fn task_note_summary(text: &str) -> Option<String> {
 /// để một câu văn lỡ nêu tên thư mục khác không lật được kết quả.
 ///
 /// Trả `None` khi không đủ bằng chứng — chỗ gọi in "(chưa rõ)" chứ đừng bịa.
+/// Dự án từ ĐƯỜNG DẪN làm việc — dùng cho nguồn opencode, nơi `directory` là
+/// dữ kiện có sẵn trong sổ (không cần đọc nhật ký như [`folder_from_tail`]).
+pub fn folder_from_dir(workspace_root: &Path, dir: &str) -> String {
+    let d = Path::new(dir);
+    if d == workspace_root {
+        return String::new();
+    }
+    let rel = d.strip_prefix(workspace_root).unwrap_or(d);
+    let parts: Vec<&str> = rel
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    match parts.as_slice() {
+        ["AI", project, ..] => (*project).to_string(),
+        [project, ..] => (*project).to_string(),
+        [] => String::new(),
+    }
+}
+
+/// Nhãn DỰ ÁN cho một phiên opencode, từ thư mục dự án mà chính opencode khai.
+///
+/// `folder_from_dir` trả RỖNG cho chính gốc workspace, và nhánh opencode cũ rơi
+/// về `s.name` — tức TIÊU ĐỀ phiên, thứ không phải tên dự án (Hà 2026-11-12:
+/// *"chỉ acc8 đang bị sai tên"*, ảnh danh sách). Gốc workspace thì lấy TÊN THƯ
+/// MỤC GỐC (`projects`) — cùng cách `folder_from_tail` đã đọc gốc ấy ở khối
+/// "phiên không có cửa sổ", nên hai chỗ không nói hai kiểu.
+pub fn opencode_project_label(workspace_root: &Path, worktree_or_dir: &str) -> String {
+    let f = folder_from_dir(workspace_root, worktree_or_dir);
+    if !f.is_empty() {
+        return strip_drawer(workspace_root, &f);
+    }
+    Path::new(worktree_or_dir.trim_end_matches('/'))
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string()
+}
+
 pub fn folder_from_tail(tail: &str, workspace_root: &str) -> Option<String> {
     let root = workspace_root.trim_end_matches('/');
     if root.is_empty() {
@@ -6120,6 +6232,106 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
         }
     }
 
+    // ── opencode: nguồn phiên THỨ HAI ─────────────────────────────────────
+    //
+    // Không đi qua `claude agents` và không có nhật ký JSONL: sổ của nó là
+    // SQLite trong phân vùng của từng tài khoản. `Err` ở đây là "không đo
+    // được" — phải vào `blind`, không được đọc thành "không có phiên".
+    for account in &cfg.claude_accounts_or_ambient() {
+        if !account.is_opencode() {
+            continue;
+        }
+        let bindings = match crate::opencode::read_bindings(account) {
+            Ok(b) => b,
+            Err(e) => {
+                logging::warn(
+                    "opencode_bindings_unreadable",
+                    json!({ "account": account.name, "err": e,
+                            "effect": "phiên vẫn lên danh sách nhưng không gắn được cửa sổ" }),
+                );
+                Default::default()
+            }
+        };
+        let listed = crate::opencode::read_sessions(account);
+        let rows = match listed {
+            Ok(v) => v,
+            Err(e) => {
+                logging::warn(
+                    "opencode_sessions_read_failed",
+                    json!({ "account": account.name, "err": e }),
+                );
+                out.notes.push(format!(
+                    "{} (opencode): {}",
+                    account.name,
+                    truncate(&e, 200)
+                ));
+                out.blind.push(account.name.clone());
+                continue;
+            }
+        };
+        logging::info(
+            "opencode_sessions_read",
+            json!({ "account": account.name, "count": rows.len() }),
+        );
+        for s in rows {
+            let binding = bindings.get(&s.id);
+            let tty = binding.map(|b| b.tty.clone()).unwrap_or_default();
+            let host = if tty.is_empty() {
+                "detached"
+            } else {
+                "terminal"
+            };
+            let last_activity =
+                chrono::DateTime::from_timestamp_millis(s.updated_ms).map(|d| d.to_rfc3339());
+            let working = chrono::Utc::now()
+                .timestamp_millis()
+                .saturating_sub(s.updated_ms)
+                < IDLE_AFTER_SEC * 1000;
+            out.sessions.push(LiveSession {
+                account: account.name.clone(),
+                session_id: s.id,
+                name: if s.title.trim().is_empty() {
+                    "(không tên)".to_string()
+                } else {
+                    s.title
+                },
+                label: String::new(),
+                lane: String::new(),
+                cwd: s.directory.clone(),
+                // 🔴 NHÃN PHẢI LÀ DỰ ÁN, không phải tiêu đề phiên — Hà 2026-11-12,
+                // ảnh danh sách: ba hàng acc8 đọc ra `Đọc CLAUDE.md trướ…`,
+                // `Exact OK reply request…`, không hàng nào nói dự án. Gốc: nhánh
+                // này lấy `folder` từ THƯ MỤC PHIÊN, mà phiên opencode mở ở gốc
+                // workspace thì `folder_from_dir` trả RỖNG ⇒ `label_sessions` rơi
+                // về `s.name` (tiêu đề). Nguồn đúng là `project.worktree` trong
+                // sổ của chính opencode.
+                folder: opencode_project_label(
+                    &cfg.workspace_root,
+                    s.project_dir.as_deref().unwrap_or(&s.directory),
+                ),
+                kind: "opencode".to_string(),
+                host: host.to_string(),
+                pid: 0,
+                started_at_ms: s.created_ms,
+                last_activity,
+                working,
+                status: None,
+                state: None,
+                context_tokens: s.context_tokens,
+                model: s.model,
+                tty,
+                last_text: s.last_text.clone(),
+                last_role: s.last_role.clone(),
+                note: if s.last_text.is_some() {
+                    None
+                } else {
+                    Some("opencode: chưa có lượt assistant nào đọc được trong kho phiên".into())
+                },
+                ..Default::default()
+            });
+        }
+    }
+
     // 🔴 Phép đo CHIA KHÚC. Hà 2026-08-14: *"máy khỏe, chỉ phục vụ 1 kênh
     // chat, vài lệnh không liên tục, vậy tại sao lại nghẽn"* — câu ấy không trả
     // lời được bằng `sessions_snapshot_ms`, thứ chỉ in một con số tổng. Và đo
@@ -6612,6 +6824,26 @@ fn claude_failed(session_id: &str, out: &crate::exec::RunOut) -> anyhow::Error {
 }
 
 fn fork_call(cfg: &Config, session: &LiveSession, prompt: &str) -> Result<ForkReply> {
+    if let Some(acc) = cfg
+        .claude_accounts_or_ambient()
+        .into_iter()
+        .find(|a| a.name == session.account)
+        .filter(|a| a.is_opencode())
+    {
+        let cwd = crate::config::expand_home(Path::new(&session.cwd));
+        let ans = crate::opencode::fork_call(cfg, &acc, &session.session_id, &cwd, prompt)
+            .map_err(anyhow::Error::msg)?;
+        logging::info(
+            "fork_call_opencode",
+            json!({ "session": session.session_id, "new_session": ans.new_session_id,
+                    "account": acc.name, "cost_usd": ans.cost_usd }),
+        );
+        return Ok(ForkReply {
+            new_session_id: ans.new_session_id,
+            text: ans.text,
+            cost_usd: ans.cost_usd,
+        });
+    }
     // Cap the CALL. `--resume` loads the whole conversation, so one handover on
     // a 986 KB session cost $1.72 on its first real run (2026-08-08) and a day
     // ceiling only refuses the NEXT call.
@@ -7325,41 +7557,84 @@ pub fn btw_answer(screen: &str, question: &str) -> String {
     text
 }
 
+/// Đường hỏi bên lề cho một phiên: gõ `/btw` THẲNG vào cửa sổ, hay dựng bản sao.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DuongHoiBenLe {
+    Btw,
+    Fork,
+}
+
+/// Chỉ gõ `/btw` khi BIẾT CHẮC đây là một phiên Claude có hàng tài khoản.
+///
+/// 🔴 Đo 2026-11-12 17:12Z và 17:15Z: hai lượt `/ask` của chủ máy mất **75,2 s**
+/// và **74,3 s** rồi vẫn trả "hỏng". Nguyên nhân: `/ask` bắn vào hàng giả
+/// `win-ttys001` (một cửa sổ chạy CLI huba chưa nhận ra, `account` rỗng) ⇒
+/// `opencode` = false ⇒ huba tưởng đây là phiên Claude ⇒ gõ `/btw` vào TUI
+/// opencode, nơi `/btw` không tồn tại, rồi ngồi chờ hết hạn. Không nhận ra CLI
+/// thì KHÔNG gõ gì cả: đi thẳng đường fork (nó sẽ nói thật lý do nếu không có
+/// bản sao), thay vì bắn chữ lạ vào cửa sổ người khác.
+pub fn duong_hoi_ben_le(acc: Option<&ClaudeAccountCfg>) -> DuongHoiBenLe {
+    match acc {
+        Some(a) if !a.is_opencode() => DuongHoiBenLe::Btw,
+        _ => DuongHoiBenLe::Fork,
+    }
+}
+
 pub fn ask_aside(cfg: &Config, session: &LiveSession, question: &str) -> Result<Aside> {
     let question = question.trim();
     if question.is_empty() {
         anyhow::bail!("chưa có câu hỏi");
     }
 
+    let opencode = cfg
+        .claude_accounts_or_ambient()
+        .iter()
+        .any(|a| a.name == session.account && a.is_opencode());
+    // Chỉ gõ `/btw` khi BIẾT CHẮC đây là một phiên Claude có hàng tài khoản —
+    // lý do và số đo ở [`duong_hoi_ben_le`].
+    let hang = account_row(cfg, Some(&session.account));
+    let la_claude = duong_hoi_ben_le(hang.as_ref()) == DuongHoiBenLe::Btw;
     // Đường THẲNG trước: hỏi chính phiên đang sống, y như ngồi trước máy.
     // `/btw` hỏng SAU KHI đã gõ vào phiên ⟹ mang trạng thái phiên sau khi dọn
     // xuống đường fork, để câu trả lời không khai "phiên gốc không bị đụng".
-    let btw_hong = match ask_via_btw(session, question) {
-        BtwKq::TraLoi(screen) => {
-            return Ok(Aside {
-                source_id: session.session_id.clone(),
-                source_name: session.name.clone(),
-                // Không có fork nào cả — câu trả lời nằm trong CHÍNH phiên ấy.
-                new_session_id: session.session_id.clone(),
-                question: question.to_string(),
-                answer: {
-                    note_preview_risk("aside_screen", &screen);
-                    screen.clone()
-                },
-                cost_usd: 0.0,
-                ts: crate::logging::now_iso(),
-                btw_hong: None,
-            });
+    // ⚠ opencode KHÔNG có `/btw`; gõ nó vào TUI opencode là gõ một câu lạ.
+    let btw_hong = if la_claude {
+        match ask_via_btw(session, question) {
+            BtwKq::TraLoi(screen) => {
+                return Ok(Aside {
+                    source_id: session.session_id.clone(),
+                    source_name: session.name.clone(),
+                    // Không có fork nào cả — câu trả lời nằm trong CHÍNH phiên ấy.
+                    new_session_id: session.session_id.clone(),
+                    question: question.to_string(),
+                    answer: {
+                        note_preview_risk("aside_screen", &screen);
+                        screen.clone()
+                    },
+                    cost_usd: 0.0,
+                    ts: crate::logging::now_iso(),
+                    btw_hong: None,
+                });
+            }
+            BtwKq::KhongGo => None,
+            BtwKq::DaGoHong(con) => Some(con),
         }
-        BtwKq::KhongGo => None,
-        BtwKq::DaGoHong(con) => Some(con),
+    } else {
+        None
     };
     // Fork cần một CUỘC HỘI THOẠI để `--resume`. Phiên vừa mở, chưa nói lượt
     // nào, thì không có gì để nạp — và `claude` trả đúng câu ấy: *"No
     // conversation found with session ID: …"*, exit 1, sau khi đã tính tiền
     // khởi động. Đo 2026-08-11. Nói thẳng trước khi gọi thì rẻ hơn, và câu trả
     // lời nói được việc cần làm thay vì một mã lỗi.
-    if locate_transcript(cfg, &session.cwd, &session.session_id).is_none() {
+    // opencode: bằng chứng "đã nói lượt nào" là `last_text` đọc từ kho phiên,
+    // không phải tệp JSONL của Claude.
+    if opencode && session.last_text.as_deref().unwrap_or("").trim().is_empty() {
+        anyhow::bail!(
+            "phiên opencode này chưa có lượt assistant nào trong kho — giao cho nó một việc trước đã."
+        );
+    }
+    if !opencode && locate_transcript(cfg, &session.cwd, &session.session_id).is_none() {
         let roots: Vec<String> = transcript_roots(cfg)
             .iter()
             .map(|r| r.display().to_string())
@@ -7505,6 +7780,9 @@ fn start_in_terminal(
     account: Option<&str>,
     resume: Option<&str>,
 ) -> Result<Started> {
+    if account_row(cfg, account).is_some_and(|a| a.is_opencode()) {
+        return start_opencode_in_terminal(cfg, root, project, dir, task, account, resume);
+    }
     // Mở cửa sổ TRỐNG — đề bài gõ vào sau, khi ô nhập đã sẵn sàng.
     let cmd = window_command(cfg, account, root, None, resume);
     let (window, tty) = crate::keys::open_window(&cmd)?;
@@ -7587,6 +7865,114 @@ fn start_in_terminal(
         // Đường chính đi được thì không có đường lui nào để giải thích.
         fallback_why: None,
     })
+}
+
+/// Mở một phiên opencode trong cửa sổ Terminal.
+///
+/// Ba đường, khác nhau ở chỗ BIẾT id lúc nào:
+/// * `--resume <id>` (nối phiên cũ): id đã biết ngay — gắn cửa sổ rồi trả.
+/// * có đề bài: opencode sinh phiên ở lượt đầu tiên, nên chờ kho xuất hiện id
+///   mới trong đúng thư mục — đây là "nhật ký chào đời" của opencode.
+/// * đề bài rỗng: chưa có phiên nào; trả id `win-<tty>` như cửa sổ trần, và
+///   phiên sẽ tự lên danh sách khi chủ máy gõ câu đầu tiên.
+///
+/// Không có nhánh `--bg`: opencode không có chế độ phiên nền, và bịa một
+/// phiên không có cửa sổ là đúng thứ luật 1 cấm.
+fn start_opencode_in_terminal(
+    cfg: &Config,
+    root: &Path,
+    project: &str,
+    dir: &Path,
+    task: &str,
+    account: Option<&str>,
+    resume: Option<&str>,
+) -> Result<Started> {
+    let Some(acc) = account_row(cfg, account) else {
+        anyhow::bail!("không thấy hàng tài khoản opencode");
+    };
+    let opened_ms = chrono::Utc::now().timestamp_millis();
+    let cmd = window_command(
+        cfg,
+        account,
+        root,
+        (!task.trim().is_empty()).then_some(task),
+        resume,
+    );
+    let (window, tty) = crate::keys::open_window(&cmd)?;
+    let tty_short = tty.rsplit('/').next().unwrap_or(&tty).to_string();
+    logging::info(
+        "new_window_opened",
+        json!({ "window": window, "tty": tty_short, "cli": "opencode", "task": truncate(task, 80) }),
+    );
+    let session_id = if let Some(id) = resume.map(str::trim).filter(|r| !r.is_empty()) {
+        if let Err(e) = crate::opencode::write_binding(&acc, id, window, &tty_short) {
+            logging::error(
+                "opencode_bind_write_failed",
+                json!({ "account": acc.name, "session": id, "err": e,
+                        "effect": "phiên mở được nhưng /shot /stop không tìm thấy cửa sổ" }),
+            );
+        }
+        id.to_string()
+    } else if !task.trim().is_empty() {
+        match wait_opencode_session(&acc, root, opened_ms, 45) {
+            Some(s) => {
+                if let Err(e) = crate::opencode::write_binding(&acc, &s.id, window, &tty_short) {
+                    logging::error(
+                        "opencode_bind_write_failed",
+                        json!({ "account": acc.name, "session": s.id, "err": e,
+                                "effect": "phiên mở được nhưng /shot /stop không tìm thấy cửa sổ" }),
+                    );
+                }
+                s.id
+            }
+            None => {
+                logging::warn(
+                    "opencode_session_not_seen",
+                    json!({ "account": acc.name, "tty": tty_short,
+                            "why": "cửa sổ đã mở nhưng chưa thấy phiên trong kho sau 45 s — vẫn giữ cửa sổ",
+                            "effect": "id tạm win-<tty>; phiên sẽ lên danh sách riêng khi opencode ghi sổ" }),
+                );
+                format!("{SHELL_ID_PREFIX}{tty_short}")
+            }
+        }
+    } else {
+        format!("{SHELL_ID_PREFIX}{tty_short}")
+    };
+    Ok(Started {
+        session_id,
+        project: project.to_string(),
+        cwd: dir.to_string_lossy().to_string(),
+        task: task.to_string(),
+        ts: crate::logging::now_iso(),
+        window: true,
+        fallback_why: None,
+    })
+}
+
+fn wait_opencode_session(
+    acc: &ClaudeAccountCfg,
+    root: &Path,
+    since_ms: i64,
+    secs: u64,
+) -> Option<crate::opencode::OcSession> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    loop {
+        match crate::opencode::newest_session_since(acc, root, since_ms) {
+            Ok(Some(s)) => return Some(s),
+            Ok(None) => {}
+            Err(e) => {
+                logging::warn(
+                    "opencode_session_wait_failed",
+                    json!({ "account": acc.name, "err": e,
+                            "effect": "tiếp tục chờ — lỗi đọc kho không phải 'chưa có phiên'" }),
+                );
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
 }
 
 /// Ô nhập đã sẵn sàng nhận chữ chưa — ba kết cục, không gộp vào một `bool`.
@@ -8735,7 +9121,7 @@ pub fn terminal_command_resuming(
     // với một dòng đỏ thay vì một phiên. Nhánh `--bg` không dính vì nó truyền
     // argv thẳng, không đi qua shell; nhánh cửa sổ thì có, nên rào chỉ còn là
     // rào khi nó sống sót qua shell.
-    let denied = DENIED_TOOLS
+    let denied = denied_tools()
         .iter()
         .map(|t| shell_quote(t))
         .collect::<Vec<_>>()
@@ -8788,11 +9174,58 @@ pub fn window_command(
     prompt: Option<&str>,
     resume: Option<&str>,
 ) -> String {
+    if account_row(cfg, account).is_some_and(|a| a.is_opencode()) {
+        return opencode_terminal_command(&account_launch(cfg, account), root, prompt, resume);
+    }
     if cfg!(windows) {
         terminal_script_ps(&account_launch_ps(cfg, account), root, prompt, resume)
     } else {
         terminal_command_resuming(&account_launch(cfg, account), root, prompt, resume)
     }
+}
+
+/// Hàng tài khoản đang được gọi — `None` = hàng mặc định (ambient).
+fn account_row(cfg: &Config, account: Option<&str>) -> Option<ClaudeAccountCfg> {
+    match account {
+        Some(name) => cfg
+            .claude_accounts_or_ambient()
+            .into_iter()
+            .find(|a| a.name == name),
+        None => cfg
+            .claude_accounts_or_ambient()
+            .into_iter()
+            .find(|a| a.config_dir.as_deref().unwrap_or("").trim().is_empty()),
+    }
+}
+
+/// Dòng lệnh mở opencode trong cửa sổ Terminal.
+///
+/// KHÁC hẳn khuôn Claude: opencode không có `--permission-mode` cũng không có
+/// `--disallowedTools` (bức tường đi qua `OPENCODE_CONFIG_CONTENT`), đề bài đi
+/// bằng `--prompt`, nối phiên bằng `--session`. Đề bài qua `--prompt` là cố ý:
+/// opencode chỉ sinh phiên khi có lượt đầu tiên, nên chờ "nhật ký chào đời" như
+/// Claude sẽ chờ một tệp không bao giờ có.
+fn opencode_terminal_command(
+    launch: &str,
+    root: &Path,
+    prompt: Option<&str>,
+    resume: Option<&str>,
+) -> String {
+    let resume = match resume.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(r) => format!("--session {} ", shell_quote(r)),
+        None => String::new(),
+    };
+    let prompt = match prompt.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => format!("--prompt {} ", shell_quote(p)),
+        None => String::new(),
+    };
+    format!(
+        "cd {} && {} {}{}",
+        shell_quote(&root.to_string_lossy()),
+        launch,
+        resume,
+        prompt
+    )
 }
 
 /// [`account_launch`] cho PowerShell: `$env:CLAUDE_CONFIG_DIR = '…'; & 'claude'`.
@@ -8827,7 +9260,7 @@ pub fn terminal_script_ps(
     resume: Option<&str>,
 ) -> String {
     use crate::win_procs::{ps_arg, ps_quote};
-    let denied = DENIED_TOOLS
+    let denied = denied_tools()
         .iter()
         .map(|t| ps_arg(t))
         .collect::<Vec<_>>()
@@ -8947,6 +9380,14 @@ pub fn start_background(
         }
     }
 
+    // opencode KHÔNG có `--bg`: không cửa sổ thì không có phiên. Bịa một phiên
+    // nền bằng cú pháp Claude là mở một tiến trình chết ngay dòng đầu.
+    if account_row(cfg, account).is_some_and(|a| a.is_opencode()) {
+        anyhow::bail!(
+            "opencode chỉ chạy trong cửa sổ Terminal — không mở được cửa sổ: {}",
+            why.unwrap_or_else(|| "new_in_terminal = false".into())
+        );
+    }
     // Đường lui `--bg` KHÔNG có cửa sổ nào để gõ vào, nên đề bài rỗng ở đây là
     // một phiên nằm chết mà huba lại báo "đã mở".
     if task_with_project.is_empty() {
@@ -8955,8 +9396,9 @@ pub fn start_background(
              (không có cửa sổ nào để gõ vào) — gõ lại kèm việc cần làm"
         );
     }
+    let denied = denied_tools();
     let mut args: Vec<&str> = vec!["--bg", &task_with_project, "--disallowedTools"];
-    args.extend_from_slice(&DENIED_TOOLS);
+    args.extend(denied.iter().map(String::as_str));
     let (prog, argv) = account_call(cfg, account, &args);
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
 
@@ -9131,8 +9573,20 @@ pub fn start_background(
 /// which huba logged as a warning while telling the owner the session had
 /// stopped. Everything else here keys on the full id, so the narrowing happens
 /// at the one call that needs it.
+/// Mã ngắn để đọc/gõ — 8 ký tự.
+///
+/// 🔴 HAI hình dạng id cùng tồn tại trên máy này: Claude `e83c2d9a-1234-…` và
+/// opencode `ses_e349d2d17ffebjGNQ1kW7qVsnK`. Bản cũ chỉ cắt ở dấu `-`, nên id
+/// opencode KHÔNG BAO GIỜ ngắn lại: hàng Telegram của acc8 mang nguyên chuỗi 30
+/// ký tự và tràn sang dòng thứ ba (ảnh Hà 2026-11-12). Cắt sau khi bỏ tiền tố
+/// `ses_` — và cắt theo KÝ TỰ, không theo byte.
 pub fn short_id(session_id: &str) -> &str {
-    session_id.split('-').next().unwrap_or(session_id)
+    let s = session_id.strip_prefix("ses_").unwrap_or(session_id);
+    let first = s.split('-').next().unwrap_or(s);
+    match first.char_indices().nth(8) {
+        Some((i, _)) => &first[..i],
+        None => first,
+    }
 }
 
 /// `/close` — ĐÓNG HẲN: thoát CLI rồi đóng luôn cửa sổ Terminal.
@@ -9506,5 +9960,151 @@ mod folder_memo_tests {
             "username-53",
             "không có dự án thì giữ tên, không bịa nhãn rỗng"
         );
+    }
+}
+
+#[cfg(test)]
+mod duong_hoi_ben_le_tests {
+    use super::*;
+
+    fn hang(json: &str) -> ClaudeAccountCfg {
+        serde_json::from_str(json).expect("hàng tài khoản tối thiểu")
+    }
+
+    /// Không nhận ra CLI thì KHÔNG gõ `/btw` — số đo: 75,2 s + 74,3 s của hai
+    /// lượt `/ask` 12/11, câu `/btw` rơi vào TUI opencode rồi bỏ cuộc.
+    #[test]
+    fn chi_go_btw_khi_biet_chac_la_phien_claude() {
+        let claude = hang(r#"{"name":"acc3","extra_env":{},"extra_args":[],"locked":false}"#);
+        let oc = hang(
+            r#"{"name":"acc8","cli":"opencode","extra_env":{},"extra_args":[],"locked":false}"#,
+        );
+        assert_eq!(duong_hoi_ben_le(Some(&claude)), DuongHoiBenLe::Btw);
+        assert_eq!(
+            duong_hoi_ben_le(Some(&oc)),
+            DuongHoiBenLe::Fork,
+            "opencode không có /btw — gõ vào là gõ một câu lạ"
+        );
+        assert_eq!(
+            duong_hoi_ben_le(None),
+            DuongHoiBenLe::Fork,
+            "hàng giả `win-<tty>` (account rỗng) KHÔNG được gõ /btw vào CLI lạ"
+        );
+    }
+}
+
+#[cfg(test)]
+mod opencode_nhan_du_an_tests {
+    use super::*;
+
+    /// Hàng acc8 phải đọc ra DỰ ÁN, không đọc ra tiêu đề phiên.
+    ///
+    /// 🔴 Hà 2026-11-12, ảnh danh sách Telegram: ba hàng acc8 mang
+    /// `Đọc CLAUDE.md trướ…`, `Exact OK reply request…` — không hàng nào nói dự
+    /// án, vì `folder_from_dir` trả RỖNG khi thư mục phiên là chính gốc
+    /// workspace. Đo trên sổ thật `~/.opencode-acc8/data/opencode/opencode.db`:
+    /// `ses_e347b7…` worktree `…/projects/huba` · `ses_e349d2…` worktree
+    /// `…/projects` (phiên mở ở gốc).
+    #[test]
+    fn nhan_la_du_an_khong_phai_tieu_de() {
+        let root = Path::new("/Users/x/projects");
+        assert_eq!(
+            opencode_project_label(root, "/Users/x/projects/huba"),
+            "huba"
+        );
+        assert_eq!(
+            opencode_project_label(root, "/Users/x/projects/huba/rust"),
+            "huba",
+            "thư mục con vẫn thuộc dự án cha"
+        );
+        assert_eq!(
+            opencode_project_label(root, "/Users/x/projects"),
+            "projects",
+            "gốc workspace phải ra TÊN GỐC, không ra chuỗi rỗng (thứ khiến nhãn rơi về tiêu đề)"
+        );
+        assert_eq!(
+            opencode_project_label(Path::new("/Users/x/projects"), "/Users/x/projects/AI/huba"),
+            "huba",
+            "ngăn kéo AI/ bị bỏ đúng một bậc, như mọi nhãn khác"
+        );
+    }
+
+    /// Id opencode phải ngắn lại như id Claude — nếu không, hàng Telegram mang
+    /// nguyên `ses_e349d2d17ffebjGNQ1kW7qVsnK` và tràn sang dòng thứ ba.
+    #[test]
+    fn ma_ngan_cat_dung_ca_id_opencode() {
+        assert_eq!(short_id("e83c2d9a-1111-2222-3333-444455556666"), "e83c2d9a");
+        assert_eq!(short_id("ses_e349d2d17ffebjGNQ1kW7qVsnK"), "e349d2d1");
+        assert_eq!(short_id("abc"), "abc", "ngắn hơn 8 thì để nguyên");
+    }
+}
+
+#[cfg(test)]
+mod opencode_command_tests {
+    use super::*;
+
+    /// Cửa sổ opencode KHÔNG mang cờ Claude, và đề bài/nối phiên đi đúng cờ của nó.
+    #[test]
+    fn mo_phien_opencode_khong_mang_co_claude() {
+        let mut cfg = Config {
+            claude_accounts: vec![ClaudeAccountCfg {
+                name: "acc8".into(),
+                cli: Some("opencode".into()),
+                env_file: Some("~/.opencode_acc8.env".into()),
+                api_key_env: Some("OPENCODE_API_KEY".into()),
+                model: Some("opencode-go/deepseek-v4.1-flash".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let cmd = window_command(
+            &cfg,
+            Some("acc8"),
+            Path::new("/tmp"),
+            Some("việc cần làm"),
+            None,
+        );
+        assert!(cmd.contains("--prompt 'việc cần làm'"), "{cmd}");
+        assert!(!cmd.contains("--permission-mode"), "{cmd}");
+        assert!(!cmd.contains("--disallowedTools"), "{cmd}");
+        // TUI opencode KHÔNG nhận `--model`; model nằm trong config content.
+        assert!(!cmd.contains("--model"), "{cmd}");
+        assert!(cmd.contains("deepseek-v4.1-flash"), "{cmd}");
+        let resume = window_command(&cfg, Some("acc8"), Path::new("/tmp"), None, Some("ses_123"));
+        assert!(resume.contains("--session 'ses_123'"), "{resume}");
+        // Đối chứng ngược: tài khoản Claude vẫn giữ nguyên khuôn cũ.
+        cfg.claude_accounts.push(ClaudeAccountCfg {
+            name: "acc3".into(),
+            config_dir: Some("~/.claude-acc3".into()),
+            ..Default::default()
+        });
+        let claude = window_command(&cfg, Some("acc3"), Path::new("/tmp"), None, None);
+        assert!(claude.contains("--permission-mode auto"), "{claude}");
+        assert!(claude.contains("--disallowedTools"), "{claude}");
+    }
+}
+
+#[cfg(test)]
+mod denied_tools_tests {
+    use super::*;
+
+    /// Policy dùng chung và danh sách dự phòng phải nói CÙNG một luật.
+    ///
+    /// Bài này ĐỎ khi ai đó sửa `bao-mat-policy.json` mà quên cập nhật
+    /// `FALLBACK_DENIED_TOOLS` — đúng lúc cần biết, vì fallback chỉ dùng khi
+    /// không đọc được policy, và lúc ấy một luật cũ là một lỗ hổng.
+    #[test]
+    fn policy_dung_chung_khop_voi_fallback() {
+        let tu_file = denied_tools();
+        let fallback: Vec<String> = FALLBACK_DENIED_TOOLS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            tu_file, fallback,
+            "bao-mat-policy.json và FALLBACK_DENIED_TOOLS đã lệch — sửa một trong hai"
+        );
+        assert!(tu_file.iter().any(|t| t == "WebFetch"));
+        assert!(tu_file.iter().any(|t| t == "Bash(*deploy*)"));
     }
 }

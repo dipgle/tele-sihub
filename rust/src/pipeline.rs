@@ -14114,7 +14114,9 @@ pub fn session_button_label(s: &crate::sessions::LiveSession) -> String {
 
 /// Tám ký tự đầu của id — đúng thứ `claude stop` nhận, và đúng thứ trang hiện.
 fn short_id(session_id: &str) -> &str {
-    session_id.split('-').next().unwrap_or(session_id)
+    // MỘT nguồn: bản trong `sessions` đã biết cả id opencode (`ses_…`); bản
+    // chép ở đây từng cắt sai đúng hình dạng ấy (ảnh danh sách 12/11).
+    crate::sessions::short_id(session_id)
 }
 
 /// Execute button presses that arrived on a channel, then acknowledge them on

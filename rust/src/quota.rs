@@ -1090,9 +1090,15 @@ pub fn rank_all(cfg: &crate::config::Config, now_ms: i64) -> Vec<Ranked> {
             // này (`/new` không `-a`, gợi ý khi bị chặn, tự chuyển khi kịch trần,
             // bàn giao tự động, `huba handover -a auto`) — một chỗ đóng dấu thì
             // năm đường cùng thấy, và dòng log dưới cũng nói ra.
+            let opencode = cfg
+                .claude_accounts_or_ambient()
+                .iter()
+                .any(|a| a.name == q.account && a.is_opencode());
             let r = if cfg.account_locked(&q.account) {
                 Rank::Locked
-            } else if dung_api_key(cfg, &q.account) {
+            } else if opencode || dung_api_key(cfg, &q.account) {
+                // Huba không tự chọn tài khoản opencode: key/plan do chủ máy
+                // cấu hình, và không có sổ hạn mức để so. `-a` vẫn mở được.
                 Rank::ApiKey
             } else {
                 rank(&q, now_ms)
@@ -1147,10 +1153,33 @@ pub fn dung_api_key(cfg: &crate::config::Config, ten: &str) -> bool {
 /// `$HOME`, và bài kiểm `usage_still_being_measured_says_so_instead_of_showing_zero`
 /// đỏ ngay — nó chấm *"không được bịa 0%"* trên một câu nay mang số thật của
 /// máy đang chạy. Cổng bắt đúng chỗ; chép lại đây để đừng ai vá lại kiểu ấy.
+/// Một `Quota` "không đo được" — trạng thái riêng, KHÔNG phải 0%.
+pub fn khong_do_duoc(account: &str, why: &str) -> Quota {
+    Quota {
+        account: account.to_string(),
+        week_pct: None,
+        week_resets_at: None,
+        hour5_pct: None,
+        hour5_resets_at: None,
+        fetched_at_ms: None,
+        why_unknown: Some(why.to_string()),
+        chua_dung_duoc: None,
+        models: Vec::new(),
+        model_use: None,
+    }
+}
+
 pub fn read_all(cfg: &crate::config::Config) -> Vec<Quota> {
     cfg.claude_accounts_or_ambient()
         .iter()
         .map(|a| {
+            if a.is_opencode() {
+                // opencode không có sổ `.claude.json`; đọc nó sẽ đẻ ra một
+                // `account_not_ready` GIẢ và có thể loại tài khoản khỏi mọi
+                // đường chọn. "Không đo được" là trạng thái riêng, không phải
+                // "chưa đăng nhập" (luật 13②).
+                return khong_do_duoc(&a.name, "opencode: không dùng sổ hạn mức Claude");
+            }
             let dir = a
                 .config_dir
                 .as_deref()
