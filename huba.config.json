@@ -84,7 +84,26 @@
     {
       "name": "acc8",
       "config_dir": "~/.claude-acc8",
-      "launch": "env $(sed \"s/^OPENCODE_API_KEY=/ANTHROPIC_API_KEY=/\" $HOME/.opencode_acc8.env | xargs) ANTHROPIC_BASE_URL=https://opencode.ai/inference/go/anthropic CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4.1-flash CLAUDE_CONFIG_DIR=$HOME/.claude-acc8 claude --debug --model deepseek-v4.1-flash"
+      "cli": "opencode",
+      "env_file": "~/.opencode_acc8.env",
+      "api_key_env": "OPENCODE_API_KEY",
+      "model": "opencode-go/deepseek-v4.1-flash",
+      "opencode_config": {
+        "plugin": [
+          "~/projects/scripts/cong-bao-mat-plugin"
+        ],
+        "mcp": {
+          "project-agent": {
+            "type": "local",
+            "command": [
+              "~/projects/AI/init-project/mcp/project-agent-rs/target/release/project-agent"
+            ],
+            "environment": {
+              "PROJECTS_ROOT": "~/projects"
+            }
+          }
+        }
+      }
     },
     {
       "name": "acc9",

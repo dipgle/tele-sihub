@@ -118,7 +118,12 @@ pub fn parse_command(text: &str) -> Option<(CommandKind, i64, String)> {
         return None;
     }
     let mut parts = t[1..].splitn(3, char::is_whitespace);
-    let verb = parts.next().unwrap_or("").to_lowercase();
+    // Giữ BẢN GỐC: tên lệnh thì so không phân biệt hoa/thường, nhưng id phiên
+    // nằm TRONG tên lệnh và opencode đặt id có chữ HOA (`ses_e349d2d1…K`).
+    // Đo 12/11: bấm hàng acc8 ⇒ `s_ses_…K` bị hạ chữ thường ⇒ không khớp id
+    // thật. Claude uuid toàn chữ thường nên lỗi này nằm im từ đầu.
+    let raw_verb = parts.next().unwrap_or("");
+    let verb = raw_verb.to_lowercase();
     // ⭐ LỆNH TỰ TÔ SÁNG — tham số nằm trong TÊN lệnh, không phải sau dấu cách.
     //
     // 🔴 Hà 2026-08-14: *"Sao không dùng Deep Links để định dạng bên trong nội
@@ -159,7 +164,7 @@ pub fn parse_command(text: &str) -> Option<(CommandKind, i64, String)> {
         }
         crate::sessions::is_shell_id(sid) || sid.chars().all(|c| c.is_ascii_hexdigit())
     }
-    if let Some(rest) = verb.strip_prefix("pick_") {
+    if let Some(rest) = raw_verb.strip_prefix("pick_") {
         // `pick_<8 ký tự đầu id>_<câu>_<lựa chọn>`
         let f: Vec<&str> = rest.split('_').collect();
         if f.len() == 3 && !f[0].is_empty() {
@@ -320,8 +325,9 @@ pub fn parse_command(text: &str) -> Option<(CommandKind, i64, String)> {
     // Id ĐẦY ĐỦ nằm trong payload (uuid 36 ký tự + `s_` = 38 ≤ 64 của
     // Telegram), nên liên kết mang đúng cái lệnh cũ cái nút mang — `/session
     // <uuid>` — chứ không phải một đường thứ hai phải nhớ.
-    if let Some(id) = verb.strip_prefix("s_") {
+    if let Some(id) = raw_verb.strip_prefix("s_") {
         let ok = crate::sessions::is_shell_id(id)
+            || crate::sessions::is_opencode_session_id(id)
             || (!id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'));
         if ok {
             return Some((CommandKind::Session, 0, id.to_string()));
@@ -337,8 +343,9 @@ pub fn parse_command(text: &str) -> Option<(CommandKind, i64, String)> {
     // cái việc nó làm. Tách riêng chứ không nhét thêm cờ vào `s_`, vì *"vào
     // phiên"* và *"xem màn"* là hai việc — gộp là dựng một đường mà người đọc
     // không đoán được nó sẽ làm gì.
-    if let Some(id) = verb.strip_prefix("shot_") {
+    if let Some(id) = raw_verb.strip_prefix("shot_") {
         let ok = crate::sessions::is_shell_id(id)
+            || crate::sessions::is_opencode_session_id(id)
             || (!id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'));
         if ok {
             return Some((CommandKind::Shot, 0, id.to_string()));

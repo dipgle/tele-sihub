@@ -106,8 +106,7 @@ fn a_tap_becomes_the_same_command_the_button_sent() {
     assert_eq!(
         parse_command("/start s_7db02925"),
         Some((CommandKind::Session, 0, "7db02925".to_string()))
-    );
-    // Cửa sổ Terminal trần (`win-ttysNNN`) vẫn là một hàng bấm được.
+    ); // Cửa sổ Terminal trần (`win-ttysNNN`) vẫn là một hàng bấm được.
     assert_eq!(
         parse_command("/start s_win-ttys002"),
         Some((CommandKind::Session, 0, "win-ttys002".to_string()))
@@ -115,6 +114,25 @@ fn a_tap_becomes_the_same_command_the_button_sent() {
     // …còn một chuỗi bịa thì không lọt vào chỗ con trỏ phiên.
     assert_eq!(parse_command("/start s_khong-phai-id-nao"), None);
     assert_eq!(parse_command("/start s_"), None);
+}
+
+/// Cú chạm vào hàng của phiên **opencode** cũng phải cởi ra thành `/session`.
+///
+/// 🔴 Hà 2026-11-12: *"bấm vào phiên đang chạy acc8 báo chưa hiểu lệnh này"*.
+/// Đo trong sổ `tin_den` (22:09:22Z · 22:09:42Z): liên kết gửi
+/// `/start s_ses_e349d2d17ffebjGNQ1kW7qVsnK`, mà bộ đọc `s_` chỉ nhận uuid hex
+/// của `claude` ⇒ cú bấm rơi vào nhánh "không hiểu lệnh".
+#[test]
+fn a_tap_on_an_opencode_row_is_still_a_session_command() {
+    const OC: &str = "ses_e349d2d17ffebjGNQ1kW7qVsnK";
+    assert_eq!(
+        parse_command(&format!("/start s_{OC}")),
+        Some((CommandKind::Session, 0, OC.to_string()))
+    );
+    assert_eq!(
+        parse_command(&format!("/start shot_{OC}")),
+        Some((CommandKind::Shot, 0, OC.to_string()))
+    );
 }
 
 /// Dựng không nổi liên kết ⟹ KHÔNG hàng nào được bọc, để chỗ gọi rơi về nút.

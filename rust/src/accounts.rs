@@ -170,6 +170,26 @@ pub fn opencode_security_plugin() -> String {
         })
 }
 
+/// Mở rộng `~/…` trong MỌI chuỗi của `opencode_config`, đệ quy.
+///
+/// 🔴 VÌ SAO: `huba.config.json` được COMMIT và kho origin là CÔNG KHAI, nên
+/// đường dẫn tuyệt đối `/Users/<tên>/…` là dấu vết cá nhân (rào riêng tư của
+/// repo chặn đúng — 12/11). Mà opencode KHÔNG tự mở `~` trong `plugin` / `mcp` /
+/// `environment`, nên phải mở Ở ĐÂY, một chỗ: cấu hình giữ `~/…` (đọc được,
+/// không lộ tên máy) còn tiến trình con nhận đường dẫn tuyệt đối.
+fn expand_home_in_json(v: &mut Value) {
+    match v {
+        Value::String(s) if s.starts_with("~/") || s.starts_with("~\\") => {
+            *s = crate::config::expand_home(std::path::Path::new(s))
+                .to_string_lossy()
+                .into_owned();
+        }
+        Value::Array(a) => a.iter_mut().for_each(expand_home_in_json),
+        Value::Object(o) => o.values_mut().for_each(expand_home_in_json),
+        _ => {}
+    }
+}
+
 pub fn opencode_config_content(acc: &ClaudeAccountCfg) -> Value {
     let mut root = match &acc.opencode_config {
         Some(Value::Object(o)) => Value::Object(o.clone()),
@@ -182,6 +202,7 @@ pub fn opencode_config_content(acc: &ClaudeAccountCfg) -> Value {
         }
         None => json!({}),
     };
+    expand_home_in_json(&mut root);
     // Agent chỉ-đọc cho /ask + /handover. Đặt trước bộ chặn để tài khoản vẫn
     // có thể thêm agent riêng, nhưng agent này thì luôn có.
     let obj = root.as_object_mut().expect("root luôn là object");

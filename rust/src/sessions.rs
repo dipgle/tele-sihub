@@ -8987,6 +8987,25 @@ pub fn is_shell_id(id: &str) -> bool {
     id.starts_with(SHELL_ID_PREFIX)
 }
 
+/// Id phiên của opencode: `ses_` + chữ/số (đo trên kho thật:
+/// `ses_e349d2d17ffebjGNQ1kW7qVsnK`).
+///
+/// 🔴 Cần một hàm riêng vì mọi chỗ nhận dạng id phiên đều đòi **uuid hex** —
+/// hình dạng của `claude`. Đo 2026-11-12 22:09Z (sổ `tin_den`): bấm vào hàng
+/// acc8 gửi `/start s_ses_e349d2d1…`, bộ đọc đòi hex nên không nhận, và huba
+/// đáp *"chưa hiểu lệnh này"* — một cú bấm vào đúng chỗ mà không đi đâu.
+pub fn is_opencode_session_id(id: &str) -> bool {
+    match id.strip_prefix("ses_") {
+        Some(rest) => {
+            !rest.is_empty()
+                && rest
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        }
+        None => false,
+    }
+}
+
 pub fn open_bare_terminal() -> Result<(i64, String)> {
     let (window, tty) = crate::keys::open_window(BARE_TERMINAL_CMD)?;
     let tty_short = tty.rsplit('/').next().unwrap_or(&tty).to_string();

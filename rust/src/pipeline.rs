@@ -933,6 +933,9 @@ pub fn split_target(arg: &str) -> Option<(String, String)> {
     // sau `win-`". Bản đầu của tôi nới tới mức ấy và bài kiểm bắt ngay: câu
     // *"win-win thế nào rồi"* bị nuốt mất từ đầu — đúng cái bẫy chú thích trên
     // đã ghi (*"bắt nhầm thì chữ đầu của câu người ta gõ bị nuốt mất"*).
+    // Id opencode (`ses_…`) cũng là một cái tên phiên — và nó KHÔNG cần `rest`:
+    // tiền tố `ses_` đủ đặc trưng để một câu tiếng Việt không tình cờ trùng.
+    let opencode_id = crate::sessions::is_opencode_session_id(head);
     let shell_id = crate::sessions::is_shell_id(head)
         && {
             let tail = &head[crate::sessions::SHELL_ID_PREFIX.len()..];
@@ -940,7 +943,7 @@ pub fn split_target(arg: &str) -> Option<(String, String)> {
                 .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric()))
         }
         && !rest.is_empty();
-    (full_uuid || short_id || shell_id).then(|| (head.to_string(), rest.to_string()))
+    (full_uuid || short_id || shell_id || opencode_id).then(|| (head.to_string(), rest.to_string()))
 }
 
 /// Hai chuỗi này có chỉ vào CÙNG một phiên không?
