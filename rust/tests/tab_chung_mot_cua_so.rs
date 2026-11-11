@@ -101,3 +101,34 @@ fn dong_tab_khong_dong_ca_cua_so_con_tab_khac() {
         "close_window phải rẽ sang close_tab với tay cầm tab"
     );
 }
+
+/// Cửa sổ nhà: id đầu tiên trong sổ CÒN sống; không còn id nào ⟹ None.
+#[test]
+fn cua_so_nha_la_id_moi_nhat_con_song() {
+    use huba::keys::chon_cua_so_nha;
+    let dang_co = vec![
+        (184, "/dev/ttys000".to_string()),
+        (1518, "/dev/ttys008".to_string()),
+    ];
+    assert_eq!(chon_cua_so_nha(&[1728, 1518, 184], &dang_co), Some(1518));
+    assert_eq!(chon_cua_so_nha(&[184, 1518], &dang_co), Some(184));
+    assert_eq!(chon_cua_so_nha(&[1728, 1725], &dang_co), None);
+    assert_eq!(chon_cua_so_nha(&[], &dang_co), None);
+}
+
+/// 🔴 Đo 11/11: ⌘T vào cửa sổ ĐANG TRƯỚC sinh 2 nhóm tab (207 rồi 184). `open_tab`
+/// phải hỏi sổ nhà TRƯỚC, cửa sổ đang trước chỉ là đường lùi — và phải ghi sổ.
+#[test]
+fn mo_tab_canh_cua_so_nha_truoc_cua_so_dang_truoc() {
+    let src = include_str!("../src/keys.rs");
+    let start = src.find("fn open_tab(").expect("không thấy open_tab");
+    let body = &src[start..start + src[start..].find("\n}\n").unwrap()];
+    let nha = body
+        .find("chon_cua_so_nha(")
+        .expect("open_tab không hỏi sổ cửa sổ nhà");
+    let truoc = body
+        .find("front_window()")
+        .expect("open_tab mất đường lùi cửa sổ đang trước");
+    assert!(nha < truoc, "phải hỏi sổ nhà TRƯỚC cửa sổ đang trước");
+    assert!(body.contains("ghi_so_nha("), "mở tab xong phải ghi sổ nhà");
+}

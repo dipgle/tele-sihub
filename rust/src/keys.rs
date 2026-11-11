@@ -1182,7 +1182,14 @@ fn open_tab(cmd: &str) -> Result<Option<(i64, String)>> {
             return Ok(None);
         }
     };
-    let Some(nha) = front_window().ok().flatten().map(window_id) else {
+    // 🔴 Cửa sổ NHÀ, không phải cửa sổ đang trước (Quang 11/11: *"Làm đi"* sau
+    // khi đo ra 2 nhóm tab: ⌘T rơi vào cửa sổ nào đang trước lúc ấy — 207 rồi
+    // 184). AppleScript không thấy nhóm tab (mỗi tab gốc là một "window" riêng,
+    // cùng bounds với cả cửa sổ rời) ⟹ huba NHỚ cửa sổ của tab nó mở gần nhất,
+    // và tab sau mở cạnh đó. Sổ trống / mọi id đã đóng ⟹ cửa sổ đang trước.
+    let so_nha = doc_so_nha();
+    let nha_so = chon_cua_so_nha(&so_nha, &truoc);
+    let Some(nha) = nha_so.or_else(|| front_window().ok().flatten().map(window_id)) else {
         return Ok(None);
     };
     let gui = focus_window(nha)
@@ -1220,11 +1227,61 @@ fn open_tab(cmd: &str) -> Result<Option<(i64, String)>> {
             "tab mới {tty} (cửa sổ {w}) đã mở nhưng gõ lệnh hỏng"
         ))
     })?;
+    ghi_so_nha(w, &so_nha);
     logging::info(
         "tab_opened",
-        json!({ "window": w, "tty": tty, "handle": handle, "o_cua_so_truoc": nha }),
+        json!({ "window": w, "tty": tty, "handle": handle, "canh_cua_so": nha,
+                "nha_tu_so": nha_so.is_some() }),
     );
     Ok(Some((handle, tty)))
+}
+
+/// Sổ cửa sổ nhà: id các cửa sổ (tab) huba vừa mở, MỚI nhất trước.
+///
+/// Nằm trong thư mục tạm của người dùng: id cửa sổ Terminal chỉ sống tới khi
+/// Terminal thoát, nên sổ cũng không cần sống qua lần khởi động lại máy — nhưng
+/// phải sống qua lần khởi động lại hubd (`/upgrade`), kẻo mỗi lần cài là một
+/// nhóm tab mới.
+const SO_NHA_TOI_DA: usize = 8;
+
+#[cfg(target_os = "macos")]
+fn so_nha_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("huba-cua-so-nha")
+}
+
+#[cfg(target_os = "macos")]
+fn doc_so_nha() -> Vec<i64> {
+    std::fs::read_to_string(so_nha_path())
+        .map(|s| {
+            s.split_whitespace()
+                .filter_map(|x| x.parse().ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn ghi_so_nha(moi: i64, cu: &[i64]) {
+    let mut so = vec![moi];
+    so.extend(cu.iter().copied().filter(|&x| x != moi));
+    so.truncate(SO_NHA_TOI_DA);
+    let chu = so.iter().map(i64::to_string).collect::<Vec<_>>().join(" ");
+    if let Err(e) = std::fs::write(so_nha_path(), chu) {
+        logging::warn(
+            "home_window_book_unwritable",
+            json!({ "err": e.to_string(), "effect": "tab sau sẽ mở cạnh cửa sổ đang trước, có thể ra nhóm tab mới" }),
+        );
+    }
+}
+
+/// Cửa sổ nhà = id ĐẦU TIÊN trong sổ còn sống trong Terminal — hàm THUẦN.
+///
+/// `dang_co` = mọi tab hiện có (`all_tabs`). Không id nào còn ⟹ `None` (chỗ gọi
+/// rơi về cửa sổ đang trước).
+pub fn chon_cua_so_nha(so: &[i64], dang_co: &[(i64, String)]) -> Option<i64> {
+    so.iter()
+        .copied()
+        .find(|id| dang_co.iter().any(|(w, _)| w == id))
 }
 
 /// Mở một TAB mới (đã có cửa sổ Terminal) hoặc một cửa sổ Terminal MỚI (chưa có,
