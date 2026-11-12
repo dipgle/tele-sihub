@@ -9504,7 +9504,21 @@ pub fn session_root(db: &Db, cfg: &Config, session_id: &str) -> Option<std::path
     if folder.trim().is_empty() {
         return None;
     }
-    Some(cfg.workspace_root.join(folder.trim_matches('/')))
+    let p = cfg.workspace_root.join(folder.trim_matches('/'));
+    // 🔴 Nhãn dự án KHÔNG phải đường dẫn. Đo 12/11: phiên opencode mở ở gốc
+    // workspace mang nhãn `projects` (đúng, để hiển thị), nên `join` ra
+    // `~/projects/projects` — không tồn tại ⇒ MỌI việc của hòm thư chết ở
+    // `spawn /bin/zsh failed: No such file or directory` (cwd không có là
+    // ENOENT, và câu lỗi gọi tên chương trình chứ không gọi tên thư mục).
+    if p.is_dir() {
+        return Some(p);
+    }
+    logging::warn(
+        "session_root_missing",
+        json!({ "session": session_id, "root": p.display().to_string(),
+                "why": "nhãn dự án không dựng thành thư mục — chỗ gọi phải thử cwd thật của phiên" }),
+    );
+    None
 }
 
 /// Thư mục mà sổ nút đã ghi cho ĐÚNG dòng lệnh này của ĐÚNG phiên này.
@@ -14524,7 +14538,12 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                         // lệnh này — xem `root_for_command`. Nhãn dự án chỉ là
                         // đường lùi cho nút sinh ra trước bản vá 15/08.
                         let logged = quick_cwd(db, &s.session_id, &line);
-                        let root = match root_for_command(db, cfg, &s.session_id, &logged) {
+                        // Cwd THẬT của phiên là nguồn thứ hai: nhãn dự án đã
+                        // trượt (trên) thì vẫn còn đường chạy đúng chỗ.
+                        let cwd_that = std::path::Path::new(s.cwd.trim());
+                        let root = match root_for_command(db, cfg, &s.session_id, &logged)
+                            .or_else(|| cwd_that.is_dir().then(|| cwd_that.to_path_buf()))
+                        {
                             Some(r) => r,
                             None => {
                                 logging::warn(
