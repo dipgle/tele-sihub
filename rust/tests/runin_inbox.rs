@@ -54,6 +54,28 @@ fn a_command_is_read_and_the_session_id_comes_from_the_path() {
     assert_eq!(got[0].1, "cd ~/projects/huba/rust && cargo test --offline");
 }
 
+/// Phiên **opencode** cũng có hòm thư: id `ses_…` phải lọt phép thử.
+///
+/// 🔴 Đo 2026-11-12: `looks_like_uuid` đòi uuid 4 gạch ⇒ hòm thư của phiên
+/// `ses_e346a315…` **vô hình**, nên phiên ấy không có đường đẩy lệnh bị chặn
+/// (`git push`) cho huba chạy hộ. Cùng hình dạng lỗi với `s_`/`split_target`:
+/// một hàm nhận dạng chỉ biết MỘT trong hai loại id đang sống trên máy.
+#[test]
+fn an_opencode_session_id_has_an_inbox_too() {
+    const OC: &str = "ses_e349d2d17ffebjGNQ1kW7qVsnK";
+    let root = tmp("opencode");
+    put(
+        &root,
+        "claude-501",
+        "-Users-username-projects",
+        OC,
+        "git -C ~/projects/huba push origin main\n",
+    );
+    let got = scan_session_inboxes(&root);
+    assert_eq!(got.len(), 1, "{got:#?}");
+    assert_eq!(got[0].0, OC, "id phải đọc từ đường dẫn");
+}
+
 /// 🔴 Thư mục KHÔNG mang hình dạng uuid thì bỏ qua.
 ///
 /// Nhận bừa là dán kết quả vào một phiên không tồn tại — và cái thư mục ấy có

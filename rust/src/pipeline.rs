@@ -7501,9 +7501,15 @@ pub const RUNIN_INBOX_NAME: &str = "huba-run.txt";
 /// Cùng phép thử với nhánh `full_uuid` của [`split_target`] — tách ra thành hàm
 /// để hai chỗ không tự so chuỗi lần nữa mỗi chỗ một kiểu.
 pub fn looks_like_uuid(s: &str) -> bool {
+    // 🔴 HAI hình dạng id cùng sống trên máy này: Claude `e83c2d9a-…` (uuid) và
+    // opencode `ses_e349d2d17ffebjGNQ1kW7qVsnK`. Tên hàm giữ nguyên (nhiều chỗ
+    // gọi đọc nó như "id phiên"), nhưng phép thử phải nhận CẢ HAI — nếu không,
+    // hòm thư của một phiên opencode là vô hình với huba (đo 12/11: phiên
+    // `ses_e346a315…` ghi `huba-run.txt` mà `scan_session_inboxes` không thấy).
     s.len() >= 32
         && s.matches('-').count() == 4
         && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+        || crate::sessions::is_opencode_session_id(s)
 }
 
 pub fn scan_session_inboxes(root: &std::path::Path) -> Vec<(String, String, std::path::PathBuf)> {
