@@ -49,6 +49,15 @@ pub struct OcSession {
     /// Thư mục DỰ ÁN mà chính opencode khai (`project.worktree`) — nguồn đúng
     /// cho nhãn hiển thị. `None` khi kho không có bảng `project`.
     pub project_dir: Option<String>,
+    /// Đuôi phiên dựng lại theo HÌNH DẠNG nhật ký Claude (mỗi dòng một bản
+    /// ghi), để nhãn dự án đi CHUNG cửa `sessions::folder_for_session` với phiên
+    /// Claude — xem [`fill_tails_v2`]. Rỗng khi kho không có `session_message`.
+    #[serde(skip)]
+    pub tail: String,
+    /// `true` bận · `false` rảnh · `None` kho không khai — từ `time_busy` /
+    /// `time_idle` của `session_v2` ([`fill_state_v2`]).
+    #[serde(skip)]
+    pub busy: Option<bool>,
 }
 
 /// Thư mục gốc phân vùng của một tài khoản.
@@ -117,7 +126,328 @@ pub fn read_sessions_at(path: &Path) -> Result<Vec<OcSession>, String> {
     out.truncate(200);
     fill_last_turns(&conn, &mut out)?;
     fill_last_turns_v2(&conn, &mut out)?;
+    let fork_cua_huba = fill_state_v2(&conn, &mut out)?;
+    if !fork_cua_huba.is_empty() {
+        // Luật 11b: máy của huba không bao giờ được hiện thành một phiên. Phiên
+        // fork của `/ask` (agent `huba-fork`) là phép dò, không phải việc của ai.
+        crate::logging::info(
+            "opencode_huba_forks_hidden",
+            serde_json::json!({ "count": fork_cua_huba.len() }),
+        );
+        out.retain(|s| !fork_cua_huba.contains(&s.id));
+    }
+    fill_tails_v2(&conn, &mut out)?;
     Ok(out)
+}
+
+/// Trạng thái bận/rảnh + nhận ra fork của chính huba, từ cột `session_v2`.
+///
+/// Quang 12/11 *"phải cùng trải nghiệm"*: hàng Claude có `busy`/`idle`, hàng
+/// opencode `status=null` ⟹ danh sách không nói phiên nào đang làm. Kho mới có
+/// `time_busy`/`time_idle` (đo acc8: phiên đang chạy có `time_busy`, `time_idle`
+/// rỗng; phiên đã xong có `time_idle` > `time_busy`) và `agent` (fork của `/ask`
+/// mang `huba-fork`). Kho thiếu cột ⟹ để `None`, không đoán.
+/// Trả về id các phiên là fork của huba.
+fn fill_state_v2(
+    conn: &Connection,
+    sessions: &mut [OcSession],
+) -> Result<std::collections::BTreeSet<String>, String> {
+    let mut forks = std::collections::BTreeSet::new();
+    if !has_table(conn, "session_v2")? {
+        return Ok(forks);
+    }
+    let mut cols = conn
+        .prepare("SELECT name FROM pragma_table_info('session_v2')")
+        .map_err(|e| format!("đọc cột session_v2: {e}"))?;
+    let cols: Vec<String> = cols
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| format!("đọc cột session_v2: {e}"))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("đọc cột session_v2: {e}"))?;
+    let co = |c: &str| cols.iter().any(|x| x == c);
+    let col = |c: &str| {
+        if co(c) {
+            c.to_string()
+        } else {
+            "NULL".to_string()
+        }
+    };
+    if !co("agent") && !(co("time_busy") && co("time_idle")) {
+        return Ok(forks);
+    }
+    let sql = format!(
+        "SELECT id, {}, {}, {} FROM session_v2",
+        col("agent"),
+        col("time_busy"),
+        col("time_idle")
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("đọc trạng thái session_v2: {e}"))?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+            ))
+        })
+        .map_err(|e| format!("truy vấn trạng thái session_v2: {e}"))?;
+    let mut state: BTreeMap<String, Option<bool>> = BTreeMap::new();
+    for row in rows {
+        let (id, agent, busy_at, idle_at) =
+            row.map_err(|e| format!("đọc trạng thái session_v2: {e}"))?;
+        if agent.as_deref() == Some("huba-fork") {
+            forks.insert(id.clone());
+        }
+        state.insert(id, busy_state(busy_at, idle_at));
+    }
+    for s in sessions.iter_mut() {
+        if let Some(b) = state.get(&s.id) {
+            s.busy = *b;
+        }
+    }
+    Ok(forks)
+}
+
+/// Phần THUẦN: bận khi mốc bận mới hơn mốc rảnh (hoặc chưa rảnh lần nào).
+pub fn busy_state(busy_at: Option<i64>, idle_at: Option<i64>) -> Option<bool> {
+    match (busy_at, idle_at) {
+        (Some(b), Some(i)) => Some(b > i),
+        (Some(_), None) => Some(true),
+        (None, Some(_)) => Some(false),
+        (None, None) => None,
+    }
+}
+
+/// Số phiên MỚI NHẤT được dựng đuôi — danh sách điện thoại chỉ hiện chừng ấy,
+/// và mỗi đuôi là vài chục bản ghi JSON (đo 12/11: tới 26 KB một bản ghi).
+const TAIL_SESSIONS: usize = 30;
+/// Số bản ghi cuối mỗi phiên — đủ phủ `KHAI_QUET_LUOT` lượt nói của bộ đọc
+/// lời tự khai, kể cả khi xen giữa là lượt chỉ-gọi-công-cụ.
+const TAIL_ROWS: usize = 40;
+/// Trần ký tự cho một bản ghi thô trong đuôi (chỉ để ĐẾM đường dẫn).
+const TAIL_RAW_CHARS: usize = 6000;
+
+/// Dựng đuôi phiên theo hình dạng nhật ký Claude cho [`OcSession::tail`].
+///
+/// 🔴 Quang 2026-11-12: *"làm sao để chạy được như dùng acc khác, nó phải cùng
+/// trải nghiệm chứ"*. Đo cùng phút: `/new acc3 …` và `/new acc8 aihub` cùng mở
+/// ở `~/projects`; hàng Claude lên `[huba]` (nhãn đọc từ lời tự khai + đường
+/// dẫn trong nhật ký), hàng opencode KẸT `[projects]` dù 20/40 bản ghi của nó
+/// nhắc `~/projects/aihub/…` — vì nhánh opencode chỉ nhìn THƯ MỤC MỞ PHIÊN.
+///
+/// Không chép luật nhãn sang đây: mỗi lượt nói assistant thành một dòng
+/// `{"type":"assistant","message":{"content":[{"type":"text",…}]}}` (đúng thứ
+/// `declared_in_tail_counted` đọc), và bản ghi thô đi kèm ở dòng riêng cho
+/// `folder_from_tail` đếm đường dẫn của công cụ. Bản ghi thô bị cắt ⇒ không còn
+/// là JSON hợp lệ ⇒ bộ đọc lời khai tự bỏ qua; bộ đếm chỉ tìm chuỗi nên vẫn đếm.
+fn fill_tails_v2(conn: &Connection, sessions: &mut [OcSession]) -> Result<(), String> {
+    use rusqlite::params_from_iter;
+    if !has_table(conn, "session_message")? {
+        return Ok(());
+    }
+    let ids: Vec<&str> = sessions
+        .iter()
+        .take(TAIL_SESSIONS)
+        .map(|s| s.id.as_str())
+        .collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let ph = vec!["?"; ids.len()].join(",");
+    let sql = format!(
+        "SELECT session_id, type, data FROM ( \
+             SELECT session_id, type, data, seq, \
+                    ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY seq DESC) rn \
+             FROM session_message WHERE session_id IN ({ph}) \
+         ) WHERE rn <= {TAIL_ROWS} ORDER BY session_id, seq ASC"
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("đọc đuôi session_message: {e}"))?;
+    let rows = stmt
+        .query_map(params_from_iter(ids.iter()), |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| format!("truy vấn đuôi session_message: {e}"))?;
+    let mut tails: BTreeMap<String, String> = BTreeMap::new();
+    for row in rows {
+        let (sid, kind, data) = row.map_err(|e| format!("đọc đuôi session_message: {e}"))?;
+        let tail = tails.entry(sid).or_default();
+        tail.push_str(&exec::truncate(&data, TAIL_RAW_CHARS).replace('\n', " "));
+        tail.push('\n');
+        if kind != "assistant" {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&data) else {
+            continue;
+        };
+        let text = v
+            .get("content")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|it| it.get("type").and_then(Value::as_str) == Some("text"))
+                    .filter_map(|it| it.get("text").and_then(Value::as_str))
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        if text.is_empty() {
+            continue;
+        }
+        let rec = serde_json::json!({
+            "type": "assistant",
+            "message": { "content": [ { "type": "text", "text": text } ] }
+        });
+        tail.push_str(&rec.to_string());
+        tail.push('\n');
+    }
+    for s in sessions.iter_mut() {
+        if let Some(t) = tails.remove(&s.id) {
+            s.tail = t;
+        }
+    }
+    Ok(())
+}
+
+/// Một cửa sổ hạn mức gói Go — đúng kiểu `UsageLimits.Meter` của opencode.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GoMeter {
+    pub percent: i64,
+    pub limited: bool,
+    pub resets_at: Option<String>,
+}
+
+/// Hạn mức gói Go do MÁY CHỦ opencode trả (`UsageLimits.Go`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GoLimits {
+    pub rolling: GoMeter,
+    pub weekly: GoMeter,
+    pub monthly: GoMeter,
+}
+
+/// 🔴 Quang 12/11: *"Không có cách nào lấy được thông tin từ cli à"*. CÓ: chính
+/// opencode 2.2.7 hỏi `GET <origin>/zen/go/v1/usage` (Bearer khoá, hàm `tC` trong
+/// binary) và trả `{usage:{rolling,weekly,monthly}}`, mỗi cửa sổ
+/// `{status:"ok"|"rate-limited", percent, resetsAt}`. Đo 12/11 05:5xZ: acc8 và
+/// acc9 trả CÙNG số (một gói, hai khoá) — rolling 0 · weekly 50 · monthly 75;
+/// header `x-opencode-org-id` không bắt buộc. Bản tự cộng token trong kho acc8
+/// trước đó ra tuần 1% — SAI 50 lần vì không thấy lượt của khoá khác ⟹ đã gỡ.
+pub const GO_USAGE_URL: &str = "https://opencode.ai/zen/go/v1/usage";
+
+/// Phần THUẦN: thân JSON của `/zen/go/v1/usage` → [`GoLimits`].
+pub fn parse_go_limits(body: &Value) -> Result<GoLimits, String> {
+    let meter = |k: &str| -> Result<GoMeter, String> {
+        let m = body
+            .pointer(&format!("/usage/{k}"))
+            .ok_or_else(|| format!("thiếu usage.{k}"))?;
+        let percent = m
+            .get("percent")
+            .and_then(Value::as_f64)
+            .ok_or_else(|| format!("usage.{k}.percent không phải số"))?;
+        let status = m.get("status").and_then(Value::as_str).unwrap_or("");
+        Ok(GoMeter {
+            percent: percent.ceil() as i64,
+            limited: status == "rate-limited",
+            resets_at: m
+                .get("resetsAt")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        })
+    };
+    Ok(GoLimits {
+        rolling: meter("rolling")?,
+        weekly: meter("weekly")?,
+        monthly: meter("monthly")?,
+    })
+}
+
+/// Đọc khoá của tài khoản từ `env_file` (dòng `[export ]TÊN=giá trị`). Giá trị
+/// KHÔNG bao giờ đi vào log (luật 4) — lỗi chỉ nêu tên biến và đường dẫn.
+fn read_key(acc: &ClaudeAccountCfg) -> Result<String, String> {
+    let file = acc
+        .env_file
+        .as_deref()
+        .filter(|f| !f.is_empty())
+        .ok_or("tài khoản không khai env_file")?;
+    let name = acc
+        .api_key_env
+        .as_deref()
+        .filter(|n| !n.is_empty())
+        .unwrap_or("OPENCODE_API_KEY");
+    let path = crate::config::expand_home(Path::new(file));
+    let text =
+        std::fs::read_to_string(&path).map_err(|e| format!("đọc {}: {e}", path.display()))?;
+    text.lines()
+        .map(|l| l.trim().trim_start_matches("export ").trim())
+        .find_map(|l| l.strip_prefix(&format!("{name}=")))
+        .map(|v| v.trim().trim_matches(['"', '\'']).to_string())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| format!("{} không có biến {name}", path.display()))
+}
+
+/// Bản đọc nhớ trong tiến trình — mọi đường CHỌN tài khoản gọi `quota::read_all`,
+/// có khi nhiều lần một vòng; một lượt mạng ~0,7 s mỗi lần là phí.
+type GoCache = BTreeMap<String, (i64, Result<GoLimits, String>)>;
+static GO_CACHE: std::sync::OnceLock<std::sync::Mutex<GoCache>> = std::sync::OnceLock::new();
+/// Tuổi tối đa của bản đọc nhớ.
+pub const GO_CACHE_MS: i64 = 5 * 60_000;
+
+/// Hạn mức gói Go của tài khoản, hỏi máy chủ (nhớ [`GO_CACHE_MS`]). Trả kèm mốc
+/// ĐỌC thật (`fetched_at_ms`), không phải mốc gọi hàm.
+pub fn go_limits(acc: &ClaudeAccountCfg, now_ms: i64) -> (i64, Result<GoLimits, String>) {
+    let cache = GO_CACHE.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()));
+    if let Ok(m) = cache.lock() {
+        if let Some((at, r)) = m.get(&acc.name) {
+            if now_ms - at < GO_CACHE_MS {
+                return (*at, r.clone());
+            }
+        }
+    }
+    let r = fetch_go_limits(acc);
+    if let Ok(mut m) = cache.lock() {
+        m.insert(acc.name.clone(), (now_ms, r.clone()));
+    }
+    (now_ms, r)
+}
+
+fn fetch_go_limits(acc: &ClaudeAccountCfg) -> Result<GoLimits, String> {
+    let key = read_key(acc)?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("không dựng được HTTP client: {e}"))?;
+    let resp = client
+        .get(GO_USAGE_URL)
+        .bearer_auth(key.trim())
+        // Cloudflare chặn chữ ký mặc định của vài client (đo 12/11: 403 «1010»
+        // với Python-urllib) — tự xưng như opencode.
+        .header("user-agent", "opencode/2.2.7")
+        .send()
+        .map_err(|e| {
+            format!(
+                "không gọi được {GO_USAGE_URL}: {}",
+                exec::truncate(&e.to_string(), 160)
+            )
+        })?;
+    let ma = resp.status().as_u16();
+    if ma != 200 {
+        return Err(format!("{GO_USAGE_URL} trả HTTP {ma}"));
+    }
+    let body: Value = resp
+        .json()
+        .map_err(|e| format!("thân trả về không phải JSON: {e}"))?;
+    parse_go_limits(&body)
 }
 
 /// Có bảng ấy không. Kho cũ (chưa từng chạy opencode mới) không có
@@ -201,6 +531,8 @@ fn query_sessions(
                 last_text: None,
                 last_role: None,
                 project_dir,
+                tail: String::new(),
+                busy: None,
             })
         })
         .map_err(|e| format!("truy vấn {} ({table}): {e}", path.display()))?;
@@ -829,6 +1161,156 @@ mod tests {
         // Lượt assistant CUỐI CÓ CHỮ, không phải lượt cuối cùng (toàn reasoning).
         assert_eq!(live.last_text.as_deref(), Some("Xong việc."));
         assert_eq!(live.last_role.as_deref(), Some("assistant"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Phiên ma 12/11: hàng opencode chỉ sống khi có TUI ở tty liên kết. Dòng
+    /// `ps` thật đo trên máy cùng ngày.
+    #[test]
+    fn nhan_ra_tui_opencode_trong_ps() {
+        use crate::sessions::is_opencode_tui;
+        assert!(is_opencode_tui(
+            "/Users/x/.opencode/bin/opencode --prompt aihub\n\nTRƯỚC KHI LÀM"
+        ));
+        assert!(is_opencode_tui("opencode"));
+        // Service chung và fork `/ask` không phải cửa sổ của ai.
+        assert!(!is_opencode_tui(
+            "/Users/x/.opencode/bin/opencode serve --service"
+        ));
+        assert!(!is_opencode_tui(
+            "/Users/x/.opencode/bin/opencode run --format json --session ses_x --fork"
+        ));
+        assert!(!is_opencode_tui("claude --permission-mode auto"));
+        assert!(!is_opencode_tui("/usr/bin/opencode-helper"));
+        assert!(!is_opencode_tui(""));
+    }
+
+    /// Hàng opencode phải có bận/rảnh như hàng Claude, và fork `/ask` của
+    /// huba (agent `huba-fork`) KHÔNG lên danh sách — số đo acc8 12/11.
+    #[test]
+    fn v2_ban_ranh_va_an_fork_cua_huba() {
+        assert_eq!(busy_state(Some(5), None), Some(true));
+        assert_eq!(busy_state(Some(5), Some(9)), Some(false));
+        assert_eq!(busy_state(Some(9), Some(5)), Some(true));
+        assert_eq!(busy_state(None, None), None);
+        let tmp = std::env::temp_dir().join(format!(
+            "huba-oc-state-{}-{}",
+            std::process::id(),
+            crate::logging::now_iso().replace([':', '.', 'T', 'Z'], "_")
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let db = tmp.join("opencode.db");
+        {
+            let c = Connection::open(&db).unwrap();
+            c.execute_batch(
+                "CREATE TABLE session_v2 (
+                    id TEXT PRIMARY KEY, parent_id TEXT, fork_session_id TEXT,
+                    directory TEXT NOT NULL, title TEXT, agent TEXT,
+                    cost REAL DEFAULT 0 NOT NULL,
+                    tokens_input INTEGER DEFAULT 0 NOT NULL,
+                    tokens_output INTEGER DEFAULT 0 NOT NULL,
+                    tokens_reasoning INTEGER DEFAULT 0 NOT NULL,
+                    tokens_cache_read INTEGER DEFAULT 0 NOT NULL,
+                    tokens_cache_write INTEGER DEFAULT 0 NOT NULL,
+                    model TEXT, time_created INTEGER NOT NULL,
+                    time_updated INTEGER NOT NULL, time_archived INTEGER,
+                    time_busy INTEGER, time_idle INTEGER
+                );
+                INSERT INTO session_v2 (id,fork_session_id,directory,title,agent,time_created,time_updated,time_busy,time_idle) VALUES
+                  ('ses_chay',NULL,'/p','đang chạy','build',1,9,8,NULL),
+                  ('ses_xong',NULL,'/p','xong','build',1,8,3,7),
+                  ('ses_fork','ses_chay','/p','x (fork #1)','huba-fork',1,7,4,6),
+                  ('ses_tay','ses_chay','/p','fork chủ máy tự làm','build',1,6,NULL,NULL);",
+            )
+            .unwrap();
+        }
+        let got = read_sessions_at(&db).expect("đọc được");
+        let ids: Vec<&str> = got.iter().map(|s| s.id.as_str()).collect();
+        // Fork của HUBA ẩn; fork chủ máy tự tạo (agent khác) thì vẫn là phiên.
+        assert_eq!(ids, vec!["ses_chay", "ses_xong", "ses_tay"]);
+        assert_eq!(got[0].busy, Some(true));
+        assert_eq!(got[1].busy, Some(false));
+        assert_eq!(got[2].busy, None);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Quang 12/11: `/new acc8 aihub` mở ở gốc workspace rồi làm việc trong
+    /// `aihub`, mà hàng vẫn đọc `[projects]` — trong khi phiên Claude cùng
+    /// hoàn cảnh lên đúng dự án. Đuôi dựng từ kho opencode phải cho
+    /// `folder_for_session` (cửa nhãn CHUNG) đọc ra dự án thật.
+    #[test]
+    fn duoi_v2_cho_nhan_du_an_nhu_phien_claude() {
+        let tmp = std::env::temp_dir().join(format!(
+            "huba-oc-duoi-{}-{}",
+            std::process::id(),
+            crate::logging::now_iso().replace([':', '.', 'T', 'Z'], "_")
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let db = tmp.join("opencode.db");
+        {
+            let c = Connection::open(&db).unwrap();
+            c.execute_batch(
+                "CREATE TABLE session_v2 (
+                    id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT NOT NULL,
+                    title TEXT, cost REAL DEFAULT 0 NOT NULL,
+                    tokens_input INTEGER DEFAULT 0 NOT NULL,
+                    tokens_output INTEGER DEFAULT 0 NOT NULL,
+                    tokens_reasoning INTEGER DEFAULT 0 NOT NULL,
+                    tokens_cache_read INTEGER DEFAULT 0 NOT NULL,
+                    tokens_cache_write INTEGER DEFAULT 0 NOT NULL,
+                    model TEXT, time_created INTEGER NOT NULL,
+                    time_updated INTEGER NOT NULL, time_archived INTEGER
+                );
+                CREATE TABLE session_message (
+                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+                    type TEXT NOT NULL, seq INTEGER NOT NULL,
+                    time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL,
+                    data TEXT NOT NULL
+                );
+                INSERT INTO session_v2 (id,directory,title,time_created,time_updated) VALUES
+                  ('ses_dem','/Users/x/projects','đếm',1,9),
+                  ('ses_khai','/Users/x/projects','khai',1,8);
+                INSERT INTO session_message (id,session_id,type,seq,time_created,time_updated,data) VALUES
+                  ('d1','ses_dem','user',1,1,1,'{\"content\":[{\"type\":\"text\",\"text\":\"aihub\"}]}'),
+                  ('d2','ses_dem','assistant',2,2,2,'{\"content\":[{\"type\":\"tool\",\"state\":{\"input\":{\"path\":\"/Users/x/projects/aihub/MEMORY.md\"}}}]}'),
+                  ('d3','ses_dem','assistant',3,3,3,'{\"content\":[{\"type\":\"tool\",\"state\":{\"input\":{\"path\":\"/Users/x/projects/aihub/src/a.ts\"}}}]}'),
+                  ('d4','ses_dem','assistant',4,4,4,'{\"content\":[{\"type\":\"text\",\"text\":\"Rig cannot reproduce.\"}]}'),
+                  ('k1','ses_khai','assistant',1,1,1,'{\"content\":[{\"type\":\"text\",\"text\":\"[tfl5] Đã đọc sổ.\"}]}');",
+            )
+            .unwrap();
+        }
+        let got = read_sessions_at(&db).expect("đọc được");
+        let ws = "/Users/x/projects";
+        let dem = got.iter().find(|s| s.id == "ses_dem").unwrap();
+        let khai = got.iter().find(|s| s.id == "ses_khai").unwrap();
+        let id = |s: &str| format!("{s}-{}", std::process::id());
+        // Đếm đường dẫn công cụ ⇒ dự án thật, không phải thư mục mở phiên.
+        assert_eq!(
+            crate::sessions::folder_for_session(&id("dem"), &dem.tail, ws, || None).as_deref(),
+            Some("aihub"),
+            "đuôi: {}",
+            dem.tail
+        );
+        // Lời tự khai `[tfl5]` ở đầu lượt nói ⇒ đọc được, cùng luật với Claude
+        // (luật ấy chỉ nhận tên là THƯ MỤC CÓ THẬT ⇒ dựng gốc thật).
+        let ws_that = tmp.join("ws");
+        std::fs::create_dir_all(ws_that.join("tfl5")).unwrap();
+        assert_eq!(
+            crate::sessions::folder_for_session(
+                &id("khai"),
+                &khai.tail,
+                &ws_that.to_string_lossy(),
+                || None
+            )
+            .as_deref(),
+            Some("tfl5")
+        );
+        // Đối chứng: đuôi rỗng (bản trước 12/11) KHÔNG ra được dự án — tức bài
+        // này đỏ nếu `fill_tails_v2` bị gỡ.
+        assert_eq!(
+            crate::sessions::folder_for_session(&id("rong"), "", ws, || None),
+            None
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

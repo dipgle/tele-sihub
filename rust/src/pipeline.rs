@@ -8082,18 +8082,32 @@ fn xac_nhan_da_gui(
         return DanVao::DaGui;
     }
     let man = crate::keys::screen_text(w);
+    // 🔴 Ghi TỪNG VẾ của phán quyết + chữ ô nhập (Quang 12/11: *"gần đây rất hay
+    // bị kẹt khi chạy lệnh dán vào ô chat rồi đứng im ở đó"*). Hôm ấy 2/8 lượt
+    // dán kết thúc `bam_enter:false` trong khi khối VẪN nằm trong ô (ca 01:54Z
+    // nằm 19 phút) — dòng log cũ chỉ nói "màn đọc được", không nói vế nào sai,
+    // nên không truy được gốc. Luật 5: chữ của phiên không giấu chủ máy.
+    let mut ve = json!(null);
     let bam = match &man {
         Ok(m) => {
-            let khoi_con = crate::keys::still_in_box(m, block)
-                || (block.contains('\n')
-                    && crate::keys::input_box_text(m).is_some_and(|t| t.contains("[Pasted text")));
-            khoi_con && crate::keys::parse_choices(m).is_empty()
+            let thay_khoi = crate::keys::still_in_box(m, block);
+            let o = crate::keys::input_box_text(m);
+            let nhan_dan =
+                block.contains('\n') && o.as_deref().is_some_and(|t| t.contains("[Pasted text"));
+            let hop_chon = crate::keys::parse_choices(m).len();
+            ve = json!({ "thay_khoi": thay_khoi, "nhan_dan": nhan_dan, "hop_chon": hop_chon,
+                         "co_o_nhap": o.is_some(),
+                         "o_nhap": o.as_deref().map(|t| crate::exec::truncate(t, 160)),
+                         "day_man": crate::exec::truncate(
+                             &m.lines().rev().filter(|l| !l.trim().is_empty()).take(6)
+                               .collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n"), 600) });
+            (thay_khoi || nhan_dan) && hop_chon == 0
         }
         Err(_) => false,
     };
     logging::warn(
         "runin_paste_chua_vao_nhat_ky",
-        json!({ "session": s.session_id, "window": w, "bam_enter": bam,
+        json!({ "session": s.session_id, "window": w, "bam_enter": bam, "ve": ve,
                 "man": man.as_ref().map(|_| "đọc được").unwrap_or("KHÔNG đọc được"),
                 "why": format!("màn khai đã gửi nhưng nhật ký phiên chưa nhận sau {XAC_NHAN_NHAT_KY_SEC} s") }),
     );

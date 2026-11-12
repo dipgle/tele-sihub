@@ -2055,6 +2055,25 @@ pub fn folder_from_dir(workspace_root: &Path, dir: &str) -> String {
 /// *"chỉ acc8 đang bị sai tên"*, ảnh danh sách). Gốc workspace thì lấy TÊN THƯ
 /// MỤC GỐC (`projects`) — cùng cách `folder_from_tail` đã đọc gốc ấy ở khối
 /// "phiên không có cửa sổ", nên hai chỗ không nói hai kiểu.
+/// Dòng lệnh `ps` này có phải một TUI opencode đang mở không.
+///
+/// Đo 12/11 trên máy: TUI = `…/opencode --prompt …` (hoặc `opencode` trơn);
+/// KHÔNG tính `opencode serve --service` (service chung, không cửa sổ nào) và
+/// `opencode run …` (fork `/ask`, chạy không tty).
+pub fn is_opencode_tui(command: &str) -> bool {
+    let mut it = command.split_whitespace();
+    let Some(prog) = it.next() else {
+        return false;
+    };
+    if Path::new(prog).file_name().and_then(|n| n.to_str()) != Some("opencode") {
+        return false;
+    }
+    !matches!(
+        it.next(),
+        Some("serve" | "run" | "debug" | "mcp" | "models")
+    )
+}
+
 pub fn opencode_project_label(workspace_root: &Path, worktree_or_dir: &str) -> String {
     let f = folder_from_dir(workspace_root, worktree_or_dir);
     if !f.is_empty() {
@@ -6278,9 +6297,38 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
             "opencode_sessions_read",
             json!({ "account": account.name, "count": rows.len() }),
         );
+        // 🔴 PHIÊN MA (Quang 12/11: *"Danh sách phiên đang có phiên ma"*). Kho
+        // SQLite giữ MỌI phiên từng mở; hàng Claude chỉ lên khi `claude agents`
+        // khai còn sống. Đo 03:5xZ: 6/6 hàng acc8 là ma — `e3282a19` khai
+        // «busy» ở `ttys006` đã đóng 02:42 (TUI chết giữa lượt nên kho không
+        // ghi `time_idle`), 5 hàng kia không cửa sổ. Luật cùng trải nghiệm: hàng
+        // opencode chỉ lên khi tty liên kết CÓ một TUI `opencode` đang chạy.
+        // `ps` hỏng ⟹ KHÔNG ẩn gì (luật 11b), chỉ nói ra.
+        let tui_song: Option<HashSet<String>> = procs.ok.then(|| {
+            procs
+                .by_pid
+                .values()
+                .filter(|p| is_opencode_tui(&p.command))
+                .map(|p| p.tty.trim_start_matches("/dev/").to_string())
+                .collect()
+        });
+        if tui_song.is_none() {
+            logging::warn(
+                "opencode_liveness_blind",
+                json!({ "account": account.name,
+                        "effect": "không đọc được `ps` — giữ mọi hàng opencode, có thể lẫn phiên đã tắt" }),
+            );
+        }
+        let mut an: Vec<String> = Vec::new();
         for s in rows {
             let binding = bindings.get(&s.id);
             let tty = binding.map(|b| b.tty.clone()).unwrap_or_default();
+            if let Some(song) = &tui_song {
+                if tty.is_empty() || !song.contains(tty.trim_start_matches("/dev/")) {
+                    an.push(s.id.chars().take(12).collect());
+                    continue;
+                }
+            }
             let host = if tty.is_empty() {
                 "detached"
             } else {
@@ -6292,6 +6340,19 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
                 .timestamp_millis()
                 .saturating_sub(s.updated_ms)
                 < IDLE_AFTER_SEC * 1000;
+            // CÙNG cửa nhãn với phiên Claude (lời tự khai > đếm đường dẫn > sổ
+            // nhớ), đọc trên đuôi dựng từ kho opencode (`opencode::fill_tails_v2`).
+            // Thư mục mở phiên chỉ là đường LUI: phiên mở ở gốc workspace rồi
+            // làm việc trong `aihub` phải đọc ra `[aihub]`, như phiên Claude.
+            let ws = cfg.workspace_root.to_string_lossy().to_string();
+            let folder = folder_for_session(&s.id, &s.tail, &ws, || None)
+                .filter(|f| !f.is_empty())
+                .unwrap_or_else(|| {
+                    opencode_project_label(
+                        &cfg.workspace_root,
+                        s.project_dir.as_deref().unwrap_or(&s.directory),
+                    )
+                });
             out.sessions.push(LiveSession {
                 account: account.name.clone(),
                 session_id: s.id,
@@ -6309,18 +6370,17 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
                 // này lấy `folder` từ THƯ MỤC PHIÊN, mà phiên opencode mở ở gốc
                 // workspace thì `folder_from_dir` trả RỖNG ⇒ `label_sessions` rơi
                 // về `s.name` (tiêu đề). Nguồn đúng là `project.worktree` trong
-                // sổ của chính opencode.
-                folder: opencode_project_label(
-                    &cfg.workspace_root,
-                    s.project_dir.as_deref().unwrap_or(&s.directory),
-                ),
+                // sổ của chính opencode. Từ 12/11 nguồn ấy là đường LUI, sau
+                // `folder_for_session` (ngay trên vòng `push`).
+                folder,
                 kind: "opencode".to_string(),
                 host: host.to_string(),
                 pid: 0,
                 started_at_ms: s.created_ms,
                 last_activity,
-                working,
-                status: None,
+                // Kho khai bận ⟹ tin kho; không khai thì giữ `working` (mốc ghi).
+                working: s.busy.unwrap_or(working),
+                status: s.busy.map(|b| if b { "busy" } else { "idle" }.to_string()),
                 state: None,
                 context_tokens: s.context_tokens,
                 model: s.model,
@@ -6334,6 +6394,13 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
                 },
                 ..Default::default()
             });
+        }
+        if !an.is_empty() {
+            logging::info(
+                "opencode_dead_rows_hidden",
+                json!({ "account": account.name, "count": an.len(), "ids": an,
+                        "why": "không có TUI `opencode` sống ở tty liên kết — phiên đã tắt (hoặc chưa gắn cửa sổ)" }),
+            );
         }
     }
 

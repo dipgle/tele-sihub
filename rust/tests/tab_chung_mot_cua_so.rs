@@ -132,3 +132,57 @@ fn mo_tab_canh_cua_so_nha_truoc_cua_so_dang_truoc() {
     assert!(nha < truoc, "phải hỏi sổ nhà TRƯỚC cửa sổ đang trước");
     assert!(body.contains("ghi_so_nha("), "mở tab xong phải ghi sổ nhà");
 }
+
+/// Quang 12/11: *"mở tab mới trong cửa sổ đang có sẵn, không có cửa sổ nào thì
+/// mới mở cửa sổ mới"*. Khung đo thật 02:01Z: nhà `5526` và tab Claude cùng
+/// khung; «tab» opencode `5544` khung khác ⟹ cửa sổ rời. Hai chiều: trùng ⟹
+/// true, lệch ⟹ false, chữ hỏng ⟹ None (KHÔNG đo được, không phải "trùng").
+#[test]
+fn khung_trung_phan_biet_tab_cung_nhom_va_cua_so_roi() {
+    use huba::keys::khung_trung;
+    assert_eq!(khung_trung("259,40,1557,966|259,40,1557,966"), Some(true));
+    assert_eq!(khung_trung("259,40,1557,966|145,91,725,980"), Some(false));
+    assert_eq!(khung_trung("259,40,1557|259,40,1557"), None);
+    assert_eq!(khung_trung(""), None);
+}
+
+/// Quang 12/11: *"Bấm close aihub rồi chỉ nhận kênh exit ko có enter"*. Tab
+/// chạy opencode phải đi phím thoát gốc (Ctrl+C), không gõ chữ `/exit`. Danh
+/// sách tiến trình đo thật trên tab Claude `5526`: `login -zsh claude
+/// project-agent node caffeinate`.
+#[test]
+fn nhan_ra_tab_opencode_theo_tien_trinh() {
+    use huba::keys::{tab_procs_has, OPENCODE_EXIT_CTRL_C};
+    let claude = "login\n-zsh\nclaude\nproject-agent\nnode\ncaffeinate\n";
+    let oc = "login\n-zsh\nopencode\n";
+    assert!(!tab_procs_has(claude, "opencode"));
+    assert!(tab_procs_has(oc, "opencode"));
+    // Khớp ĐÚNG tên, không khớp chuỗi con.
+    assert!(!tab_procs_has("opencode-helper\n", "opencode"));
+    assert!(!tab_procs_has("", "opencode"));
+    assert_eq!(OPENCODE_EXIT_CTRL_C, 2, "một cú xoá ô + một cú thoát");
+    let src = include_str!("../src/keys.rs");
+    let start = src.find("pub fn send_exit(").expect("không thấy send_exit");
+    let body = &src[start..start + src[start..].find("\n}\n").unwrap()];
+    let hoi = body
+        .find("tab_runs(")
+        .expect("send_exit không hỏi CLI của tab");
+    let go = body.find("\"/exit\"").expect("mất đường /exit của claude");
+    assert!(hoi < go, "phải hỏi CLI TRƯỚC khi gõ /exit");
+}
+
+/// ⌘T tới một Terminal KHÔNG đứng trước ⟹ New Tab đẻ cửa sổ mới (đo 02:01Z:
+/// Telegram đứng trước). `open_tab` phải kích hoạt Terminal TRƯỚC khi gửi phím,
+/// và kiểm khung sau khi mở.
+#[test]
+fn mo_tab_kich_hoat_terminal_truoc_cmd_t_va_kiem_khung() {
+    let src = include_str!("../src/keys.rs");
+    let start = src.find("fn open_tab(").expect("không thấy open_tab");
+    let body = &src[start..start + src[start..].find("\n}\n").unwrap()];
+    let kich = body
+        .find("activate_terminal()")
+        .expect("open_tab không kích hoạt Terminal");
+    let phim = body.find("post_command(").expect("open_tab không gửi ⌘T");
+    assert!(kich < phim, "phải kích hoạt Terminal TRƯỚC ⌘T");
+    assert!(body.contains("cung_khung("), "mở tab xong phải kiểm khung");
+}

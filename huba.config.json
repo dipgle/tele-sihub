@@ -96,7 +96,7 @@
           "project-agent": {
             "type": "local",
             "command": [
-              "~/projects/AI/init-project/mcp/project-agent-rs/target/release/project-agent"
+              "~/projects/AI/codetrail/mcp/project-agent-rs/target/release/project-agent"
             ],
             "environment": {
               "PROJECTS_ROOT": "~/projects"

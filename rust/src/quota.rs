@@ -1090,10 +1090,12 @@ pub fn rank_all(cfg: &crate::config::Config, now_ms: i64) -> Vec<Ranked> {
             // này (`/new` không `-a`, gợi ý khi bị chặn, tự chuyển khi kịch trần,
             // bàn giao tự động, `huba handover -a auto`) — một chỗ đóng dấu thì
             // năm đường cùng thấy, và dòng log dưới cũng nói ra.
+            // Gói Go có trần đo được (`go_quota`) ⟹ xếp như mọi tài khoản gói;
+            // opencode ví trả-theo-lượt thì vẫn KHÔNG tự chọn (luật 8).
             let opencode = cfg
                 .claude_accounts_or_ambient()
                 .iter()
-                .any(|a| a.name == q.account && a.is_opencode());
+                .any(|a| a.name == q.account && a.is_opencode() && !is_go_plan(a));
             let r = if cfg.account_locked(&q.account) {
                 Rank::Locked
             } else if opencode || dung_api_key(cfg, &q.account) {
@@ -1178,7 +1180,11 @@ pub fn read_all(cfg: &crate::config::Config) -> Vec<Quota> {
                 // `account_not_ready` GIẢ và có thể loại tài khoản khỏi mọi
                 // đường chọn. "Không đo được" là trạng thái riêng, không phải
                 // "chưa đăng nhập" (luật 13②).
-                return khong_do_duoc(&a.name, "opencode: không dùng sổ hạn mức Claude");
+                if !is_go_plan(a) {
+                    return khong_do_duoc(&a.name, "opencode: không dùng sổ hạn mức Claude");
+                }
+                let (doc_luc, r) = crate::opencode::go_limits(a, now_ms());
+                return go_quota(&a.name, r, doc_luc);
             }
             let dir = a
                 .config_dir
@@ -1190,6 +1196,65 @@ pub fn read_all(cfg: &crate::config::Config) -> Vec<Quota> {
         .collect()
 }
 
+/// Tài khoản opencode chạy gói Go (model `opencode-go/…`) — gói THUÊ BAO có
+/// trần 5 giờ/tuần, cùng bản chất với gói Max, KHÁC ví trả-theo-lượt.
+pub fn is_go_plan(a: &crate::config::ClaudeAccountCfg) -> bool {
+    a.is_opencode()
+        && a.model
+            .as_deref()
+            .is_some_and(|m| m.starts_with("opencode-go/"))
+}
+
+/// `Quota` của gói Go từ hạn mức MÁY CHỦ opencode trả (`opencode::go_limits`).
+///
+/// 🔴 Quang 12/11: *"Còn % phiên 5h và 1 tuần của acc8 nữa"* · *"Thiếu % thì
+/// luồng tự mở phiên mới lại không chọn"* · *"Không có cách nào lấy được thông
+/// tin từ cli à"*. Số của chính opencode (`/zen/go/v1/usage`): 5 giờ = `rolling`;
+/// ô TUẦN lấy cửa sổ CHẬT hơn giữa `weekly` và `monthly` — gói Go có thêm trần
+/// tháng (đo 12/11: tuần 50 %, THÁNG 75 %), và luồng chọn chỉ có hai ô, nên ô
+/// chật nhất phải đứng vào đó, kẻo chọn một acc sắp cạn tháng. `rate-limited`
+/// ⟹ 100 %. Đọc hỏng ⟹ KHÔNG ĐO ĐƯỢC (không bao giờ thành 0 %).
+pub fn go_quota(
+    account: &str,
+    r: Result<crate::opencode::GoLimits, String>,
+    fetched_ms: i64,
+) -> Quota {
+    let g = match r {
+        Ok(g) => g,
+        Err(e) => {
+            logging::warn(
+                "quota_go_unmeasured",
+                json!({ "account": account, "err": e }),
+            );
+            return khong_do_duoc(account, &format!("gói Go: {e}"));
+        }
+    };
+    let pct = |m: &crate::opencode::GoMeter| if m.limited { 100 } else { m.percent.max(0) };
+    let chat = if pct(&g.monthly) > pct(&g.weekly) {
+        &g.monthly
+    } else {
+        &g.weekly
+    };
+    let q = Quota {
+        account: account.to_string(),
+        week_pct: Some(pct(chat)),
+        week_resets_at: chat.resets_at.clone(),
+        hour5_pct: Some(pct(&g.rolling)),
+        hour5_resets_at: g.rolling.resets_at.clone(),
+        fetched_at_ms: Some(fetched_ms),
+        why_unknown: None,
+        chua_dung_duoc: None,
+        models: Vec::new(),
+        model_use: None,
+    };
+    logging::info(
+        "quota_go_read",
+        json!({ "account": account, "rolling": pct(&g.rolling), "weekly": pct(&g.weekly),
+                "monthly": pct(&g.monthly), "o_tuan_lay": if std::ptr::eq(chat, &g.monthly) { "monthly" } else { "weekly" } }),
+    );
+    q
+}
+
 /// Giờ UTC hiện tại theo ms — tách ra để bài kiểm bơm được một mốc cố định.
 pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
@@ -1198,6 +1263,37 @@ pub fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Gói Go: số MÁY CHỦ ⟹ hạng gói như mọi acc; tháng chật hơn tuần thì ô
+    /// tuần mang số tháng; `rate-limited` ⟹ kịch trần; đọc hỏng ⟹ KHÔNG ĐO ĐƯỢC.
+    #[test]
+    fn go_quota_tu_so_may_chu() {
+        let now = 1_794_461_400_000; // 12/11 05:30Z
+                                     // Thân THẬT đo 12/11 05:5xZ (acc8 = acc9).
+        let body: serde_json::Value = serde_json::from_str(
+            r#"{"usage":{"rolling":{"status":"ok","percent":0,"resetsAt":"2026-11-12T14:04:18.845Z"},"weekly":{"status":"ok","percent":50,"resetsAt":"2026-11-16T00:00:00.000Z"},"monthly":{"status":"ok","percent":75,"resetsAt":"2026-12-06T11:53:17.000Z"}}}"#,
+        )
+        .unwrap();
+        let g = crate::opencode::parse_go_limits(&body).unwrap();
+        let q = go_quota("acc8", Ok(g.clone()), now);
+        assert_eq!(q.hour5_pct, Some(0));
+        assert_eq!(q.week_pct, Some(75), "tháng chật hơn tuần ⟹ ô tuần = 75");
+        assert_eq!(
+            q.week_resets_at.as_deref(),
+            Some("2026-12-06T11:53:17.000Z")
+        );
+        assert_eq!(rank(&q, now), Rank::Free(75));
+        // Kịch trần một cửa sổ ⟹ Full.
+        let mut het = g.clone();
+        het.rolling.limited = true;
+        assert_eq!(rank(&go_quota("acc8", Ok(het), now), now), Rank::Full);
+        // Đọc hỏng ⟹ không đo được, KHÔNG phải 0 %.
+        let hong = go_quota("acc8", Err("HTTP 500".into()), now);
+        assert_eq!(hong.week_pct, None);
+        assert_eq!(rank(&hong, now), Rank::Unknown);
+        // Thân thiếu cửa sổ ⟹ Err, không đoán.
+        assert!(crate::opencode::parse_go_limits(&serde_json::json!({"usage":{}})).is_err());
+    }
 
     fn q(week: Option<i64>, week_r: Option<&str>, h5: Option<i64>, h5_r: Option<&str>) -> Quota {
         Quota {

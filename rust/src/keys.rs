@@ -770,8 +770,25 @@ pub fn body_before_box(screen: &str) -> String {
 
 /// Dòng kẻ ngang — viền của ô nhập ở bản không khung. Đòi dài (≥ 8) để một dòng
 /// gạch ngắn giữa văn bản không bị đọc thành viền.
-fn is_rule_line(t: &str) -> bool {
-    t.chars().count() >= 8 && t.chars().all(|c| "─━—▔═".contains(c))
+///
+/// 🔴 VẠCH CÓ NHÃN — Quang 12/11: *"gửi tin vào ô chat nhưng lại không gửi được
+/// vào phiên, phải gửi 2 kênh enter mới vào"*. Claude Code nay vẽ viền TRÊN kèm
+/// một nhãn: `─────…── ultracode ─` (màn thật `[tfl5]` ttys004). Bản cũ đòi cả
+/// dòng là ký tự kẻ ⟹ không nhận viền trên ⟹ `box_start` = None ⟹ `still_in_box`
+/// trả "đã đi" cho chữ còn nằm trong ô ⟹ không Enter bù. Nhận vạch: mở và đóng
+/// bằng ký tự kẻ, ≥ 8 ký tự kẻ, phần chữ ≤ 40 và ít hơn 1/3 phần kẻ.
+pub fn is_rule_line(t: &str) -> bool {
+    const KE: &str = "─━—▔═";
+    let la_ke = |c: char| KE.contains(c);
+    let (Some(dau), Some(cuoi)) = (t.chars().next(), t.chars().last()) else {
+        return false;
+    };
+    let ke = t.chars().filter(|c| la_ke(*c)).count();
+    let chu = t
+        .chars()
+        .filter(|c| !la_ke(*c) && !c.is_whitespace())
+        .count();
+    la_ke(dau) && la_ke(cuoi) && ke >= 8 && chu <= 40 && ke >= 3 * chu
 }
 
 /// VIỀN DƯỚI của ô nhập: `(đầu dòng viền, cuối dòng viền)`, tính theo byte của
@@ -1192,7 +1209,14 @@ fn open_tab(cmd: &str) -> Result<Option<(i64, String)>> {
     let Some(nha) = nha_so.or_else(|| front_window().ok().flatten().map(window_id)) else {
         return Ok(None);
     };
-    let gui = focus_window(nha)
+    // 🔴 KÍCH HOẠT Terminal TRƯỚC ⌘T (Quang 12/11: *"mở tab mới trong cửa sổ
+    // đang có sẵn, không có cửa sổ nào thì mới mở cửa sổ mới — đây là thiết kế
+    // được chốt từ đầu"*). Đo 02:01Z: ứng dụng đứng trước là Telegram, Terminal
+    // `frontmost=false`; `focus_window` chỉ đưa cửa sổ lên TRONG Terminal, nên
+    // ⌘T tới một ứng dụng không có cửa sổ nhận phím ⟹ New Tab rơi về cửa sổ MỚI
+    // cỡ hồ sơ mặc định (`5544`: 580×889, khung khác hẳn nhà `5526` 1298×926).
+    let gui = activate_terminal()
+        .and_then(|()| focus_window(nha))
         .and_then(|()| terminal_pid())
         .and_then(|pid| crate::cgkeys::post_command(pid, "t"));
     if let Err(e) = gui {
@@ -1221,6 +1245,21 @@ fn open_tab(cmd: &str) -> Result<Option<(i64, String)>> {
         );
         return Ok(None);
     };
+    // Tab trong CÙNG nhóm thì AppleScript khai cùng khung với cửa sổ nhà (mỗi
+    // tab là một "window"). Khung khác ⟹ ⌘T đã đẻ cửa sổ rời: NÓI ra, đừng ghi
+    // `tab_opened` như thể đúng thiết kế.
+    match cung_khung(nha, w) {
+        Ok(true) => {}
+        Ok(false) => logging::warn(
+            "tab_bat_ra_cua_so_rieng",
+            json!({ "nha": nha, "window": w, "tty": tty,
+                    "effect": "⌘T mở CỬA SỔ RỜI thay vì tab trong cửa sổ nhà — phiên vẫn chạy ở đó" }),
+        ),
+        Err(e) => logging::warn(
+            "tab_khung_khong_do_duoc",
+            json!({ "nha": nha, "window": w, "err": e.to_string() }),
+        ),
+    }
     let handle = tab_handle(w, &tty);
     osascript(&do_script(handle, &as_string(cmd))).map_err(|e| {
         e.context(format!(
@@ -1234,6 +1273,41 @@ fn open_tab(cmd: &str) -> Result<Option<(i64, String)>> {
                 "nha_tu_so": nha_so.is_some() }),
     );
     Ok(Some((handle, tty)))
+}
+
+/// Đưa ỨNG DỤNG Terminal lên trước (không chỉ một cửa sổ của nó), rồi chờ một
+/// nhịp cho lần kích hoạt — vốn bất đồng bộ — kịp xong trước khi phím tới.
+#[cfg(target_os = "macos")]
+fn activate_terminal() -> Result<()> {
+    osascript("tell application \"Terminal\" to activate")?;
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    Ok(())
+}
+
+/// Hai "window" AppleScript có cùng khung không — tức cùng một nhóm tab.
+#[cfg(target_os = "macos")]
+fn cung_khung(a: i64, b: i64) -> Result<bool> {
+    let out = osascript(&format!(
+        "tell application \"Terminal\"\n\
+           set {{a1, a2, a3, a4}} to bounds of window id {a}\n\
+           set {{b1, b2, b3, b4}} to bounds of window id {b}\n\
+           return (a1 as text) & \",\" & a2 & \",\" & a3 & \",\" & a4 & \"|\" & b1 & \",\" & b2 & \",\" & b3 & \",\" & b4\n\
+         end tell"
+    ))?;
+    khung_trung(&out).ok_or_else(|| anyhow::anyhow!("không đọc được khung: {}", out.trim()))
+}
+
+/// Phần THUẦN của [`cung_khung`]: `"259,40,1557,966|259,40,1557,966"` ⟹ `Some(true)`.
+pub fn khung_trung(out: &str) -> Option<bool> {
+    let (a, b) = out.trim().split_once('|')?;
+    let so = |s: &str| -> Option<Vec<i64>> {
+        let v: Vec<i64> = s
+            .split(',')
+            .map(|x| x.trim().parse().ok())
+            .collect::<Option<_>>()?;
+        (v.len() == 4).then_some(v)
+    };
+    Some(so(a)? == so(b)?)
 }
 
 /// Sổ cửa sổ nhà: id các cửa sổ (tab) huba vừa mở, MỚI nhất trước.
@@ -2755,6 +2829,23 @@ pub enum TabState {
 /// thật đã quan sát, trong khi tất cả những gì nó biết là `osascript` trả 0.
 /// `osascript` trả 0 chỉ chứng minh **bytes đã tới tab** (CLAUDE.md, luật 13).
 pub fn send_exit(window: i64) -> Result<()> {
+    // 🔴 opencode KHÔNG thoát bằng chữ `/exit` — Quang 12/11: *"Bấm close aihub
+    // rồi chỉ nhận kênh exit ko có enter"*. Đo 02:40Z: `/exit` nằm lại trong ô
+    // TUI opencode (gõ `/` bật bảng gợi ý lệnh, Enter chỉ CHỌN gợi ý), mà huba
+    // khai `landed: Gone` vì `contents` của tab opencode là màn thay thế ⟹ chữ
+    // rác (logo + dòng khởi động), bộ đọc màn kiểu Claude mù. Phím thoát gốc của
+    // chính opencode 2.2.7 (bảng phím trong binary): `"app.exit":
+    // "ctrl+c,ctrl+d,<leader>q"`. Hai cú Ctrl+C: ô còn chữ ⟹ cú đầu xoá, cú sau
+    // thoát; ô trống ⟹ cú đầu thoát, cú sau rơi vào shell (vô hại).
+    match tab_runs(window, "opencode") {
+        Ok(true) => return send_exit_opencode(window),
+        Ok(false) => {}
+        Err(e) => crate::logging::warn(
+            "keys_exit_cli_unknown",
+            serde_json::json!({ "window": window, "err": e.to_string(),
+                                "effect": "không hỏi được tab chạy CLI nào — đi đường `/exit` của claude" }),
+        ),
+    }
     let how = type_and_send(window, "/exit")?;
     crate::logging::info(
         "keys_exit_sent",
@@ -2762,6 +2853,44 @@ pub fn send_exit(window: i64) -> Result<()> {
                             "why": "đã đẩy `/exit` + Enter rời; osascript trả 0 chỉ nói bytes tới tab, KHÔNG nói phiên đã nhận" }),
     );
     Ok(())
+}
+
+/// Thoát TUI opencode bằng phím thoát gốc của nó — xem [`send_exit`].
+fn send_exit_opencode(window: i64) -> Result<()> {
+    for luot in 0..OPENCODE_EXIT_CTRL_C {
+        press(window, "ctrl-c")?;
+        if luot + 1 < OPENCODE_EXIT_CTRL_C {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
+    }
+    crate::logging::info(
+        "keys_exit_sent",
+        serde_json::json!({ "window": window, "cli": "opencode", "keys": "ctrl-c ×2",
+                            "why": "opencode app.exit = ctrl+c; osascript trả 0 chỉ nói bytes tới tab — vòng đóng sẽ đo tab rảnh" }),
+    );
+    Ok(())
+}
+
+/// Số cú Ctrl+C cho opencode: một để xoá ô (nếu còn chữ), một để thoát.
+pub const OPENCODE_EXIT_CTRL_C: usize = 2;
+
+/// Tab của cửa sổ này có tiến trình tên `name` không (`processes of tab`).
+fn tab_runs(window: i64, name: &str) -> Result<bool> {
+    let out = osascript(&format!(
+        "tell application \"Terminal\"\n\
+           set AppleScript's text item delimiters to linefeed\n\
+           return (processes of {}) as text\n\
+         end tell",
+        tab_ref(window)
+    ))?;
+    Ok(tab_procs_has(&out, name))
+}
+
+/// Phần THUẦN của [`tab_runs`]: một dòng một tiến trình, so ĐÚNG tên.
+pub fn tab_procs_has(out: &str, name: &str) -> bool {
+    out.lines()
+        .map(|l| l.trim().trim_start_matches('-'))
+        .any(|p| p == name)
 }
 
 /// Đưa cửa sổ của phiên ra TRƯỚC rồi chụp ảnh màn hình thật ra `path`.
