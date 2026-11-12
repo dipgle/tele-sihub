@@ -64,6 +64,19 @@ enum Command {
         #[arg(long)]
         no_open: bool,
     },
+    /// In dòng lệnh mở phiên của một tài khoản — ĐÚNG dòng `/new` gõ vào Terminal
+    ///
+    /// Quang 12/11 chọn *"acc8 cạnh tranh bình đẳng"* cho vai mở bằng
+    /// `scripts/acc-mo-vai.sh`: script ấy chỉ biết mở `claude`, nên khi tài khoản
+    /// là opencode nó hỏi dòng lệnh ở đây thay vì chép luật dựng lệnh sang bash.
+    /// Mở ở gốc workspace (`workspace_root`), như `/new`. Không chạy gì.
+    LenhMo {
+        /// Tên tài khoản trong `claude_accounts`
+        acc: String,
+        /// Đề bài lượt đầu
+        #[arg(long)]
+        prompt: Option<String>,
+    },
     /// Write huba.config.json + create the db
     Init {
         #[arg(long)]
@@ -205,6 +218,26 @@ fn real_main() -> Result<()> {
             } else {
                 huba::accounts_page::serve(&cfg, &db, !no_open)
             }
+        }
+        Command::LenhMo { acc, prompt } => {
+            if !cfg
+                .claude_accounts_or_ambient()
+                .iter()
+                .any(|a| a.name == acc)
+            {
+                anyhow::bail!("không có tài khoản {acc} trong claude_accounts");
+            }
+            println!(
+                "{}",
+                huba::sessions::window_command(
+                    &cfg,
+                    Some(&acc),
+                    &cfg.workspace_root,
+                    prompt.as_deref(),
+                    None
+                )
+            );
+            Ok(())
         }
         Command::Init { force } => cmd_init(&cfg, force),
         Command::Once => {
