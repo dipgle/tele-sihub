@@ -430,7 +430,13 @@ pub fn terminal_tabs(with_screens: bool) -> Result<Vec<Tab>> {
                 .map(str::to_string)
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|e| {
+            crate::logging::warn(
+                "tmux_pane_procs_unreadable",
+                serde_json::json!({ "pane": p.window, "tty": p.tty, "err": e.to_string() }),
+            );
+            Vec::new()
+        });
         tabs.push(Tab {
             busy: !la_shell(&p.lenh),
             tty: p.tty,
@@ -599,7 +605,22 @@ pub fn tu_kiem() -> Vec<(String, Ket)> {
             other => Ket::Hong(format!("{other:?}")),
         },
     ));
-    let _ = tmux(&["kill-session", "-t", &format!("={phien}")]);
+    // Dọn phiên tmux thử — hỏng thì NÓI (một phiên thử bỏ lại là rác trên máy chủ máy).
+    out.push((
+        "⑦b dọn phiên tmux thử".into(),
+        match tmux(&["kill-session", "-t", &format!("={phien}")]) {
+            Ok(_) => Ket::Dat(phien.clone()),
+            // Pane cuối đóng ở ⑦ thì tmux tự xoá phiên, và nếu đó là phiên cuối thì tắt
+            // luôn máy chủ (đo Ubuntu 24.04: "no server running") — cả hai là đã sạch.
+            Err(e)
+                if e.to_string().contains("can't find session")
+                    || khong_co_may_chu(&e.to_string()) =>
+            {
+                Ket::Dat(format!("{phien} đã tự hết cùng pane cuối"))
+            }
+            Err(e) => Ket::Hong(format!("phiên {phien} còn sót: {e}")),
+        },
+    ));
     std::env::remove_var("HUBA_TMUX_SESSION");
     let co_claude = run(
         "claude",
