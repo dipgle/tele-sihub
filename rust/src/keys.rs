@@ -6251,6 +6251,19 @@ pub fn cursor_on(screen: &str, questions: &[String]) -> Option<usize> {
         Some(i) => screen.lines().skip(i + 1).collect::<Vec<_>>().join("\n"),
         None => screen.to_string(),
     };
+    // 🔴 Câu DÀI gãy dòng và MỖI dòng gãy đều mang khung `│ ` (đo màn thật 12/11,
+    // `tests/fixtures/ask-table-cau-dai-gay-dong-2026-11-12.txt`). Chỉ bỏ khoảng trắng
+    // thì chữ ghép thành `…đãcóở│aihub-dev…` ⟹ không khớp câu nào ⟹ không nút (Quang
+    // 12/11 «bấm hết lượt thì báo ko đọc được»). Bỏ khung ở ĐẦU dòng, không đụng `│`
+    // nằm giữa chữ.
+    let vung: String = vung
+        .lines()
+        .map(|l| {
+            let t = l.trim_start();
+            t.strip_prefix('│').unwrap_or(t)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     let flat = squash(&vung);
     let khop: Vec<usize> = questions
         .iter()
