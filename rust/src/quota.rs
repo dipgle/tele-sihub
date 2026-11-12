@@ -1205,6 +1205,9 @@ pub fn is_go_plan(a: &crate::config::ClaudeAccountCfg) -> bool {
             .is_some_and(|m| m.starts_with("opencode-go/"))
 }
 
+/// Trần THÁNG gấp mấy lần trần TUẦN của gói Go (tài liệu: tuần = 50 % tháng).
+pub const GO_THANG_TREN_TUAN: i64 = 2;
+
 /// `Quota` của gói Go từ hạn mức MÁY CHỦ opencode trả (`opencode::go_limits`).
 ///
 /// 🔴 Quang 12/11: *"Còn % phiên 5h và 1 tuần của acc8 nữa"* · *"Thiếu % thì
@@ -1230,14 +1233,26 @@ pub fn go_quota(
         }
     };
     let pct = |m: &crate::opencode::GoMeter| if m.limited { 100 } else { m.percent.max(0) };
-    let chat = if pct(&g.monthly) > pct(&g.weekly) {
+    // 🔴 Quang 12/11: *"75% của tháng không thể đánh đồng để so sánh với tuần được"*
+    // (bản trước lấy max(tuần, tháng) = 75). Quy về TIỀN CÒN LẠI theo đơn vị
+    // trần tuần: tháng còn (100 − m)% × M = (100 − m) × (M/W) % trần tuần. Trần
+    // tuần = ½ trần tháng (tài liệu Go; số đo 12/11 BUỘC W ≥ M/2: tháng 75 trong
+    // đó tuần này 50 ⇒ phần 06–08/11 = 0,75M − 0,5W ≤ W). Quang chọn công thức
+    // này thay "chia 4": tháng 95 % · tuần 10 % ⇒ chia 4 ra 24 % (chọn acc chỉ còn
+    // $5), quy đổi ra 90 % (đúng).
+    let tuan = pct(&g.weekly);
+    let con_tuan = 100 - tuan.min(100);
+    let con_thang_theo_tuan = (100 - pct(&g.monthly).min(100)) * GO_THANG_TREN_TUAN;
+    let thang_chat_hon = con_thang_theo_tuan < con_tuan;
+    let hieu_dung = 100 - con_tuan.min(con_thang_theo_tuan);
+    let chat = if thang_chat_hon {
         &g.monthly
     } else {
         &g.weekly
     };
     let q = Quota {
         account: account.to_string(),
-        week_pct: Some(pct(chat)),
+        week_pct: Some(hieu_dung),
         week_resets_at: chat.resets_at.clone(),
         hour5_pct: Some(pct(&g.rolling)),
         hour5_resets_at: g.rolling.resets_at.clone(),
@@ -1250,7 +1265,8 @@ pub fn go_quota(
     logging::info(
         "quota_go_read",
         json!({ "account": account, "rolling": pct(&g.rolling), "weekly": pct(&g.weekly),
-                "monthly": pct(&g.monthly), "o_tuan_lay": if std::ptr::eq(chat, &g.monthly) { "monthly" } else { "weekly" } }),
+                "monthly": pct(&g.monthly), "tuan_hieu_dung": hieu_dung,
+                "chan_boi": if thang_chat_hon { "monthly" } else { "weekly" } }),
     );
     q
 }
@@ -1277,12 +1293,21 @@ mod tests {
         let g = crate::opencode::parse_go_limits(&body).unwrap();
         let q = go_quota("acc8", Ok(g.clone()), now);
         assert_eq!(q.hour5_pct, Some(0));
-        assert_eq!(q.week_pct, Some(75), "tháng chật hơn tuần ⟹ ô tuần = 75");
-        assert_eq!(
-            q.week_resets_at.as_deref(),
-            Some("2026-12-06T11:53:17.000Z")
-        );
-        assert_eq!(rank(&q, now), Rank::Free(75));
+        // Hôm nay: tuần 50 · tháng 75 ⟹ tháng còn 25 % × 2 = 50 % trần tuần = tuần
+        // còn 50 % ⟹ hiệu dụng 50 (KHÔNG phải 75 như bản max cũ).
+        assert_eq!(q.week_pct, Some(50));
+        assert_eq!(rank(&q, now), Rank::Free(50));
+        // Bảng Quang chọn 12/11.
+        let ca = |w: i64, m: i64| {
+            let mut x = g.clone();
+            x.weekly.percent = w;
+            x.monthly.percent = m;
+            go_quota("acc8", Ok(x), now).week_pct
+        };
+        assert_eq!(ca(10, 95), Some(90), "tháng sắp cạn ⟹ hiệu dụng cao");
+        assert_eq!(ca(80, 85), Some(80), "tuần chật hơn ⟹ giữ tuần");
+        assert_eq!(ca(0, 0), Some(0));
+        assert_eq!(ca(0, 100), Some(100), "hết tháng ⟹ kịch trần");
         // Kịch trần một cửa sổ ⟹ Full.
         let mut het = g.clone();
         het.rolling.limited = true;

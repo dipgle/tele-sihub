@@ -13329,7 +13329,17 @@ pub fn press_ack_from_screen(
     questions: &[String],
 ) -> (String, Vec<(String, String)>, bool) {
     let opts = crate::keys::parse_choices(screen);
-    let table = crate::keys::ask_table(screen);
+    // 🔴 MỘT LUẬT với `/shot` (`multi_question_screen`): bảng HẾT ô trống ⟹ đang ở
+    // bước «Review your answers / Ready to submit» ⟹ KHÔNG còn là bảng nhiều câu,
+    // mà là MỘT danh sách (1. Submit answers · 2. Cancel). Quang 12/11 (ảnh
+    // `[aihub-dev]`): *"bấm chọn xong thì ko đc nhưng xem màn thì lại có submit"* ·
+    // *"Sửa quanh mãi chỗ lựa chọn từ đầu dự án đến giờ chưa xong"*. Bản cũ giữ
+    // `ask_table` nguyên ⟹ `cursor_on` = None (con trỏ không ở câu nào) ⟹ báo ⚠
+    // "không đọc ra câu" + KHÔNG gắn nút, trong khi `/shot` cùng màn gắn nút đúng.
+    // Hai cửa hai luật là lý do lỗi này tái. Bài khoá: `tests/bam_xong_buoc_review.rs`.
+    let full = crate::keys::ask_table(screen);
+    let review = full.as_ref().is_some_and(|t| t.left() == 0);
+    let table = full.clone().filter(|t| t.left() > 0);
     // 🔴 CÂU ĐANG ĐỨNG hỏi `keys::cursor_on`, KHÔNG tự chế một phép đo thứ hai.
     //
     // `cursor_on` ghép nguyên văn câu hỏi mà bảng in dưới thanh tab với danh
@@ -13399,6 +13409,10 @@ pub fn press_ack_from_screen(
                  /shot để nhìn, rồi bấm bằng /pick <câu>.<lựa chọn>.",
                 t.answered.len()
             ),
+            (None, _) if review => {
+                let n = full.as_ref().map_or(0, |t| t.answered.len());
+                format!("✓ đã bấm '{typed}' — đủ {n}/{n} câu, đang ở bước GỬI · {name}")
+            }
             (None, _) => format!(
                 "✓ đã bấm '{typed}' — màn còn {} lựa chọn · {name}",
                 opts.len()
