@@ -122,6 +122,20 @@ else
 fi
 echo "WIN_EXIT=$WIN_EXIT  # $(($(date +%s) - t0))s"
 
+# ── ②c LINUX (bản Ubuntu/tmux, Quang 12/11): dựng-kiểm chéo bằng zig (crate `ring` cần
+# bộ biên dịch C cho Linux — máy Mac không có, zig có), clippy -D warnings mọi đích.
+# Cùng luật với ②b: thiếu đích/công cụ ⟹ LINUX_EXIT=2 (KHÔNG ĐO ĐƯỢC), cổng KHÔNG xanh.
+t0=$(date +%s)
+LINUX_TARGET=x86_64-unknown-linux-gnu
+if rustup target list --installed 2>/dev/null | grep -qx "$LINUX_TARGET" && command -v cargo-zigbuild >/dev/null; then
+  cargo-zigbuild clippy --offline --target "$LINUX_TARGET" --all-targets -- -D warnings
+  LINUX_EXIT=$?
+else
+  echo "⚠ thiếu đích $LINUX_TARGET hoặc cargo-zigbuild — KHÔNG ĐO ĐƯỢC bản Linux"
+  LINUX_EXIT=2
+fi
+echo "LINUX_EXIT=$LINUX_EXIT  # $(($(date +%s) - t0))s"
+
 # ── ③ dựng, lấy đường dẫn từ JSON (KHÔNG glob: deps/ có 1,37 triệu mục) ──────
 t0=$(date +%s)
 cargo test --offline --no-run --message-format=json > "$OUT/cong-sach-build.json" 2>"$OUT/cong-sach-build.err"
@@ -193,8 +207,8 @@ cargo test --offline --doc
 DOC_EXIT=$?
 echo "DOC_EXIT=$DOC_EXIT  # $(($(date +%s) - t0))s"
 
-echo "FAILED=$FAILED · CHEP_HONG=$CHEP_HONG · MAU_SO=$MAU_SO · WIN_EXIT=$WIN_EXIT"
-if [ "$FAILED" -eq 0 ] && [ "$FMT_EXIT" -eq 0 ] && [ "$DOC_EXIT" -eq 0 ] && [ "$CHEP_HONG" -eq 0 ] && [ "$DA_CHAY" -eq "$MAU_SO" ] && [ "$WIN_EXIT" -eq 0 ]; then
+echo "FAILED=$FAILED · CHEP_HONG=$CHEP_HONG · MAU_SO=$MAU_SO · WIN_EXIT=$WIN_EXIT · LINUX_EXIT=$LINUX_EXIT"
+if [ "$FAILED" -eq 0 ] && [ "$FMT_EXIT" -eq 0 ] && [ "$DOC_EXIT" -eq 0 ] && [ "$CHEP_HONG" -eq 0 ] && [ "$DA_CHAY" -eq "$MAU_SO" ] && [ "$WIN_EXIT" -eq 0 ] && [ "$LINUX_EXIT" -eq 0 ]; then
   GATE_EXIT=0
 else
   GATE_EXIT=1

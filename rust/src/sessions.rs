@@ -568,6 +568,15 @@ pub fn hubd_runtime_dir() -> PathBuf {
             return Path::new(&d).join("hub");
         }
     }
+    // Linux (bản Ubuntu, 12/11): thư mục dữ liệu XDG — `~/Library/…` không có ở đó.
+    // Cùng thư mục `install_update_linux.sh` cài `hubd` vào (`…/hub/bin/hubd`).
+    if cfg!(target_os = "linux") {
+        let goc = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .unwrap_or_else(|| crate::config::expand_home(Path::new("~/.local/share")));
+        return goc.join("hub");
+    }
     crate::config::expand_home(Path::new(HUBD_RUNTIME_DIR))
 }
 
@@ -1139,7 +1148,8 @@ pub fn window_target_from_book(book_json: &str, id: &str) -> Option<LiveSession>
 /// `terminal`/`detached` — ba chỗ, ba bản chép tay, và chỗ thứ tư quên. Nay một
 /// chỗ, vì cái giá của bản chép thứ tư là một câu nói dối gửi thẳng ra điện thoại.
 pub fn is_real_tty(tty: &str) -> bool {
-    !(tty.is_empty() || tty == "??" || tty == "-")
+    // `?` = cùng câu ấy của `ps` procps trên Linux (macOS in `??`).
+    !(tty.is_empty() || tty == "??" || tty == "?" || tty == "-")
 }
 
 /// Dây TỔ TIÊN của chính tiến trình đang chạy, gần nhất đứng trước.
@@ -1776,8 +1786,9 @@ pub fn classify_host(cmd: &str, kind: &str, tty: &str) -> &'static str {
     // nhau (ttys000/003/005/006/010), nên nhãn *đang* đúng — nhưng đúng vì may,
     // không vì có ai kiểm.
     //
-    // `ps` in `??` (hoặc `-`) khi tiến trình không có tty điều khiển.
-    if tty.is_empty() || tty == "??" || tty == "-" {
+    // `ps` in `??` (hoặc `-`; Linux procps: `?`) khi tiến trình không có tty điều
+    // khiển — một luật, ở `is_real_tty`.
+    if !is_real_tty(tty) {
         "detached"
     } else {
         "terminal"
@@ -5259,7 +5270,7 @@ fn add_shell_windows(rows: &mut Vec<LiveSession>, tabs: &[crate::keys::Tab]) {
             .as_deref()
             .is_some_and(crate::keys::password_prompt);
         rows.push(LiveSession {
-            session_id: format!("{SHELL_ID_PREFIX}{}", tab.tty),
+            session_id: shell_id(&tab.tty),
             name: format!("cửa sổ {}", tab.tty),
             label: String::new(),
             lane: String::new(),
@@ -7858,7 +7869,7 @@ fn start_in_terminal(
     // Mở cửa sổ TRỐNG — đề bài gõ vào sau, khi ô nhập đã sẵn sàng.
     let cmd = window_command(cfg, account, root, None, resume);
     let (window, tty) = crate::keys::open_window(&cmd)?;
-    let tty_short = tty.rsplit('/').next().unwrap_or(&tty).to_string();
+    let tty_short = tty.trim_start_matches("/dev/").to_string();
     logging::info(
         "new_window_opened",
         json!({ "window": window, "tty": tty_short, "task": truncate(task, 80) }),
@@ -7971,7 +7982,7 @@ fn start_opencode_in_terminal(
         resume,
     );
     let (window, tty) = crate::keys::open_window(&cmd)?;
-    let tty_short = tty.rsplit('/').next().unwrap_or(&tty).to_string();
+    let tty_short = tty.trim_start_matches("/dev/").to_string();
     logging::info(
         "new_window_opened",
         json!({ "window": window, "tty": tty_short, "cli": "opencode", "task": truncate(task, 80) }),
@@ -8004,11 +8015,11 @@ fn start_opencode_in_terminal(
                             "why": "cửa sổ đã mở nhưng chưa thấy phiên trong kho sau 45 s — vẫn giữ cửa sổ",
                             "effect": "id tạm win-<tty>; phiên sẽ lên danh sách riêng khi opencode ghi sổ" }),
                 );
-                format!("{SHELL_ID_PREFIX}{tty_short}")
+                shell_id(&tty_short)
             }
         }
     } else {
-        format!("{SHELL_ID_PREFIX}{tty_short}")
+        shell_id(&tty_short)
     };
     Ok(Started {
         session_id,
@@ -8911,7 +8922,7 @@ pub fn start_fresh_after_handover(
     let cmd = window_command(cfg, Some(dung_acc), cwd, Some(&task), None);
     let opened_at = std::time::SystemTime::now();
     let (_window, tty) = crate::keys::open_window(&cmd)?;
-    let tty_short = tty.rsplit('/').next().unwrap_or(&tty).to_string();
+    let tty_short = tty.trim_start_matches("/dev/").to_string();
     // MỘT chỗ cho cả `/new` lẫn đường này — xem `wait_for_new_session_id`.
     // `exclude` là phần riêng có thật của lượt bàn giao: phiên CŨ vẫn đang ghi
     // tiếp nhật ký, nên "tệp nào vừa đổi" bao gồm cả nó, và bản cũ đã ghép
@@ -9051,8 +9062,33 @@ pub const SHELL_ID_PREFIX: &str = "win-";
 /// lấy 8 ký tự đầu ⟹ `win-ttys`, mất số tty, tức mất đúng cái phân biệt cửa sổ
 /// này với cửa sổ khác — xem `verbs.rs`).
 pub fn tty_of_window_id(id: &str) -> Option<String> {
-    let tty = id.strip_prefix(SHELL_ID_PREFIX)?.trim();
-    is_real_tty(tty).then(|| tty.to_string())
+    let tty = tty_from_token(id.strip_prefix(SHELL_ID_PREFIX)?.trim());
+    is_real_tty(&tty).then_some(tty)
+}
+
+/// Id CỬA SỔ của một tty: `win-` + [`tty_token`]. Một chỗ dựng cho mọi nơi.
+pub fn shell_id(tty: &str) -> String {
+    format!("{SHELL_ID_PREFIX}{}", tty_token(tty))
+}
+
+/// tty ⟹ token chỉ chữ-số, bắt đầu bằng `tty`, dùng trong id `win-…` và liên kết
+/// Telegram (`w_…`, chỉ nhận `[A-Za-z0-9_-]`). macOS `ttys004` giữ nguyên; Linux
+/// `pts/4` (tmux, Quang 12/11 bản Ubuntu) ⟹ `ttypts4` — bản cũ cắt `rsplit('/')`
+/// ra `"4"`, mất hẳn tiền tố mà `verbs`/`split_target` đòi. Thuần.
+pub fn tty_token(tty: &str) -> String {
+    let t = tty.trim().trim_start_matches("/dev/");
+    match t.strip_prefix("pts/") {
+        Some(n) => format!("ttypts{n}"),
+        None => t.to_string(),
+    }
+}
+
+/// Ngược [`tty_token`]: `ttypts4` ⟹ `pts/4`; mọi token khác giữ nguyên. Thuần.
+pub fn tty_from_token(tok: &str) -> String {
+    match tok.trim().strip_prefix("ttypts") {
+        Some(n) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => format!("pts/{n}"),
+        _ => tok.trim().to_string(),
+    }
 }
 
 pub fn is_shell_id(id: &str) -> bool {
@@ -9097,7 +9133,7 @@ pub fn is_opencode_session_id(id: &str) -> bool {
 
 pub fn open_bare_terminal() -> Result<(i64, String)> {
     let (window, tty) = crate::keys::open_window(BARE_TERMINAL_CMD)?;
-    let tty_short = tty.rsplit('/').next().unwrap_or(&tty).to_string();
+    let tty_short = tty.trim_start_matches("/dev/").to_string();
     logging::info(
         "bare_terminal_opened",
         json!({ "window": window, "tty": tty_short }),
@@ -9886,7 +9922,7 @@ pub fn account_call(cfg: &Config, account: Option<&str>, args: &[&str]) -> (Stri
     // Luật 4: dòng `launch` có thể mang khoá ⟹ chỉ ghi TÊN tài khoản.
     logging::info(
         "account_call_via_launch",
-        json!({ "account": account, "shell": "/bin/zsh" }),
+        json!({ "account": account, "shell": crate::exec::posix_shell() }),
     );
     let mut argv = vec![
         "-c".to_string(),
@@ -9894,7 +9930,7 @@ pub fn account_call(cfg: &Config, account: Option<&str>, args: &[&str]) -> (Stri
         "huba".to_string(),
     ];
     argv.extend(args.iter().map(|a| a.to_string()));
-    ("/bin/zsh".to_string(), argv)
+    (crate::exec::posix_shell(), argv)
 }
 
 /// `CLAUDE_CONFIG_DIR` for an account label — `None` means the ambient account.

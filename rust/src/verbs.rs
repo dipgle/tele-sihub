@@ -82,7 +82,12 @@ pub fn lap_vo_nghia(text: &str) -> Option<&'static str> {
 /// Hẹp có chủ ý: payload đi thẳng vào `win-<tty>` rồi thành id phiên, nên nhận
 /// bừa một chuỗi lạ ở đây là để nó chạy tiếp xuống tận chỗ tra cửa sổ.
 fn is_tty_name(s: &str) -> bool {
-    s.len() > 4 && s.starts_with("ttys") && s[4..].chars().all(|c| c.is_ascii_alphanumeric())
+    // `ttys014` (macOS) · `ttypts4` (Linux `pts/4` qua `sessions::tty_token`).
+    ["ttys", "ttypts"].iter().any(|p| {
+        s.len() > p.len()
+            && s.starts_with(p)
+            && s[p.len()..].chars().all(|c| c.is_ascii_alphanumeric())
+    })
 }
 
 /// Một mệnh lệnh gõ trên kênh, nếu chữ này là lệnh.

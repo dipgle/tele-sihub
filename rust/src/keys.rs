@@ -37,7 +37,14 @@ use crate::exec::{run, RunOpts};
 use crate::logging;
 
 // ─────────────────────────────────────────────────────────────────────────
-// Windows — mỗi hàm dưới đây có một bản `#[cfg(target_os = "macos")]` cùng
+// `nen` = lớp hệ điều hành của nền KHÔNG phải macOS: Windows ⟹ console
+// (`keys_win.rs`), Linux ⟹ tmux (`keys_tmux.rs`, Quang 12/11). Một khối shim cho
+// cả hai nên `cargo check --target <nền>` vẫn là phép đối chiếu chữ ký duy nhất.
+#[cfg(target_os = "linux")]
+use crate::keys_tmux as nen;
+#[cfg(windows)]
+use crate::keys_win as nen;
+// Windows + Linux — mỗi hàm dưới đây có một bản `#[cfg(target_os = "macos")]` cùng
 // tên ngay trong tệp này (gọi `osascript`/`cgkeys`). Đây là TOÀN BỘ mặt tiếp
 // xúc với hệ điều hành của `keys.rs`; phần còn lại của tệp (phân tích chữ
 // trên màn, quyết định điều hướng…) thuần Rust và chạy y hệt trên mọi nền.
@@ -49,126 +56,126 @@ use crate::logging;
 // chiếu chữ ký DUY NHẤT cần chạy.
 //
 // CHƯA CHẠY THỬ TRÊN WINDOWS THẬT — xem đầu `keys_win.rs`.
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn open_window(cmd: &str) -> Result<(i64, String)> {
-    crate::keys_win::open_window(cmd)
+    nen::open_window(cmd)
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn window_size(window: i64) -> Result<(i64, i64)> {
-    crate::keys_win::window_size(window)
+    nen::window_size(window)
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn terminal_pid() -> Result<i32> {
-    crate::keys_win::terminal_pid()
+    nen::terminal_pid()
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn focus_window(window: i64) -> Result<()> {
-    crate::keys_win::focus_window(window)
+    nen::focus_window(window)
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn send_bare(window: i64, keys: &[String]) -> Result<()> {
-    crate::keys_win::send_bare(window, keys)
+    nen::send_bare(window, keys)
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn screen_scrollback(window: i64, steps: usize, du: impl Fn(&str) -> bool) -> Result<String> {
-    crate::keys_win::screen_scrollback(window, steps, du)
+    nen::screen_scrollback(window, steps, du)
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn window_of(tty: &str) -> Result<Option<i64>> {
-    crate::keys_win::window_of(tty)
+    nen::window_of(tty)
 }
 /// Trên Windows mỗi console là một "tab" — tab đang chọn của nó là chính nó.
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn selected_tab_tty(window: i64) -> Result<String> {
-    crate::keys_win::selected_tab_tty(window)
+    nen::selected_tab_tty(window)
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn window_of_any(tty: &str) -> Result<Option<i64>> {
-    crate::keys_win::window_of_any(tty)
+    nen::window_of_any(tty)
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn tab_proc_count(window: i64) -> Result<usize> {
-    crate::keys_win::tab_proc_count(window)
+    nen::tab_proc_count(window)
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn tab_state(window: i64) -> Result<TabState> {
-    crate::keys_win::tab_state(window)
+    nen::tab_state(window)
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn screen_locked() -> Option<bool> {
-    crate::keys_win::screen_locked()
+    nen::screen_locked()
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn frame_is_blank(path: &std::path::Path) -> Option<bool> {
-    crate::keys_win::frame_is_blank(path)
+    nen::frame_is_blank(path)
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn bring_to_front(window: i64) -> Result<()> {
-    crate::keys_win::bring_to_front(window)
+    nen::bring_to_front(window)
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn front_window() -> Result<Option<i64>> {
-    crate::keys_win::front_window()
+    nen::front_window()
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn photograph_window(window: i64, path: &std::path::Path) -> Result<()> {
-    crate::keys_win::photograph_window(window, path)
+    nen::photograph_window(window, path)
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn window_gone(window: i64) -> Result<bool> {
-    crate::keys_win::window_gone(window)
+    nen::window_gone(window)
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn close_window(window: i64) -> Result<Closed> {
-    crate::keys_win::close_window(window)
+    nen::close_window(window)
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn tab_process_count(window: i64) -> Result<Option<usize>> {
-    crate::keys_win::tab_process_count(window)
+    nen::tab_process_count(window)
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn close_hidden_again(window: i64) -> Result<bool> {
-    crate::keys_win::close_hidden_again(window)
+    nen::close_hidden_again(window)
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn type_into(window: i64, text: &str) -> Result<()> {
-    crate::keys_win::type_into(window, text)
+    nen::type_into(window, text)
 }
 // `/effort` mới đo trên TUI macOS (ESC+CR = Meta-Enter) — Windows chưa đo nên
 // nói thẳng là chưa có, không giả vờ gõ.
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn type_held(_window: i64, _text: &str) -> Result<()> {
     Err(anyhow!(
-        "chưa có trên Windows: gõ-mà-không-gửi mới đo trên macOS"
+        "chưa có trên nền này: gõ-mà-không-gửi mới đo trên macOS"
     ))
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn delete_held(_window: i64, _n: usize) -> Result<()> {
     Err(anyhow!(
-        "chưa có trên Windows: gõ-mà-không-gửi mới đo trên macOS"
+        "chưa có trên nền này: gõ-mà-không-gửi mới đo trên macOS"
     ))
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn type_after_dels(_window: i64, _dels: usize, _text: &str) -> Result<()> {
     Err(anyhow!(
-        "chưa có trên Windows: gõ-mà-không-gửi mới đo trên macOS"
+        "chưa có trên nền này: gõ-mà-không-gửi mới đo trên macOS"
     ))
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn clear_box(window: i64) -> Result<Cleared> {
-    crate::keys_win::clear_box(window)
+    nen::clear_box(window)
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn clear_queue(window: i64) -> Result<(usize, usize)> {
-    crate::keys_win::clear_queue(window)
+    nen::clear_queue(window)
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn press_writes(window: i64, writes: &[Vec<String>]) -> Result<()> {
-    crate::keys_win::press_writes(window, writes)
+    nen::press_writes(window, writes)
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn screen_text(window: i64) -> Result<String> {
-    crate::keys_win::screen_text(window)
+    nen::screen_text(window)
 }
 
 /// Có gửi được phím rời vào cửa sổ khác không — câu hỏi macOS trả lời bằng
@@ -182,9 +189,9 @@ pub fn screen_text(window: i64) -> Result<String> {
 pub fn accessibility_trusted() -> bool {
     crate::cgkeys::trusted()
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn accessibility_trusted() -> bool {
-    crate::keys_win::trusted()
+    nen::trusted()
 }
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -315,7 +322,7 @@ static PROBE_SKIPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 static PROBE_SKIPPED_YIELD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static PROBE_TIMEOUTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Mốc (ms epoch) một lượt hỏi Terminal GẤP vừa chạy xong.
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 static URGENT_TERMINAL_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
 thread_local! {
@@ -502,7 +509,7 @@ fn may_dang_the_nao() -> (f64, f64, f64) {
 }
 
 #[cfg(not(target_os = "macos"))]
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn may_dang_the_nao() -> (f64, f64, f64) {
     (-1.0, -1.0, -1.0)
 }
@@ -535,7 +542,7 @@ pub fn timeout_context(
     )
 }
 
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn osascript(script: &str) -> Result<String> {
     use std::sync::atomic::Ordering::Relaxed;
     let lane = crate::exec::lane();
@@ -1868,7 +1875,7 @@ pub fn tab_ref(handle: i64) -> String {
 /// gói lại bằng `tab_handle`.
 #[cfg(target_os = "macos")]
 pub fn window_of(tty: &str) -> Result<Option<i64>> {
-    if tty.is_empty() || tty == "??" || tty == "-" {
+    if !crate::sessions::is_real_tty(tty) {
         return Ok(None);
     }
     // `ps` in `ttys005`, AppleScript trả `/dev/ttys005`.
@@ -2008,7 +2015,7 @@ pub fn window_of(tty: &str) -> Result<Option<i64>> {
 /// rồi tab còn sống — và chỉ khi không còn gì sống mới nhận tab chết.
 #[cfg(target_os = "macos")]
 pub fn window_of_any(tty: &str) -> Result<Option<i64>> {
-    if tty.is_empty() || tty == "??" || tty == "-" {
+    if !crate::sessions::is_real_tty(tty) {
         return Ok(None);
     }
     let dev = if tty.starts_with("/dev/") {
@@ -2412,14 +2419,14 @@ impl Tab {
 ///
 /// Trả cả tab lẫn tiến trình trong MỘT lượt `osascript`: hỏi hai lần là hai ảnh
 /// chụp lệch nhau, và giữa hai lần ấy một cửa sổ đóng được.
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 pub fn terminal_tabs() -> Result<Vec<Tab>> {
     probe_tabs(false)
 }
 /// Windows: mỗi console có cửa sổ là một "tab" — xem `keys_win::terminal_tabs`.
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn terminal_tabs() -> Result<Vec<Tab>> {
-    crate::keys_win::terminal_tabs(false)
+    nen::terminal_tabs(false)
 }
 
 /// Như `terminal_tabs`, và kèm CHỮ đang hiện trên màn từng tab — vẫn MỘT lượt dò.
@@ -2436,13 +2443,13 @@ pub fn terminal_tabs() -> Result<Vec<Tab>> {
 /// tab of window id N"* — tức tab ĐANG ĐƯỢC CHỌN của cửa sổ ấy, không phải tab
 /// mang tty mình hỏi. Cửa sổ hai tab thì nó đọc nhầm màn, im lặng. Ở đây chữ đi
 /// kèm chính cái tab đã khai tty, nên không còn chỗ cho nhầm lẫn ấy.
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 pub fn terminal_screens() -> Result<Vec<Tab>> {
     probe_tabs(true)
 }
-#[cfg(windows)]
+#[cfg(not(target_os = "macos"))]
 pub fn terminal_screens() -> Result<Vec<Tab>> {
-    crate::keys_win::terminal_tabs(true)
+    nen::terminal_tabs(true)
 }
 
 /// Đang có một lượt `probe_tabs` chạy chưa — lượt thứ hai KHÔNG chồng lên.
@@ -2454,14 +2461,14 @@ pub fn terminal_screens() -> Result<Vec<Tab>> {
 /// Lệnh có người chờ thì XẾP HÀNG sau lượt kia ([`cho_luot`]); vòng nền nhận `Err`
 /// ngay — chỗ gọi đã đọc `Err` của phép dò thành *"CHƯA ĐO ĐƯỢC"*
 /// (`terminal_probe_failed`), không thành "không có cửa sổ nào".
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 static DO_TAB_DANG_CHAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Mốc (ms epoch) lượt `probe_tabs` gần nhất hỏng vì Terminal câm — xem
 /// [`luot_truoc_da_cam`].
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 static DO_TAB_CAM_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn probe_tabs(with_screens: bool) -> Result<Vec<Tab>> {
     let cho = cho_luot(crate::exec::lane(), osa_timeout());
     let bat_dau_cho = crate::quota::now_ms();
@@ -2510,7 +2517,7 @@ fn probe_tabs(with_screens: bool) -> Result<Vec<Tab>> {
 /// Đoạn AppleScript hỏi mọi tab — kèm chữ trên màn khi `with_screens`.
 ///
 /// Tách thuần để KIỂM ĐƯỢC, cùng lý do với `window_script`.
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn tabs_script(with_screens: bool) -> String {
     // 🔴 BA LỖI TRONG BỐN DÒNG APPLESCRIPT, và cả ba đều CÂM.
     // 08-15. Hà: *"lệnh terminal chưa đúng … đang có 2 cửa sổ không chạy gì"*.
@@ -3448,6 +3455,7 @@ pub fn close_hidden_again(window: i64) -> Result<bool> {
 }
 
 /// Hai kết cục KHÁC NHAU của một lượt đóng, nên hai giá trị.
+#[derive(Debug)]
 pub enum Closed {
     /// Cửa sổ đã biến mất — đo bằng số tab + `visible` (xem [`window_gone`]).
     Gone,

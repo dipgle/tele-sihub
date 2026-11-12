@@ -52,6 +52,11 @@ pub mod exec;
 /// thấy một phiên đang dừng lại hỏi — câu hỏi ấy nằm trên màn hình chứ chưa vào
 /// nhật ký.
 pub mod keys;
+/// Linux (Ubuntu) — cùng vai trò, qua tmux (Quang 12/11). Dựng trên mọi nền Unix
+/// (chỉ gọi lệnh `tmux`) để phần thuần kiểm được trên máy Mac; chỉ Linux dùng nó
+/// làm lớp hệ điều hành (`keys.rs`, `nen`).
+#[cfg(unix)]
+pub mod keys_tmux;
 /// Windows — cùng vai trò với `keys.rs`, khác cơ chế. CHƯA CHẠY THỬ TRÊN
 /// WINDOWS THẬT (phiên viết nó không có máy Windows để đo) — đọc mục "Chưa đo
 /// được" ở đầu tệp trước khi tin.

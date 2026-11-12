@@ -165,6 +165,11 @@ enum Command {
         #[arg(long, hide = true)]
         chay: Option<std::path::PathBuf>,
     },
+    /// Linux (tmux): ĐO trên máy thật — có tmux · mở pane · gõ + đọc lại · phím
+    /// rời · bận/rảnh · đóng · `claude --version`. Dùng phiên tmux RIÊNG, không
+    /// đụng phiên `huba`. Không cần cấu hình. Thoát 0 đạt hết · 1 có mục hỏng ·
+    /// 2 có mục KHÔNG ĐO ĐƯỢC.
+    LinuxTuKiem,
 }
 
 fn main() {
@@ -181,6 +186,9 @@ fn real_main() -> Result<()> {
     // lúc chưa có `huba.config.json` nào.
     if let Command::WindowsTuKiem { chay } = &cli.command {
         std::process::exit(cmd_windows_tu_kiem(chay.as_deref()));
+    }
+    if let Command::LinuxTuKiem = &cli.command {
+        std::process::exit(cmd_linux_tu_kiem());
     }
 
     let cfg = config::load(cli.config.as_deref())?;
@@ -257,10 +265,39 @@ fn real_main() -> Result<()> {
             std::process::exit(cmd_effort(&cfg, &level, session.as_deref()))
         }
         // Đã xử lý TRƯỚC `config::load` (đầu `real_main`) — tới được đây là lỗi luồng.
-        Command::WindowsTuKiem { .. } => Err(anyhow::anyhow!(
-            "windows-tu-kiem phải được xử lý trước khi nạp cấu hình"
+        Command::WindowsTuKiem { .. } | Command::LinuxTuKiem => Err(anyhow::anyhow!(
+            "lệnh tự kiểm phải được xử lý trước khi nạp cấu hình"
         )),
     }
+}
+
+/// `huba linux-tu-kiem` — xem doc-comment của `Command::LinuxTuKiem`.
+#[cfg(unix)]
+fn cmd_linux_tu_kiem() -> i32 {
+    use huba::keys_tmux::Ket;
+    let mut ma = 0;
+    for (ten, ket) in huba::keys_tmux::tu_kiem() {
+        let (dau, chu) = match ket {
+            Ket::Dat(s) => ("✅", s),
+            Ket::Hong(s) => {
+                ma = 1;
+                ("❌", s)
+            }
+            Ket::Kdd(s) => {
+                if ma == 0 {
+                    ma = 2;
+                }
+                ("⏭ KHÔNG ĐO ĐƯỢC", s)
+            }
+        };
+        println!("{dau} {ten} — {chu}");
+    }
+    ma
+}
+#[cfg(not(unix))]
+fn cmd_linux_tu_kiem() -> i32 {
+    eprintln!("linux-tu-kiem chỉ chạy trên Linux/Unix có tmux");
+    2
 }
 
 /// `huba windows-tu-kiem` — xem doc-comment của `Command::WindowsTuKiem`.

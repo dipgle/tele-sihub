@@ -6795,16 +6795,16 @@ pub fn orphan_windows_tick(
         .map(|t| {
             let dong_cuoi = last_screen_line(t.screen.as_deref())
                 .unwrap_or_else(|| "dấu nhắc trống".to_string());
-            match crate::telegram::deep_link(&format!("wx_{}", t.tty)) {
+            match crate::telegram::deep_link(&format!("wx_{}", crate::sessions::tty_token(&t.tty)))
+            {
                 Some(link) => format!("⚪ {} — {dong_cuoi}\n    ⏹ đóng: {link}", t.tty),
                 // Chưa biết tên bot ⟹ không dựng được liên kết. Vẫn phải nói ra
                 // cửa sổ nào, kèm lệnh gõ tay — mất chỗ bấm không được thành mất
                 // cả tin.
                 None => format!(
-                    "⚪ {} — {dong_cuoi}\n    ⏹ đóng: /close {}{}",
+                    "⚪ {} — {dong_cuoi}\n    ⏹ đóng: /close {}",
                     t.tty,
-                    crate::sessions::SHELL_ID_PREFIX,
-                    t.tty
+                    crate::sessions::shell_id(&t.tty)
                 ),
             }
         })
@@ -7558,8 +7558,13 @@ pub fn scan_session_inboxes(root: &std::path::Path) -> Vec<(String, String, std:
     out
 }
 
-/// Gốc chứa scratchpad của mọi phiên — nơi đặt hòm thư.
-const SCRATCH_ROOT: &str = "/private/tmp";
+/// Gốc chứa scratchpad của mọi phiên — nơi đặt hòm thư. macOS: `/private/tmp`
+/// (đích thật của `/tmp`); Linux (bản Ubuntu 12/11): `/tmp` — không có `/private`.
+const SCRATCH_ROOT: &str = if cfg!(target_os = "macos") {
+    "/private/tmp"
+} else {
+    "/tmp"
+};
 
 /// Nhận thư của các phiên rồi xếp vào hàng chờ. Chạy mỗi vòng, rẻ khi không có.
 ///
@@ -10970,7 +10975,7 @@ const SSH_CO_GIA_TRI: &[&str] = &[
 /// hỏng CÓ thông báo, như mọi lệnh hỏng khác của ▶️.
 fn run_shell() -> (String, &'static str) {
     if !cfg!(windows) {
-        return ("/bin/zsh".to_string(), "-lc");
+        return (crate::exec::posix_shell(), "-lc");
     }
     let mut cands: Vec<std::path::PathBuf> = Vec::new();
     if let Some(p) = std::env::var_os("CLAUDE_CODE_GIT_BASH_PATH") {
@@ -14295,7 +14300,7 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                                 // Chuyển con trỏ sang cửa sổ ấy — cùng luật với
                                 // `/new` trần: mở xong thì tay người ta phải ở
                                 // đó, không phải ở phiên cũ.
-                                let id = format!("{}{tty}", crate::sessions::SHELL_ID_PREFIX);
+                                let id = crate::sessions::shell_id(&tty);
                                 if let Err(e) = db.set_cursor(FOCUS_SESSION_KEY, &id) {
                                     logging::error(
                                         "focus_after_term_run_failed",
@@ -14796,9 +14801,14 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                                     // được giữa chữ là LIÊN KẾT. Cùng cách ☑ bám
                                     // dòng lựa chọn và ▶️ bám dòng lệnh.
                                     let mark = if tb.busy { "🟢" } else { "⚪" };
-                                    let open = crate::telegram::deep_link(&format!("w_{}", tb.tty));
-                                    let shut =
-                                        crate::telegram::deep_link(&format!("wx_{}", tb.tty));
+                                    let open = crate::telegram::deep_link(&format!(
+                                        "w_{}",
+                                        crate::sessions::tty_token(&tb.tty)
+                                    ));
+                                    let shut = crate::telegram::deep_link(&format!(
+                                        "wx_{}",
+                                        crate::sessions::tty_token(&tb.tty)
+                                    ));
                                     match (open, shut) {
                                         (Some(o), Some(c)) => html.push_str(&format!(
                                             "{mark} <code>{}</code> · <a href=\"{}\">🖥 vào</a> · <a href=\"{}\">⏹ đóng</a> — {}\n",
@@ -14811,11 +14821,7 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                                         // liên kết. Rơi về khối nút cũ chứ không
                                         // im: mất chỗ bấm là mất cả tính năng.
                                         _ => {
-                                            let id = format!(
-                                                "{}{}",
-                                                crate::sessions::SHELL_ID_PREFIX,
-                                                tb.tty
-                                            );
+                                            let id = crate::sessions::shell_id(&tb.tty);
                                             btns.push((
                                                 format!("🖥 {}", tb.tty),
                                                 format!("sess:{id}"),
@@ -15423,7 +15429,7 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                         // là lý do câu chào của nhánh kia nói *"con trỏ CHƯA
                         // chuyển"*. Hai nhánh khác nhau ở dữ kiện, không ở luật.
                         Ok((_w, tty)) => {
-                            let id = format!("{}{tty}", crate::sessions::SHELL_ID_PREFIX);
+                            let id = crate::sessions::shell_id(&tty);
                             if let Err(e) = db.set_cursor(FOCUS_SESSION_KEY, &id) {
                                 // Không nuốt: con trỏ không chuyển mà câu chào
                                 // vẫn khoe "gõ ở đây là vào nó" thì chữ tiếp

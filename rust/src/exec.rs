@@ -586,6 +586,21 @@ pub fn truncate(s: &str, n: usize) -> String {
     s.chars().take(n).collect::<String>() + "…"
 }
 
+/// Vỏ POSIX để chạy một chuỗi lệnh (`-c`/`-lc`): macOS `/bin/zsh` như từ đầu; nền
+/// khác ⟹ `/bin/zsh` nếu máy có, không thì `/bin/bash`, rồi `/bin/sh`. Ubuntu cài
+/// mặc định KHÔNG có zsh (Quang 12/11, bản Ubuntu) — ghim `/bin/zsh` thì mọi nút ▶️
+/// và mọi dòng `launch` nhiều từ hỏng `ENOENT`.
+pub fn posix_shell() -> String {
+    if cfg!(target_os = "macos") {
+        return "/bin/zsh".to_string();
+    }
+    ["/bin/zsh", "/bin/bash", "/bin/sh"]
+        .iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .unwrap_or(&"/bin/sh")
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

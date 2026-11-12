@@ -2068,6 +2068,25 @@ pub fn restart_daemon() -> anyhow::Result<String> {
     if cfg!(windows) {
         anyhow::bail!("trên Windows khởi động lại bằng: schtasks /End /TN huba-hubd && schtasks /Run /TN huba-hubd");
     }
+    // Linux: dịch vụ systemd `--user` mà `install_update_linux.sh` dựng.
+    if cfg!(target_os = "linux") {
+        crate::tin_den::khep_lo_truoc_khi_tu_khoi_dong();
+        let out = run(
+            "systemctl",
+            &["--user", "restart", LINUX_UNIT],
+            RunOpts {
+                timeout: Some(Duration::from_secs(30)),
+                ..Default::default()
+            },
+        )?;
+        if !out.ok() {
+            anyhow::bail!(
+                "systemctl --user restart {LINUX_UNIT} hỏng: {}",
+                crate::exec::truncate(out.stderr.trim(), 200)
+            );
+        }
+        return Ok(format!("systemd --user {LINUX_UNIT}"));
+    }
     let uid = run(
         "id",
         &["-u"],
@@ -2119,6 +2138,9 @@ pub fn restart_daemon() -> anyhow::Result<String> {
 
 /// Đường dẫn bản hubad mà launchd chạy. KHÔNG phải bản `cargo` vừa build.
 const INSTALLED_HUBD: &str = "~/Library/Application Support/hub/bin/hubd";
+
+/// Tên dịch vụ systemd `--user` của bản Linux (`install_update_linux.sh`).
+pub const LINUX_UNIT: &str = "huba-hubd.service";
 
 /// Tên chứng chỉ ký, đúng như nó nằm trong keychain — **`Hub`, không phải
 /// `Huba`**.
