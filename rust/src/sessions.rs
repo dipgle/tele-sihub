@@ -8999,6 +8999,23 @@ pub fn is_shell_id(id: &str) -> bool {
 /// hình dạng của `claude`. Đo 2026-11-12 22:09Z (sổ `tin_den`): bấm vào hàng
 /// acc8 gửi `/start s_ses_e349d2d1…`, bộ đọc đòi hex nên không nhận, và huba
 /// đáp *"chưa hiểu lệnh này"* — một cú bấm vào đúng chỗ mà không đi đâu.
+/// Phiên `id` có trong sổ của một tài khoản opencode nào không.
+///
+/// 🔴 Đo 12/11 00:58Z: bấm hàng `[projects]·e349d2d1` ⇒ huba đáp *"phiên
+/// e349d2d1 không còn trong danh sách phiên đang chạy"*. Sai: nó nằm trong sổ
+/// opencode suốt. `focus_target_gone_fast` chỉ hỏi sổ theo dõi + `claude agents`
+/// — hai nguồn của Claude — nên mọi phiên opencode bị tuyên bố CHẾT ngay.
+pub fn listed_in_opencode(cfg: &Config, id: &str) -> bool {
+    cfg.claude_accounts_or_ambient()
+        .iter()
+        .filter(|a| a.is_opencode())
+        .any(|a| {
+            crate::opencode::read_sessions(a)
+                .map(|v| v.iter().any(|s| s.id == id))
+                .unwrap_or(false)
+        })
+}
+
 pub fn is_opencode_session_id(id: &str) -> bool {
     match id.strip_prefix("ses_") {
         Some(rest) => {

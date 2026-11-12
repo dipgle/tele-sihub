@@ -15841,7 +15841,10 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                 let gone_fast = booked.is_none()
                     && looks_like_uuid(&want)
                     && crate::sessions::tty_of_window_id(&want).is_none()
-                    && crate::sessions::listed_in_books(cfg, &want) == crate::sessions::Listed::No;
+                    && crate::sessions::listed_in_books(cfg, &want) == crate::sessions::Listed::No
+                    // …và KHÔNG được kết luận từ hai sổ của Claude: phiên opencode
+                    // chỉ nằm trong SQLite của tài khoản nó (xem `listed_in_opencode`).
+                    && !crate::sessions::listed_in_opencode(cfg, &want);
                 if gone_fast {
                     logging::info(
                         "focus_target_gone_fast",
