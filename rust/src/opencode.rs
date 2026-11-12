@@ -43,6 +43,9 @@ pub struct OcSession {
     /// bằng chứng "phiên này đã nói lượt nào".
     pub last_text: Option<String>,
     pub last_role: Option<String>,
+    /// Tổng token CỘNG DỒN của cả phiên (để chẩn đoán). KHÔNG phải ngữ cảnh
+    /// hiện tại — xem `context_tokens`.
+    pub cum_tokens: u64,
     /// Thư mục DỰ ÁN mà chính opencode khai (`project.worktree`) — nguồn đúng
     /// cho nhãn hiển thị. `None` khi kho không có bảng `project`.
     pub project_dir: Option<String>,
@@ -183,7 +186,13 @@ fn query_sessions(
                 title,
                 directory,
                 model: parse_model(&model_raw),
-                context_tokens: input.max(0) as u64
+                // 🔴 KHÔNG dùng `tokens_*` của bảng session: đó là SỐ CỘNG DỒN
+                // của cả phiên (đo 12/11: input 365 488 · cache.read 72 256 512
+                // ⇒ 72,6 M "token ngữ cảnh" trong khi opencode hiện 35%). Ngữ
+                // cảnh HIỆN TẠI đọc từ `tokens` của lượt assistant cuối
+                // (`fill_last_turns_v2`); đây chỉ là giá trị dự phòng.
+                context_tokens: 0,
+                cum_tokens: input.max(0) as u64
                     + cache_read.max(0) as u64
                     + cache_write.max(0) as u64,
                 cost_usd: cost,
@@ -331,14 +340,35 @@ fn fill_last_turns_v2(conn: &Connection, sessions: &mut [OcSession]) -> Result<(
         })
         .map_err(|e| format!("truy vấn session_message: {e}"))?;
     let mut xong: BTreeMap<String, String> = BTreeMap::new();
+    // Ngữ cảnh HIỆN TẠI = `tokens` của lượt assistant mới nhất ĐÃ KHÉP (có
+    // `finish`); cột `tokens_*` của bảng session là số CỘNG DỒN cả phiên.
+    let mut ngu_canh: BTreeMap<String, u64> = BTreeMap::new();
     for row in rows {
         let (sid, data) = row.map_err(|e| format!("đọc session_message: {e}"))?;
-        if xong.contains_key(&sid) {
-            continue;
-        }
         let Ok(v) = serde_json::from_str::<Value>(&data) else {
             continue;
         };
+        if !ngu_canh.contains_key(&sid) {
+            if let Some(t) = v.get("tokens") {
+                let so = |k: &str| t.get(k).and_then(Value::as_u64).unwrap_or(0);
+                let cache = t.get("cache");
+                let doc = cache
+                    .and_then(|c| c.get("read"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let ghi = cache
+                    .and_then(|c| c.get("write"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let tong = so("input") + doc + ghi;
+                if tong > 0 {
+                    ngu_canh.insert(sid.clone(), tong);
+                }
+            }
+        }
+        if xong.contains_key(&sid) {
+            continue;
+        }
         let Some(items) = v.get("content").and_then(Value::as_array) else {
             continue;
         };
@@ -364,6 +394,9 @@ fn fill_last_turns_v2(conn: &Connection, sessions: &mut [OcSession]) -> Result<(
         }
     }
     for s in sessions.iter_mut() {
+        if let Some(n) = ngu_canh.get(&s.id) {
+            s.context_tokens = *n;
+        }
         if let Some(t) = xong.get(&s.id) {
             if s.last_text.is_none() {
                 s.last_text = Some(t.clone());
@@ -712,7 +745,12 @@ mod tests {
             got[0].model.as_deref(),
             Some("opencode-go/deepseek-v4.1-flash")
         );
-        assert_eq!(got[0].context_tokens, 123);
+        // Cột `tokens_*` là CỘNG DỒN — không phải ngữ cảnh hiện tại.
+        assert_eq!(got[0].cum_tokens, 123);
+        assert_eq!(
+            got[0].context_tokens, 0,
+            "không có `tokens` của lượt ⇒ không bịa"
+        );
         assert_eq!(got[0].created_ms, 1000);
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -767,7 +805,8 @@ mod tests {
                    '{\"content\":[{\"type\":\"text\",\"text\":\"Xong việc.\"}]}'),
                   ('m2','ses_live','assistant',2,7000,7000,
                    '{\"content\":[{\"type\":\"reasoning\",\"text\":\"nghĩ\"},
-                                   {\"type\":\"tool\",\"tool\":\"bash\"}]}'),
+                                   {\"type\":\"tool\",\"tool\":\"bash\"}],
+                     \"tokens\":{\"input\":10,\"output\":5,\"cache\":{\"read\":50,\"write\":2}}}'),
                   ('m3','ses_live','user',3,8000,8000,
                    '{\"content\":[{\"type\":\"text\",\"text\":\"câu của người\"}]}');",
             )
@@ -783,7 +822,10 @@ mod tests {
             live.model.as_deref(),
             Some("opencode-go/deepseek-v4.1-flash")
         );
-        assert_eq!(live.context_tokens, 420);
+        // Ngữ cảnh HIỆN TẠI = tokens của lượt mới nhất (10+50+2), không phải
+        // cột cộng dồn 420 — hai số này lệch nhau 5 bậc trên phiên thật.
+        assert_eq!(live.context_tokens, 62);
+        assert_eq!(live.cum_tokens, 420);
         // Lượt assistant CUỐI CÓ CHỮ, không phải lượt cuối cùng (toàn reasoning).
         assert_eq!(live.last_text.as_deref(), Some("Xong việc."));
         assert_eq!(live.last_role.as_deref(), Some("assistant"));

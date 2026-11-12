@@ -2503,6 +2503,11 @@ fn cua_so(model: Option<&str>) -> (u64, u64) {
     match model {
         Some(m) if m.contains("haiku") => (200_000, 200_000),
         Some(m) if m.contains("claude") => (1_000_000, 1_000_000),
+        // opencode (đo 12/11 07:3x trên phiên `ses_e346a315`, acc8): 348 000
+        // token ⇒ UI của chính opencode hiện **35%** ⟹ cửa sổ của nó là 1 M.
+        // Trước dòng này model lạ rơi về 200 k ⇒ huba báo **100%**, kẹp trần, và
+        // tự động bàn giao một phiên chỉ dùng 35% ngữ cảnh.
+        Some(m) if m.starts_with("opencode-") || m.contains("/deepseek-") => (1_000_000, 1_000_000),
         // Gồm cả `None`: không đọc được model thì rơi về đúng con số CLI dùng cho
         // model nó không biết — thà báo sớm còn hơn báo muộn.
         _ => (180_000, 200_000),
