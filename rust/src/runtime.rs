@@ -1094,6 +1094,11 @@ fn do_va_ghi_so(
                 if let Some(o) = cu.as_object_mut() {
                     o.insert("err".into(), err);
                     o.insert("err_at_ms".into(), json!(xong));
+                    // `dang_nhap` thuộc về LƯỢT NÀY: lượt không hỏi được thì xoá câu của lượt trước.
+                    match row.get("dang_nhap").cloned() {
+                        Some(b) => o.insert("dang_nhap".into(), b),
+                        None => o.remove("dang_nhap"),
+                    };
                 }
                 so.insert(ten, cu);
             }
@@ -1153,9 +1158,15 @@ pub fn xep_hang_tai_khoan(cfg: &Config, db: &Db, cu_ms: Option<i64>) -> Vec<crat
         None => usage_cached(cfg, db),
     };
     let now_ms = crate::quota::now_ms();
-    let moi = chi_so_moi_hon_tep(usage.get("accounts"), &crate::quota::read_all(cfg));
+    let so_cli = crate::quota::read_all(cfg);
+    let moi = chi_so_moi_hon_tep(usage.get("accounts"), &so_cli);
     crate::quota::apply_dead_book(
-        crate::quota::overlay_live(crate::quota::rank_all(cfg, now_ms), &moi),
+        crate::quota::ap_dang_nhap(
+            crate::quota::overlay_live(crate::quota::rank_all(cfg, now_ms), &moi),
+            &so_cli,
+            usage.get("accounts"),
+            now_ms,
+        ),
         &db.dead_accounts(),
     )
 }
@@ -1219,7 +1230,19 @@ fn usage_one(cfg: &Config, acc: &crate::config::ClaudeAccountCfg) -> Value {
                 .ok()
                 .and_then(|v| v.get("result").and_then(Value::as_str).map(str::to_string));
             match text {
-                Some(t) => parse_usage(&t),
+                Some(t) => {
+                    let v = parse_usage(&t);
+                    // 🔴 KHÔNG RA SỐ thì không phải "vừa đo xong" (Quang 12/11). Bản cũ trả
+                    // `{"raw":…}` không kèm `err` ⟹ `do_va_ghi_so` đóng `at_ms` mới ⟹ tài
+                    // khoản được coi là VỪA ĐO cho tới lần chọn sau, mà không có con số nào.
+                    // Đo 12/11 sổ `usage:song`: acc1·acc6·acc7·acc8·acc9 đều mang
+                    // `raw: "Total cost: $0.0000 · …"`. acc6: `claude auth status` ⟹
+                    // `loggedIn:false` — `/usage` chỉ in bảng chi phí khi MẤT ĐĂNG NHẬP.
+                    match v.get("raw").and_then(Value::as_str) {
+                        Some(raw) => khong_ra_so(cfg, acc, raw),
+                        None => v,
+                    }
+                }
                 None => {
                     // Một dòng "không đọc được" gộp hai chuyện khác hẳn
                     // nhau, và tôi đã đoán nhầm vì đúng chỗ này (đo
@@ -1257,6 +1280,49 @@ fn usage_one(cfg: &Config, acc: &crate::config::ClaudeAccountCfg) -> Value {
             json!({ "err": e.to_string() })
         }
     }
+}
+
+/// `/usage` trả lời mà không có dòng % nào ⟹ hỏi `claude auth status` (không gọi model)
+/// và trả một hàng LỖI mang `dang_nhap` — [`crate::quota::ap_dang_nhap`] đọc trường ấy.
+fn khong_ra_so(cfg: &Config, acc: &crate::config::ClaudeAccountCfg, raw: &str) -> Value {
+    let dang_nhap = match auth_status_run(cfg, acc, Duration::from_secs(20)) {
+        // Đo 12/11: chưa đăng nhập ⟹ mã thoát 1 KÈM JSON `loggedIn:false` ⟹ đọc JSON
+        // bất kể mã thoát; chỉ bool mới tính.
+        Ok(r) => serde_json::from_str::<Value>(r.stdout.trim())
+            .ok()
+            .and_then(|j| j.get("loggedIn").and_then(Value::as_bool)),
+        Err(e) => {
+            crate::logging::warn(
+                "usage_auth_status_failed",
+                json!({ "account": acc.name, "err": e.to_string() }),
+            );
+            None
+        }
+    };
+    hang_khong_ra_so(raw, dang_nhap)
+}
+
+/// Hàng sổ cho một lượt `/usage` không ra số. Thuần, để kiểm được.
+pub fn hang_khong_ra_so(raw: &str, dang_nhap: Option<bool>) -> Value {
+    let err = match dang_nhap {
+        Some(false) => {
+            "CHƯA ĐĂNG NHẬP (claude auth status: loggedIn=false) — /usage chỉ in bảng chi phí"
+                .to_string()
+        }
+        Some(true) => format!(
+            "/usage không trả hạn mức (auth status: còn đăng nhập) — {}",
+            crate::exec::truncate(raw, 120)
+        ),
+        None => format!(
+            "/usage không trả hạn mức, auth status không đo được — {}",
+            crate::exec::truncate(raw, 120)
+        ),
+    };
+    let mut row = json!({ "err": err, "raw": raw });
+    if let Some(b) = dang_nhap {
+        row["dang_nhap"] = json!(b);
+    }
+    row
 }
 
 /// Bóc ba dòng phần trăm ra khỏi câu trả lời của `/usage`.

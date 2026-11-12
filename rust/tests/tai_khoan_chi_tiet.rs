@@ -637,6 +637,7 @@ fn chi_tiet_kem_chan_doan_toi_da_3_muc_va_ba_trang_thai() {
             chua_dung_duoc: None,
             models: Vec::new(),
             model_use: None,
+            khong_dung_tu_khi_do: false,
         }),
         api_key: Some("API key …WXYZ".into()),
         live_sessions: Some(1),

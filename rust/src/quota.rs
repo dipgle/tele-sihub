@@ -126,6 +126,10 @@ pub struct Quota {
     /// `None` = không mục `projects.*` nào có `lastModelUsage` mang số.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_use: Option<ModelUseSnapshot>,
+    /// Trên MÁY NÀY không có dấu dùng tài khoản kể từ `fetched_at_ms` — xem
+    /// [`khong_dung_tu`]. Chỉ [`rank_can_tren`] đọc trường này.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub khong_dung_tu_khi_do: bool,
 }
 
 /// MỨC DÙNG theo model của phiên gần nhất — **họ dữ liệu KHÁC hẳn [`ModelPct`]**.
@@ -689,6 +693,7 @@ pub fn read(account: &str, dir: Option<&Path>) -> Quota {
         chua_dung_duoc: None,
         models: Vec::new(),
         model_use: None,
+        khong_dung_tu_khi_do: false,
     };
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
@@ -759,18 +764,114 @@ pub fn read(account: &str, dir: Option<&Path>) -> Quota {
         )
     };
     let (week_pct, week_resets_at) = doc_pct("seven_day");
-    let (hour5_pct, hour5_resets_at) = doc_pct("five_hour");
+    let (mut hour5_pct, hour5_resets_at) = doc_pct("five_hour");
+    // 🔴 Gói KHÔNG còn hạn 5 giờ (Quang 12/11 «có map nhầm số liệu không» — có): acc3
+    // ghi `five_hour: null` + `limits` chỉ có hàng nhóm `weekly` đang áp. Đọc rỗng thành
+    // `None` ⟹ `rank` ra "chưa đo được" trong khi biểu đồ đầu phiên
+    // (`scripts/acc-mo-vai.sh` `khong_han_5g`) đọc cùng sổ ra 5G = 0. Một luật cho cả hai.
+    if hour5_pct.is_none() && week_pct.is_some() && khong_han_5g(buckets) {
+        hour5_pct = Some(0);
+    }
+    let fetched_at_ms = u.get("fetchedAtMs").and_then(Value::as_i64);
+    let thu_muc_cfg = match dir {
+        Some(d) => Some(d.to_path_buf()),
+        None => crate::config::home_dir().map(|h| h.join(".claude")),
+    };
     Quota {
         account: account.to_string(),
         week_pct,
         week_resets_at,
         hour5_pct,
         hour5_resets_at,
-        fetched_at_ms: u.get("fetchedAtMs").and_then(Value::as_i64),
+        fetched_at_ms,
         why_unknown: None,
         chua_dung_duoc,
         models: doc_models(buckets),
         model_use: doc_model_use(&doc),
+        khong_dung_tu_khi_do: match (thu_muc_cfg, fetched_at_ms) {
+            (Some(d), Some(t)) => khong_dung_tu(account, &d, t),
+            _ => false,
+        },
+    }
+}
+
+/// `five_hour` rỗng có nghĩa "gói này không có hạn 5 giờ" — chỉ khi `limits[]` KHÔNG
+/// rỗng và MỌI hàng đang áp (`is_active`) thuộc nhóm `weekly`. Thiếu một điều kiện ⟹
+/// `false` (vẫn "chưa đo được", không đoán). Cùng luật `khong_han_5g` của
+/// `scripts/acc-mo-vai.sh`.
+fn khong_han_5g(buckets: Option<&Value>) -> bool {
+    let Some(ls) = buckets
+        .and_then(|b| b.get("limits"))
+        .and_then(Value::as_array)
+    else {
+        return false;
+    };
+    let dang_ap: Vec<&Value> = ls
+        .iter()
+        .filter(|l| l.get("is_active").and_then(Value::as_bool) == Some(true))
+        .collect();
+    !dang_ap.is_empty()
+        && dang_ap
+            .iter()
+            .all(|l| l.get("group").and_then(Value::as_str) == Some("weekly"))
+}
+
+/// Trên MÁY NÀY có dấu nào cho thấy tài khoản được dùng SAU mốc `fetched_ms` không.
+///
+/// 🔴 Quang 12/11: *"Ko dùng tới thì nó chả cũ"*. Hạn mức chỉ TĂNG khi có lượt dùng,
+/// nên không dùng thì số đã ghi là CẬN TRÊN, và cửa sổ đã qua mốc mở lại thì về 0
+/// ([`rank_can_tren`]). Dấu dùng, trong thư mục cấu hình của chính tài khoản:
+/// `history.jsonl` (mỗi câu gõ trong phiên tương tác) hoặc `sessions/*.json` (phiên
+/// đang sống) mới hơn mốc đo. Không đọc được dấu ⟹ coi như CÓ dùng (fail-closed).
+///
+/// ⚠ GIẢ ĐỊNH, không đo được từ đây: không ai dùng tài khoản ở NƠI KHÁC (claude.ai,
+/// máy khác), và không có lượt `claude -p` nào (không ghi `history.jsonl`) chạy bằng
+/// nó sau mốc đo. Cùng luật `khong_dung_tu` của `scripts/acc-mo-vai.sh`.
+pub fn khong_dung_tu(account: &str, thu_muc: &Path, fetched_ms: i64) -> bool {
+    let moi_hon = |p: &Path| -> Result<bool, std::io::Error> {
+        let m = std::fs::metadata(p)?.modified()?;
+        let ms = m
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(i64::MAX);
+        Ok(ms > fetched_ms)
+    };
+    let ket_qua = (|| -> Result<Option<String>, std::io::Error> {
+        let h = thu_muc.join("history.jsonl");
+        match moi_hon(&h) {
+            Ok(true) => return Ok(Some("history.jsonl".into())),
+            Ok(false) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        let s = thu_muc.join("sessions");
+        let ds = match std::fs::read_dir(&s) {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        for f in ds {
+            let p = f?.path();
+            if p.extension().and_then(|x| x.to_str()) == Some("json") && moi_hon(&p)? {
+                return Ok(Some(format!(
+                    "sessions/{}",
+                    p.file_name().unwrap_or_default().to_string_lossy()
+                )));
+            }
+        }
+        Ok(None)
+    })();
+    match ket_qua {
+        Ok(None) => true,
+        Ok(Some(_)) => false,
+        Err(e) => {
+            logging::warn(
+                "quota_dau_dung_khong_doc_duoc",
+                json!({ "account": account, "dir": thu_muc.display().to_string(),
+                        "err": e.to_string(), "hau_qua": "coi như CÓ dùng — số cũ không làm cận trên" }),
+            );
+            false
+        }
     }
 }
 
@@ -1078,6 +1179,93 @@ pub fn rank(q: &Quota, now_ms: i64) -> Rank {
     }
 }
 
+/// [`rank`] với luật SỐ CŨ = CẬN TRÊN: tài khoản không có dấu dùng từ mốc đo
+/// ([`Quota::khong_dung_tu_khi_do`]) thì cửa sổ đã qua mốc mở lại tính là 0 thay vì
+/// "không đo được"; cửa sổ chưa qua mốc vẫn lấy số đã ghi (đã là cận trên).
+///
+/// 🔴 KHÔNG gọi trực tiếp từ sổ: chỉ [`ap_dang_nhap`] dùng nó, sau khi phép dò sống nói
+/// tài khoản CÒN ĐĂNG NHẬP. Đo 12/11: acc6 số 64 % già 29 giờ, `claude auth status` ⟹
+/// `loggedIn:false` — số đứng yên vì MẤT ĐĂNG NHẬP, không phải vì không ai dùng; áp cận
+/// trên mà không hỏi câu ấy là chọn đúng tài khoản sẽ đứng ở màn đăng nhập.
+pub fn rank_can_tren(q: &Quota, now_ms: i64) -> Rank {
+    if !q.khong_dung_tu_khi_do || q.why_unknown.is_some() {
+        return rank(q, now_ms);
+    }
+    let qua_moc = |r: Option<&str>| {
+        r.and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+            .is_some_and(|k| k.timestamp_millis() <= now_ms)
+    };
+    let mut q2 = q.clone();
+    if q2.week_pct.is_some() && qua_moc(q2.week_resets_at.as_deref()) {
+        q2.week_pct = Some(0);
+        q2.week_resets_at = None;
+    }
+    if q2.hour5_pct.is_some() && qua_moc(q2.hour5_resets_at.as_deref()) {
+        q2.hour5_pct = Some(0);
+        q2.hour5_resets_at = None;
+    }
+    rank(&q2, now_ms)
+}
+
+/// Đè hạng bằng câu trả lời `claude auth status` mà lượt dò `/usage` ghi vào sổ khi
+/// `/usage` không ra số ([`crate::runtime`] `usage_one`, trường `dang_nhap`).
+///
+/// * `dang_nhap: false` ⟹ [`Rank::NotReady`] — trừ khi sổ CLI MỚI HƠN lượt dò (có
+///   người vừa dùng được nó ⟹ đã đăng nhập lại).
+/// * `dang_nhap: true` + hạng đang `Unknown` ⟹ [`rank_can_tren`].
+/// * Khoá ([`Rank::Locked`]) và chết ([`Rank::Dead`]) không đổi.
+///
+/// `usage_accounts` là khối `"accounts"` CHƯA lọc của `usage_cached`.
+pub fn ap_dang_nhap(
+    ranked: Vec<Ranked>,
+    quotas: &[Quota],
+    usage_accounts: Option<&Value>,
+    now_ms: i64,
+) -> Vec<Ranked> {
+    ranked
+        .into_iter()
+        .map(|mut r| {
+            if matches!(r.rank, Rank::Locked | Rank::Dead | Rank::ApiKey) {
+                return r;
+            }
+            let row = usage_accounts.and_then(|u| u.get(&r.name));
+            let dn = row.and_then(|v| v.get("dang_nhap")).and_then(Value::as_bool);
+            let luc = row.and_then(|v| v.get("err_at_ms")).and_then(Value::as_i64);
+            let q = quotas.iter().find(|q| q.account == r.name);
+            let tep = q.and_then(|q| q.fetched_at_ms);
+            let con_hieu_luc = match (luc, tep) {
+                (Some(l), Some(t)) => l >= t,
+                (Some(_), None) => true,
+                _ => false,
+            };
+            match (dn, con_hieu_luc) {
+                (Some(false), true) => {
+                    logging::info(
+                        "quota_chua_dang_nhap",
+                        json!({ "account": r.name, "rank_truoc": r.rank.say(),
+                                "nguon": "claude auth status: loggedIn=false" }),
+                    );
+                    r.rank = Rank::NotReady;
+                }
+                (Some(true), true) if r.rank == Rank::Unknown => {
+                    if let Some(q) = q {
+                        let moi = rank_can_tren(q, now_ms);
+                        logging::info(
+                            "quota_so_cu_can_tren",
+                            json!({ "account": r.name, "rank": moi.say(),
+                                    "khong_dung_tu_khi_do": q.khong_dung_tu_khi_do,
+                                    "gia_dinh": "không ai dùng tài khoản ở nơi khác (claude.ai…) / bằng claude -p sau mốc đo" }),
+                        );
+                        r.rank = moi;
+                    }
+                }
+                _ => {}
+            }
+            r
+        })
+        .collect()
+}
+
 /// Hạng của mọi tài khoản trong cấu hình, theo đúng thứ tự đã khai.
 ///
 /// Thứ tự giữ nguyên vì nó là cách phá hoà: hai tài khoản cùng hạng thì lấy cái
@@ -1168,6 +1356,7 @@ pub fn khong_do_duoc(account: &str, why: &str) -> Quota {
         chua_dung_duoc: None,
         models: Vec::new(),
         model_use: None,
+        khong_dung_tu_khi_do: false,
     }
 }
 
@@ -1261,6 +1450,7 @@ pub fn go_quota(
         chua_dung_duoc: None,
         models: Vec::new(),
         model_use: None,
+        khong_dung_tu_khi_do: false,
     };
     logging::info(
         "quota_go_read",
@@ -1332,6 +1522,7 @@ mod tests {
             chua_dung_duoc: None,
             models: Vec::new(),
             model_use: None,
+            khong_dung_tu_khi_do: false,
         }
     }
 

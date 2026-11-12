@@ -31,9 +31,12 @@ fn claude_gia(dir: &Path) -> PathBuf {
         format!(
             "#!/bin/sh\n\
              {{ echo \"env=${{HUBA_THU_MAY:-}}\"; for a in \"$@\"; do echo \"arg=$a\"; done; }} > '{}'\n\
+             cat '{}' >> '{}'\n\
              cat > /dev/null\n\
              echo '{{\"session_id\":\"moi-1\",\"result\":\"ban giao qua '\"${{HUBA_THU_MAY:-truc-tiep}}\"'\",\"total_cost_usd\":0}}'\n",
-            dir.join("goi.txt").display()
+            dir.join("goi.txt").display(),
+            dir.join("goi.txt").display(),
+            dir.join("goi-het.txt").display()
         ),
     )
     .unwrap();
@@ -195,15 +198,18 @@ fn do_usage_di_qua_launch() {
     let m = may();
     let db = huba::db::Db::open(&m.tmp.path().join("huba.sqlite")).unwrap();
     huba::runtime::usage_lam_moi_mot(&m.cfg, &db, "acc8", 0);
-    let goi = da_goi(&m);
-    assert_eq!(
-        goi[0], "env=launch-acc8",
-        "biến của launch rơi mất: {goi:?}"
+    // Sổ CỘNG DỒN: `/usage` của claude giả không ra số % ⟹ huba hỏi tiếp `auth status`
+    // (12/11), lượt ấy ghi đè `goi.txt`. Cả HAI lượt phải đi qua `launch`.
+    let het = std::fs::read_to_string(m.tmp.path().join("goi-het.txt")).unwrap();
+    let luot: Vec<&str> = het.split("env=").filter(|s| !s.is_empty()).collect();
+    assert_eq!(luot.len(), 2, "{het}");
+    assert!(
+        luot[0].starts_with("launch-acc8\n") && luot[0].contains("arg=-p\narg=/usage\n"),
+        "biến của launch rơi mất ở lượt /usage: {het}"
     );
     assert!(
-        goi.windows(2)
-            .any(|w| w == ["arg=-p".to_string(), "arg=/usage".to_string()]),
-        "{goi:?}"
+        luot[1].starts_with("launch-acc8\n") && luot[1].contains("arg=auth\narg=status\n"),
+        "biến của launch rơi mất ở lượt auth status: {het}"
     );
 }
 

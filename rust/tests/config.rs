@@ -362,6 +362,7 @@ fn dong_do_usage_im_khi_khop_va_noi_khi_lech() {
         chua_dung_duoc: None,
         models: Vec::new(),
         model_use: None,
+        khong_dung_tu_khi_do: false,
     };
     let usage = serde_json::json!({ "accounts": { "acc1": { "week_pct": 98, "session_pct": 6 } } });
 
@@ -423,6 +424,7 @@ fn quota_from_the_cli_book_reaches_the_line() {
         chua_dung_duoc: None,
         models: Vec::new(),
         model_use: None,
+        khong_dung_tu_khi_do: false,
     };
     let said = huba::runtime::accounts_text(
         &acc_cfg(),
@@ -477,6 +479,7 @@ fn accounts_text_khong_tu_di_doc_o_dia() {
         chua_dung_duoc: None,
         models: Vec::new(),
         model_use: None,
+        khong_dung_tu_khi_do: false,
     };
     let said = huba::runtime::accounts_text(
         &acc_cfg(),

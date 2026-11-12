@@ -2084,6 +2084,7 @@ mod tests {
             chua_dung_duoc: None,
             models: Vec::new(),
             model_use: None,
+            khong_dung_tu_khi_do: false,
         }
     }
 

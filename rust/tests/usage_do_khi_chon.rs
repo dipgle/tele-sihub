@@ -120,6 +120,7 @@ fn quota(acc: &str, fetched: Option<i64>) -> huba::quota::Quota {
         chua_dung_duoc: None,
         models: vec![],
         model_use: None,
+        khong_dung_tu_khi_do: false,
     }
 }
 
