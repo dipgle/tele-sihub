@@ -50,6 +50,9 @@ for f in kem/scripts/cong_bao_mat.py kem/scripts/bao-mat-policy.json kem/scripts
          kem/bin/project-agent kem/huba_cai_linux.py kem/CLAUDE.md; do
   [ -f "$SRC/$f" ] || { echo "❌ gói thiếu $f — dựng lại bằng scripts/dong-goi-linux.sh"; exit 2; }
 done
+for f in kem/claude/skills kem/claude/agents; do
+  [ -d "$SRC/$f" ] || { echo "❌ gói thiếu $f — dựng lại bằng scripts/dong-goi-linux.sh"; exit 2; }
+done
 command -v python3 >/dev/null || { echo "KHÔNG ĐO ĐƯỢC: thiếu python3 (sudo apt install -y python3)"; exit 2; }
 
 # ① Chép gói vào chỗ CỐ ĐỊNH rồi chạy tiếp từ đó — giải nén bản mới ở đâu cũng được.
@@ -103,6 +106,8 @@ python3 "$PY" cau-hinh "$CFG" "$DIR/kem/tai-khoan.mau.json" || exit 1
 # và chỉ tới gốc git của cwd).
 GOC=$(python3 "$PY" goc-workspace "$CFG")
 python3 "$PY" luat-goc "$CFG" "$DIR/kem/CLAUDE.md" || exit 1
+# Skill + tác tử của workspace: `<gốc>/.claude/{skills,agents}` — cùng luật «chưa có mới đặt».
+python3 "$PY" skill-goc "$CFG" "$DIR/kem/claude" || exit 1
 LUAT=""
 [ -n "$GOC" ] && [ -f "$GOC/CLAUDE.md" ] && LUAT="$GOC/CLAUDE.md"
 LUAT_ENV=""

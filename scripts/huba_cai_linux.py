@@ -223,6 +223,62 @@ def dat_luat_goc(goc, mau_p):
                    f"bản sạch của gói: {mau_p}")
 
 
+def _cay(p):
+    """{đường tương đối: bytes} của một tệp hoặc cả cây — để so «giống hệt». Thuần (đọc)."""
+    if os.path.isfile(p):
+        with open(p, "rb") as f:
+            return {"": f.read()}
+    out = {}
+    for goc, _, tep in os.walk(p):
+        for t in tep:
+            if t == ".DS_Store":
+                continue
+            q = os.path.join(goc, t)
+            with open(q, "rb") as f:
+                out[os.path.relpath(q, p)] = f.read()
+    return out
+
+
+def dat_skill_goc(goc, nguon):
+    """Đặt `<gốc>/.claude/{skills,agents}/<mục>` từ `kem/claude` — cùng luật với
+    [`dat_luat_goc`]: chưa có ⟹ chép; giống hệt ⟹ để yên; KHÁC ⟹ GIỮ bản chủ máy, nói ra.
+
+    Quang 13/11: *"Tại sao skill rất nhiều trong projects không đóng gói cùng? Lại đúng
+    mỗi file claude.md"* — luật gọi tên `quality-gate`, `tra-cuu-haiku`… mà máy Linux
+    không có. Trả danh sách (mã, câu); mã: moi · giong · giu · khong-co-goc · khong-co-ban-sach.
+    """
+    if not goc:
+        return [("khong-co-goc", "⚠ chưa xác định được gốc workspace — KHÔNG đặt skill/tác tử")]
+    if not os.path.isdir(nguon):
+        return [("khong-co-ban-sach", f"❌ gói thiếu {nguon}")]
+    kq = []
+    for loai in ("skills", "agents"):
+        src = os.path.join(nguon, loai)
+        if not os.path.isdir(src):
+            kq.append(("khong-co-ban-sach", f"❌ gói thiếu {src}"))
+            continue
+        for ten in sorted(os.listdir(src)):
+            if ten == ".DS_Store":
+                continue
+            s = os.path.join(src, ten)
+            d = os.path.join(goc, ".claude", loai, ten)
+            if not os.path.exists(d):
+                os.makedirs(os.path.dirname(d), exist_ok=True)
+                tmp = d + ".huba-cai-tmp"
+                if os.path.isdir(s):
+                    shutil.rmtree(tmp, ignore_errors=True)
+                    shutil.copytree(s, tmp, ignore=shutil.ignore_patterns(".DS_Store"))
+                else:
+                    shutil.copy2(s, tmp)
+                os.replace(tmp, d)
+                kq.append(("moi", f"tạo {d}"))
+            elif _cay(d) == _cay(s):
+                kq.append(("giong", f"{d} = bản của gói"))
+            else:
+                kq.append(("giu", f"giữ {d} (bản của chủ máy — KHÔNG ghi đè) · bản của gói: {s}"))
+    return kq
+
+
 def tu_kiem():
     hong = 0
     tong = 0
@@ -279,6 +335,28 @@ def tu_kiem():
            "chưa có tệp ⟹ tạo hàng mới")
         ok(dat_mcp_claude(cfg, bin_, h) == [], "chạy lại ⟹ không ghi gì (bất biến)")
         ok(not os.path.exists(os.path.join(h, ".x8")), "không đụng acc opencode (mcp)")
+    with tempfile.TemporaryDirectory() as h:
+        kem = os.path.join(h, "kem", "claude")
+        os.makedirs(os.path.join(kem, "skills", "quality-gate"))
+        os.makedirs(os.path.join(kem, "agents"))
+        with open(os.path.join(kem, "skills", "quality-gate", "SKILL.md"), "w", encoding="utf-8") as f:
+            f.write("# qg\n")
+        with open(os.path.join(kem, "agents", "tra-cuu-haiku.md"), "w", encoding="utf-8") as f:
+            f.write("# haiku\n")
+        g = os.path.join(h, "ws")
+        os.mkdir(g)
+        ma = [m for m, _ in dat_skill_goc(g, kem)]
+        ok(ma == ["moi", "moi"]
+           and open(os.path.join(g, ".claude", "skills", "quality-gate", "SKILL.md"), encoding="utf-8").read() == "# qg\n"
+           and os.path.isfile(os.path.join(g, ".claude", "agents", "tra-cuu-haiku.md")),
+           "skill + tác tử: chưa có ⟹ chép vào <gốc>/.claude")
+        ok([m for m, _ in dat_skill_goc(g, kem)] == ["giong", "giong"], "skill: chạy lại ⟹ không đổi (bất biến)")
+        with open(os.path.join(g, ".claude", "skills", "quality-gate", "SKILL.md"), "w", encoding="utf-8") as f:
+            f.write("# cua toi\n")
+        ok(dat_skill_goc(g, kem)[0][0] == "giu"
+           and open(os.path.join(g, ".claude", "skills", "quality-gate", "SKILL.md"), encoding="utf-8").read() == "# cua toi\n",
+           "skill chủ máy đã sửa ⟹ GIỮ, không ghi đè")
+        ok(dat_skill_goc("", kem)[0][0] == "khong-co-goc", "skill: không gốc ⟹ không đặt")
     ok(can_cli({"claude_accounts": [{"name": "a"}, {"name": "b", "cli": "opencode"}]}) == ["claude", "opencode"], "cần cả hai CLI")
     ok(can_cli({}) == ["claude"], "không có acc ⟹ acc mặc định cần claude")
     with tempfile.TemporaryDirectory() as h:
@@ -323,6 +401,15 @@ def main(argv):
         else:
             print(goc_workspace(cfg, os.path.dirname(os.path.abspath(argv[2]))))
         return 0
+    if len(argv) == 4 and argv[1] == "skill-goc":
+        if not os.path.isfile(argv[2]):
+            print(f"KHÔNG ĐO ĐƯỢC: chưa có {argv[2]}")
+            return 2
+        goc = goc_workspace(doc_json(argv[2]), os.path.dirname(os.path.abspath(argv[2])))
+        kq = dat_skill_goc(goc, argv[3])
+        for _, cau in kq:
+            print(f"  {cau}")
+        return 1 if any(m == "khong-co-ban-sach" for m, _ in kq) else 0
     if len(argv) == 4 and argv[1] == "mcp-claude":
         if not os.path.isfile(argv[2]) or not os.path.isfile(argv[3]):
             print(f"KHÔNG ĐO ĐƯỢC: thiếu {argv[2]} hoặc {argv[3]}")

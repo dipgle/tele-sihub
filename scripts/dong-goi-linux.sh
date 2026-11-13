@@ -59,6 +59,14 @@ cp "$KEM_SRC/cong-bao-mat-plugin/index.js" "$KEM_SRC/cong-bao-mat-plugin/package
 cp "$H/scripts/huba_cai_linux.py" "$D/kem/huba_cai_linux.py"
 # Luật chung của máy, cài thành `<gốc workspace>/CLAUDE.md` — đúng cấu trúc md chủ máy dùng.
 cp "$H/scripts/CLAUDE-goc-workspace.md" "$D/kem/CLAUDE.md"
+# Skill + tác tử của workspace (Quang 13/11 «Tại sao skill rất nhiều trong projects không đóng gói
+# cùng? Lại đúng mỗi file claude.md»): `<gốc>/.claude/{skills,agents}` — luật CLAUDE.md gọi tên
+# chúng (`quality-gate`, `tra-cuu-haiku`…), thiếu thì máy Linux đọc luật mà không có đồ để dùng.
+for k in skills agents; do
+  [ -d "$W/.claude/$k" ] || { echo "KHÔNG ĐO ĐƯỢC: thiếu $W/.claude/$k — gói thiếu skill/tác tử thì không đóng"; exit 2; }
+  mkdir -p "$D/kem/claude"
+  rsync -a --exclude '.DS_Store' "$W/.claude/$k/" "$D/kem/claude/$k/"
+done
 python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); json.dump(d.get("claude_accounts",[]),open(sys.argv[2],"w"),ensure_ascii=False,indent=2)' \
   "$H/huba.config.json" "$D/kem/tai-khoan.mau.json" || { echo "❌ không trích được mẫu tài khoản"; exit 1; }
 python3 "$D/kem/huba_cai_linux.py" tu-kiem >/dev/null || { echo "❌ huba_cai_linux.py tu-kiem đỏ"; exit 1; }
