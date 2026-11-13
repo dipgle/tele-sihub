@@ -385,7 +385,7 @@ impl Change {
                 when,
                 goi_y,
             } => {
-                let ngan: String = id.chars().take(8).collect();
+                let ngan = crate::sessions::ma_lien_ket(id);
                 match goi_y {
                     Some(m) => format!(
                         "🚫 {name} bị chặn — tài khoản {acc} hết hạn mức ({when}).\n\

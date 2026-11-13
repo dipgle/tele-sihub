@@ -6345,6 +6345,10 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
         // Cửa sổ huba không tự mở (`huba lenh-mo` ⟹ `acc-mo-vai.sh`) — ghép từ
         // `--session <id>` của TUI đang sống, xem `opencode::lien_ket_thieu`.
         let mut bindings = bindings;
+        let cau_dau: std::collections::BTreeMap<String, String> = rows
+            .iter()
+            .filter_map(|s| s.first_prompt.clone().map(|p| (s.id.clone(), p)))
+            .collect();
         if procs.ok {
             let tuis: Vec<(String, String)> = procs
                 .by_pid
@@ -6352,7 +6356,7 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
                 .filter(|p| is_opencode_tui(&p.command))
                 .map(|p| (p.tty.clone(), p.command.clone()))
                 .collect();
-            for (id, tty) in crate::opencode::lien_ket_thieu(&tuis, &bindings, &kho_ids) {
+            for (id, tty) in crate::opencode::lien_ket_thieu(&tuis, &bindings, &kho_ids, &cau_dau) {
                 let window = match crate::keys::window_of(&tty) {
                     Ok(Some(w)) => w,
                     Ok(None) => {
@@ -9915,6 +9919,25 @@ pub fn start_background(
 /// ký tự và tràn sang dòng thứ ba (ảnh Hà 2026-11-12). Cắt sau khi bỏ tiền tố
 /// `ses_` — và cắt theo KÝ TỰ, không theo byte.
 pub fn short_id(session_id: &str) -> &str {
+    short_id_inner(session_id)
+}
+
+/// Mã phiên đi trong LIÊN KẾT / lệnh chạm được (`k_<mã>_<n>`, `pick_…`,
+/// `send_…`, `clr_…`, `/handover … <mã>`): cửa sổ trần giữ nguyên id, còn lại
+/// là [`short_id`].
+///
+/// 🔴 Quang 13/11 (mac): bấm «A — đúng» ở tin hỏi của phiên acc8 ⟹
+/// `telegram_not_a_command {"head":"/start k_ses_e2b5_1"}`. Mười chỗ trong
+/// `pipeline.rs` tự cắt `chars().take(8)` ⟹ id opencode ra `ses_e2b5`, mà bộ
+/// đọc tách `k_<mã>_<số>` ở dấu `_` ⟹ mọi liên kết của phiên opencode câm.
+pub fn ma_lien_ket(session_id: &str) -> String {
+    if is_shell_id(session_id) {
+        return session_id.to_string();
+    }
+    short_id(session_id).to_string()
+}
+
+fn short_id_inner(session_id: &str) -> &str {
     let s = session_id.strip_prefix("ses_").unwrap_or(session_id);
     let first = s.split('-').next().unwrap_or(s);
     match first.char_indices().nth(8) {

@@ -58,6 +58,10 @@ pub struct OcSession {
     /// `time_idle` của `session_v2` ([`fill_state_v2`]).
     #[serde(skip)]
     pub busy: Option<bool>,
+    /// Chữ lượt USER đầu tiên (`session_message`) — ghép cửa sổ mở bằng
+    /// `--prompt` mà không có `--session` ([`lien_ket_thieu`]).
+    #[serde(skip)]
+    pub first_prompt: Option<String>,
 }
 
 /// Thư mục gốc phân vùng của một tài khoản.
@@ -137,7 +141,48 @@ pub fn read_sessions_at(path: &Path) -> Result<Vec<OcSession>, String> {
         out.retain(|s| !fork_cua_huba.contains(&s.id));
     }
     fill_tails_v2(&conn, &mut out)?;
+    fill_first_prompts_v2(&conn, &mut out)?;
     Ok(out)
+}
+
+/// [`OcSession::first_prompt`] — `text` của bản ghi `user` có `seq` nhỏ nhất.
+/// Kho không có `session_message` ⟹ để `None`.
+fn fill_first_prompts_v2(conn: &Connection, sessions: &mut [OcSession]) -> Result<(), String> {
+    use rusqlite::params_from_iter;
+    if !has_table(conn, "session_message")? || sessions.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+    let ph = vec!["?"; ids.len()].join(",");
+    let sql = format!(
+        "SELECT session_id, data FROM ( \
+             SELECT session_id, data, \
+                    ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY seq ASC) rn \
+             FROM session_message WHERE type = 'user' AND session_id IN ({ph}) \
+         ) WHERE rn = 1"
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("đọc câu đầu session_message: {e}"))?;
+    let rows = stmt
+        .query_map(params_from_iter(ids.iter()), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(|e| format!("truy vấn câu đầu session_message: {e}"))?;
+    let mut dau: BTreeMap<String, String> = BTreeMap::new();
+    for row in rows {
+        let (sid, data) = row.map_err(|e| format!("đọc câu đầu session_message: {e}"))?;
+        if let Some(t) = serde_json::from_str::<Value>(&data)
+            .ok()
+            .and_then(|v| v.get("text").and_then(Value::as_str).map(str::to_string))
+        {
+            dau.insert(sid, t);
+        }
+    }
+    for s in sessions.iter_mut() {
+        s.first_prompt = dau.remove(&s.id);
+    }
+    Ok(())
 }
 
 /// Trạng thái bận/rảnh + nhận ra fork của chính huba, từ cột `session_v2`.
@@ -569,6 +614,7 @@ fn query_sessions(
                 updated_ms: updated,
                 last_text: None,
                 last_role: None,
+                first_prompt: None,
                 project_dir,
                 tail: String::new(),
                 busy: None,
@@ -941,12 +987,22 @@ pub fn session_trong_argv(command: &str) -> Option<String> {
 /// Fail-closed: id không có trong kho của tài khoản này (TUI của tài khoản khác,
 /// hoặc chưa gửi câu đầu) ⟹ bỏ; hai TUI mang cùng id ⟹ bỏ cả hai; đã có liên
 /// kết ⟹ không đè (liên kết `/new` / `--resume` ghi lúc mở là nguồn đúng hơn).
+///
+/// Cửa sổ mở TRƯỚC bản vá ấy (không `--session`, chỉ `--prompt`): Quang 13/11
+/// *"rất nhiều phiên đang chạy acc8 nhưng danh sách phiên lại không có"* — đo:
+/// ttys004 · ttys011 chỉ lên dạng `win-<tty>`. Ghép bằng đề bài: chữ sau
+/// `--prompt` (dòng lệnh huba dựng luôn để nó CUỐI) khớp NGUYÊN VĂN câu user đầu
+/// tiên của đúng MỘT phiên chưa liên kết (`cau_dau`, khoảng trắng chuẩn hoá).
+/// Một đề bài ↔ nhiều cửa sổ hoặc nhiều phiên ⟹ không ghép.
 pub fn lien_ket_thieu(
     tuis: &[(String, String)],
     bindings: &BTreeMap<String, WindowBinding>,
     kho_ids: &std::collections::HashSet<String>,
+    cau_dau: &BTreeMap<String, String>,
 ) -> Vec<(String, String)> {
+    let gon = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut theo_id: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut theo_de: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (tty, command) in tuis {
         let t = tty.trim_start_matches("/dev/");
         if !crate::sessions::is_real_tty(t) {
@@ -954,9 +1010,14 @@ pub fn lien_ket_thieu(
         }
         if let Some(id) = session_trong_argv(command) {
             theo_id.entry(id).or_default().push(t.to_string());
+        } else if let Some((_, de)) = command.split_once(" --prompt ") {
+            let de = gon(de);
+            if !de.is_empty() {
+                theo_de.entry(de).or_default().push(t.to_string());
+            }
         }
     }
-    theo_id
+    let mut out: Vec<(String, String)> = theo_id
         .into_iter()
         .filter(|(id, _)| kho_ids.contains(id) && !bindings.contains_key(id))
         .filter_map(|(id, ttys)| match ttys.as_slice() {
@@ -970,7 +1031,28 @@ pub fn lien_ket_thieu(
                 None
             }
         })
-        .collect()
+        .collect();
+    if theo_de.is_empty() {
+        return out;
+    }
+    let mut phien_theo_de: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (id, cau) in cau_dau {
+        if kho_ids.contains(id) && !bindings.contains_key(id) {
+            phien_theo_de.entry(gon(cau)).or_default().push(id.clone());
+        }
+    }
+    for (de, ttys) in theo_de {
+        match (ttys.as_slice(), phien_theo_de.get(&de).map(Vec::as_slice)) {
+            ([tty], Some([id])) => out.push((id.clone(), tty.clone())),
+            (_, None) => {}
+            (ttys, Some(ids)) => crate::logging::warn(
+                "opencode_bind_prompt_ambiguous",
+                json!({ "ttys": ttys, "sessions": ids,
+                        "effect": "không ghép — một đề bài khớp nhiều cửa sổ hoặc nhiều phiên" }),
+            ),
+        }
+    }
+    out
 }
 
 pub fn bindings_path(acc: &ClaudeAccountCfg) -> PathBuf {
@@ -1458,7 +1540,7 @@ mod tests {
         let kho = tap(&["ses_e2b689ef7fffHubaDoThu0001A"]);
         let trong = BTreeMap::new();
         assert_eq!(
-            lien_ket_thieu(&tuis, &trong, &kho),
+            lien_ket_thieu(&tuis, &trong, &kho, &BTreeMap::new()),
             vec![(
                 "ses_e2b689ef7fffHubaDoThu0001A".to_string(),
                 "ttys004".to_string()
@@ -1470,18 +1552,63 @@ mod tests {
             "ses_e2b689ef7fffHubaDoThu0001A".to_string(),
             lk("ttys009", 1),
         );
-        assert!(lien_ket_thieu(&tuis, &co, &kho).is_empty());
+        assert!(lien_ket_thieu(&tuis, &co, &kho, &BTreeMap::new()).is_empty());
         // Id chưa có trong kho của tài khoản này ⟹ không ghép (có thể là acc khác).
-        assert!(lien_ket_thieu(&tuis, &trong, &tap(&[])).is_empty());
+        assert!(lien_ket_thieu(&tuis, &trong, &tap(&[]), &BTreeMap::new()).is_empty());
         // Hai cửa sổ cùng id ⟹ không ghép cái nào.
         let doi = vec![
             ("ttys004".to_string(), oc.to_string()),
             ("ttys005".to_string(), oc.to_string()),
         ];
-        assert!(lien_ket_thieu(&doi, &trong, &kho).is_empty());
+        assert!(lien_ket_thieu(&doi, &trong, &kho, &BTreeMap::new()).is_empty());
         // tty không thật (`??`) ⟹ bỏ.
         let mu = vec![("??".to_string(), oc.to_string())];
-        assert!(lien_ket_thieu(&mu, &trong, &kho).is_empty());
+        assert!(lien_ket_thieu(&mu, &trong, &kho, &BTreeMap::new()).is_empty());
+    }
+
+    /// Quang 13/11 «rất nhiều phiên đang chạy acc8 nhưng danh sách phiên lại
+    /// không có»: cửa sổ mở trước `--session` (ttys004 · ttys011) — ghép bằng
+    /// đề bài ↔ câu user đầu tiên, chỉ khi một-một.
+    #[test]
+    fn ghep_cua_so_cu_bang_de_bai() {
+        let de =
+            "cd /w/tfl5 && đọc .tmp/brief-a.md rồi làm theo. DẢI CỔNG: 'cd web && ./dev-up.sh'";
+        let tuis = vec![
+            (
+                "ttys004".to_string(),
+                format!("/Users/x/.opencode/bin/opencode --prompt {de}"),
+            ),
+            (
+                "ttys011".to_string(),
+                "/Users/x/.opencode/bin/opencode --prompt việc khác hẳn".to_string(),
+            ),
+        ];
+        let kho = tap(&["ses_a", "ses_b"]);
+        let mut cau = BTreeMap::new();
+        // Kho giữ đề bài nguyên văn; ps nối argv bằng dấu cách — so sau khi gọn.
+        cau.insert("ses_a".to_string(), de.replace(". ", ".  "));
+        cau.insert(
+            "ses_b".to_string(),
+            "đề bài không cửa sổ nào mang".to_string(),
+        );
+        let trong = BTreeMap::new();
+        assert_eq!(
+            lien_ket_thieu(&tuis, &trong, &kho, &cau),
+            vec![("ses_a".to_string(), "ttys004".to_string())]
+        );
+        // Phiên đã có liên kết ⟹ không ghép lại.
+        let mut co = BTreeMap::new();
+        co.insert("ses_a".to_string(), lk("ttys004", 1));
+        assert!(lien_ket_thieu(&tuis, &co, &kho, &cau).is_empty());
+        // Hai phiên cùng câu đầu ⟹ mơ hồ ⟹ không ghép.
+        let mut hai = cau.clone();
+        hai.insert("ses_c".to_string(), de.to_string());
+        assert!(lien_ket_thieu(&tuis, &trong, &tap(&["ses_a", "ses_b", "ses_c"]), &hai).is_empty());
+        // Hai cửa sổ cùng đề bài ⟹ không ghép.
+        let doi = vec![tuis[0].clone(), ("ttys005".to_string(), tuis[0].1.clone())];
+        assert!(lien_ket_thieu(&doi, &trong, &kho, &cau).is_empty());
+        // Phiên không trong kho của tài khoản này ⟹ không ghép.
+        assert!(lien_ket_thieu(&tuis, &trong, &tap(&["ses_b"]), &cau).is_empty());
     }
 
     /// Quang 13/11 mac: bảng hỏi opencode treo mà không báo. Khuôn bản ghi đo

@@ -953,7 +953,13 @@ pub fn split_target(arg: &str) -> Option<(String, String)> {
 /// uuid đã 36). Khớp tiền tố chỉ nhận đúng độ dài ấy: nửa vời hơn thì hai phiên
 /// khác nhau có thể cùng khớp, và gõ vào nhầm phiên là thứ không lùi lại được.
 pub fn same_session(id: &str, want: &str) -> bool {
-    !want.is_empty() && (id == want || (want.len() == 8 && id.starts_with(want)))
+    !want.is_empty()
+        && (id == want
+            || (want.len() == 8
+                && (id.starts_with(want)
+                    // id opencode `ses_e2b5ef6d…` ⟹ mã ngắn `e2b5ef6d`
+                    // (`sessions::ma_lien_ket`).
+                    || (id.starts_with("ses_") && crate::sessions::short_id(id) == want))))
 }
 
 /// Sổ ghi trạng thái từng phiên ở lượt trước, để thấy được CHUYỂN trạng thái.
@@ -1979,7 +1985,7 @@ pub fn announce_changes(db: &Db, cfg: &Config, snap: &crate::sessions::SessionsS
         {
             // Id NGẮN, đúng bằng thứ câu lệnh trong tin đang hiện: nút phải làm
             // đúng cái nó nói, không phải một biến thể khác.
-            let ngan: String = id.chars().take(8).collect();
+            let ngan: String = crate::sessions::ma_lien_ket(&id);
             quick.push((format!("🔄 Chuyển sang {acc}"), format!("ho:{acc}:{ngan}")));
         }
         match (buttons, crate::telegram::inbox()) {
@@ -2823,7 +2829,7 @@ fn auto_switch_on_limit(db: &Db, cfg: &Config, live: &crate::sessions::SessionsS
         );
         let moved =
             crate::sessions::start_fresh_after_handover(cfg, s, &checkpoint, Some(&acc_moi), false);
-        let ngan: String = s.session_id.chars().take(8).collect();
+        let ngan: String = crate::sessions::ma_lien_ket(&s.session_id);
         let go_tay = format!("/handover -a {acc_moi} {ngan}");
         // Đọc con trỏ TRƯỚC khi làm gì, và không đổi nó — xem [`FocusKept`].
         let focus_id = db.cursor_or_log(FOCUS_SESSION_KEY).unwrap_or_default();
@@ -3287,7 +3293,7 @@ pub fn handover_now(
                                                 "📋 Đã đóng sổ {} và mở phiên mới bằng **{acc}** \
                                                  (cũ: {}) ở {} — đang theo phiên {}.\n\n{}{}",
                                                 h.source_name, s.account, w.tty,
-                                                id.chars().take(8).collect::<String>(),
+                                                crate::sessions::ma_lien_ket(id),
                                                 old_window_note(w.old_kept, w.closed_err.as_deref(), retrying, &s.cwd, &s.session_id),
                                                 h.checkpoint
                                             ),
@@ -10988,7 +10994,7 @@ pub fn job_who(label: &str, session: &str) -> String {
     if !label.is_empty() {
         return label.to_string();
     }
-    let id: String = session.chars().take(8).collect();
+    let id: String = crate::sessions::ma_lien_ket(session);
     if id.is_empty() {
         "[phiên không rõ]".to_string()
     } else {
@@ -11627,7 +11633,7 @@ fn watch_long_job(job: LongJob) {
                                         crate::sessions::shown(&s),
                                         line,
                                         crate::exec::truncate(&report, 400),
-                                        sid = s.session_id.chars().take(8).collect::<String>()
+                                        sid = crate::sessions::ma_lien_ket(&s.session_id)
                                     )
                                 }
                                 // 🔴 KHÔNG BỎ CUỘC Ở ĐÂY — xem [`RUNIN_PENDING_KEY`].
@@ -11975,7 +11981,7 @@ impl SessionData {
         if crate::sessions::is_shell_id(&self.sid) {
             return self.sid.clone();
         }
-        self.sid.chars().take(8).collect()
+        crate::sessions::ma_lien_ket(&self.sid)
     }
 }
 
@@ -12731,7 +12737,7 @@ fn session_layout(text: &str, data: &SessionData, buttons: &[(String, String)]) 
     // `html_with_links` báo `unlinked` và chỗ gọi vẫn còn nút ở đáy: mất một
     // đích chạm thì phải thấy được, không được im.
     if let (true, Some(sid)) = (data.submit, key_sid.as_ref()) {
-        let short: String = sid.chars().take(8).collect();
+        let short: String = crate::sessions::ma_lien_ket(sid);
         if let Some(href) = crate::telegram::deep_link(&format!("send_{short}")) {
             anchors.push(("Submit".to_string(), vec![(href, "\t✅".to_string())]));
         }
@@ -12755,7 +12761,7 @@ fn session_layout(text: &str, data: &SessionData, buttons: &[(String, String)]) 
         }
     }
     if let (Some(sid), Some(box_text)) = (&key_sid, box_anchor) {
-        let short: String = sid.chars().take(8).collect();
+        let short: String = crate::sessions::ma_lien_ket(sid);
         // 🔴 CHỈ CÒN ⏎ — Hà 2026-08-25: *"nút xóa ô nhập không cần thiết vì có
         // lệnh xóa rồi"*. Hai đích chạm cạnh nhau, một bên GỬI một bên XOÁ, cả
         // hai đều không lùi lại được — bỏ được cái nào là bớt một cú bấm nhầm
@@ -13075,7 +13081,7 @@ pub fn ask_command_lines(
     skip_current: bool,
     dang_o: Option<usize>,
 ) -> String {
-    let sid: String = session_id.chars().take(8).collect();
+    let sid: String = crate::sessions::ma_lien_ket(session_id);
     if sid.is_empty() {
         return String::new();
     }
@@ -13766,7 +13772,7 @@ fn pick_answer(s: &crate::sessions::LiveSession, w: i64, arg: &str) -> (String, 
             //
             // Đọc được lựa chọn nào thì mời đúng chừng ấy. Không đọc được cái nào
             // thì nói thẳng là không có gì để mời, đừng bịa ra một dãy số.
-            let short: String = s.session_id.chars().take(8).collect();
+            let short: String = crate::sessions::ma_lien_ket(&s.session_id);
             let mut moi = String::new();
             for (n, nhan) in crate::keys::parse_choices(&body) {
                 moi.push_str(&format!(
@@ -13905,7 +13911,7 @@ fn pick_answer(s: &crate::sessions::LiveSession, w: i64, arg: &str) -> (String, 
                     "✅ {name} · câu {q} ({label}) → chọn {opt}. Bảng ĐÃ ĐỦ — chạm để gửi:\n\
                      Submit\n\
                      (neo không bám được thì gõ /send_{sid})",
-                    sid = s.session_id.chars().take(8).collect::<String>()
+                    sid = crate::sessions::ma_lien_ket(&s.session_id)
                 )
             } else {
                 format!("✅ {name} · câu {q} ({label}) → chọn {opt}. Còn {a} câu chưa trả lời.")
@@ -13919,7 +13925,7 @@ fn pick_answer(s: &crate::sessions::LiveSession, w: i64, arg: &str) -> (String, 
                 "✅ {name} · câu {q} ({label}) → chọn {opt}. Bảng đã ĐỦ (chọn lại câu đã trả lời) \
                  — chạm để gửi:\nSubmit\n\
                  (neo không bám được thì gõ /send_{sid})",
-                sid = s.session_id.chars().take(8).collect::<String>()
+                sid = crate::sessions::ma_lien_ket(&s.session_id)
             )
         }
         (Some(b), Some(a)) if a == b => format!(
@@ -13949,7 +13955,7 @@ fn pick_answer(s: &crate::sessions::LiveSession, w: i64, arg: &str) -> (String, 
         // là CHỌN NHIỀU): bấm được tiếp, và phải nói ra đường gửi.
         _ if still_choosing => format!(
             "✅ {name} → chọn {opt}. Hộp vẫn mở: bấm thêm lựa chọn, xong thì /send_{sid} để gửi.",
-            sid = s.session_id.chars().take(8).collect::<String>()
+            sid = crate::sessions::ma_lien_ket(&s.session_id)
         ),
         _ => format!(
             "✅ {name} · câu {q} ({label}) → chọn {opt}. Bảng không còn trên màn — nhiều khả năng \
@@ -17691,7 +17697,7 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                                                      không vào, và nó sẽ không tự chạy lại. Đường đi tiếp:\n\
                                                      /handover -a <tài khoản khác> {}",
                                                     s.account,
-                                                    s.session_id.chars().take(8).collect::<String>(),
+                                                    crate::sessions::ma_lien_ket(&s.session_id),
                                                 ),
                                                 // Đang chạy thì "màn không đổi" CHƯA nói được gì:
                                                 // đồng hồ TUI nhích mỗi giây, hai lượt đọc sát nhau
@@ -18335,7 +18341,7 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                     // con số quyết định bảng có gửi đi được hay chưa.
                     if !shot_sid.is_empty() {
                         if let Some(t) = crate::keys::ask_table(&ack) {
-                            let short: String = shot_sid.chars().take(8).collect();
+                            let short: String = crate::sessions::ma_lien_ket(&shot_sid);
                             for (i, h) in t.headers.iter().enumerate().take(8) {
                                 let mark = if t.answered.get(i).copied().unwrap_or(false) {
                                     "☒"
