@@ -1360,27 +1360,39 @@ pub fn khong_do_duoc(account: &str, why: &str) -> Quota {
     }
 }
 
+/// Sổ `.claude.json` của MỘT tài khoản cấu hình — `None` với acc opencode.
+///
+/// opencode không có sổ ấy; gọi thẳng [`read`] cho nó đẻ ra một
+/// `account_not_ready` GIẢ ("KHÔNG gợi ý tài khoản này") và có thể loại tài khoản
+/// khỏi mọi đường chọn. Phép rẽ này từng được chép tay ở bốn chỗ và QUÊN ở chỗ
+/// thứ năm (`huba doctor`, máy Ubuntu 13/11 — `tests/doctor_opencode_khong_doc_so_claude.rs`)
+/// ⇒ đọc sổ theo tài khoản thì đi qua đây.
+pub fn read_acc(a: &crate::config::ClaudeAccountCfg) -> Option<Quota> {
+    if a.is_opencode() {
+        return None;
+    }
+    let dir = a
+        .config_dir
+        .as_deref()
+        .filter(|d| !d.is_empty())
+        .map(|d| crate::config::expand_home(Path::new(d)));
+    Some(read(&a.name, dir.as_deref()))
+}
+
 pub fn read_all(cfg: &crate::config::Config) -> Vec<Quota> {
     cfg.claude_accounts_or_ambient()
         .iter()
         .map(|a| {
-            if a.is_opencode() {
-                // opencode không có sổ `.claude.json`; đọc nó sẽ đẻ ra một
-                // `account_not_ready` GIẢ và có thể loại tài khoản khỏi mọi
-                // đường chọn. "Không đo được" là trạng thái riêng, không phải
-                // "chưa đăng nhập" (luật 13②).
-                if !is_go_plan(a) {
-                    return khong_do_duoc(&a.name, "opencode: không dùng sổ hạn mức Claude");
-                }
-                let (doc_luc, r) = crate::opencode::go_limits(a, now_ms());
-                return go_quota(&a.name, r, doc_luc);
+            if let Some(q) = read_acc(a) {
+                return q;
             }
-            let dir = a
-                .config_dir
-                .as_deref()
-                .filter(|d| !d.is_empty())
-                .map(|d| crate::config::expand_home(Path::new(d)));
-            read(&a.name, dir.as_deref())
+            // opencode: "Không đo được" là trạng thái riêng, không phải "chưa
+            // đăng nhập" (luật 13②) — xem [`read_acc`].
+            if !is_go_plan(a) {
+                return khong_do_duoc(&a.name, "opencode: không dùng sổ hạn mức Claude");
+            }
+            let (doc_luc, r) = crate::opencode::go_limits(a, now_ms());
+            go_quota(&a.name, r, doc_luc)
         })
         .collect()
 }

@@ -266,16 +266,12 @@ pub fn account_detail_say(
         .as_deref()
         .filter(|d| !d.is_empty())
         .map(|d| crate::config::expand_home(Path::new(d)));
-    let (q, id) = if acc.is_opencode() {
-        (
+    let (q, id) = match crate::quota::read_acc(&acc) {
+        None => (
             crate::quota::khong_do_duoc(&acc.name, "opencode: không dùng sổ Claude"),
             Err("opencode: không có danh tính Claude".to_string()),
-        )
-    } else {
-        (
-            crate::quota::read(&acc.name, dir.as_deref()),
-            crate::quota::identity(dir.as_deref()),
-        )
+        ),
+        Some(q) => (q, crate::quota::identity(dir.as_deref())),
     };
     let email = id.as_ref().ok().and_then(|i| i.email.clone());
     let probe = lam_probe(Some(q.clone()));

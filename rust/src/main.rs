@@ -744,13 +744,7 @@ fn cmd_doctor(db: &Db, cfg: &Config) -> Result<()> {
     // mục "phiên đang chạy" để CHƯA ĐO thay vì đoán bằng `claude agents`.
     println!("accounts:");
     for acc in cfg.claude_accounts_or_ambient() {
-        let dir = acc
-            .config_dir
-            .as_deref()
-            .filter(|d| !d.is_empty())
-            .map(|d| config::expand_home(std::path::Path::new(d)));
-        let q = huba::quota::read(&acc.name, dir.as_deref());
-        let p = huba::accounts::probe(&acc, Some(q));
+        let p = huba::accounts::probe(&acc, huba::quota::read_acc(&acc));
         let c = huba::accounts::checks(&acc, &p);
         let hong = huba::accounts::problems(&c);
         println!(
