@@ -101,7 +101,12 @@ pub const KHUON_PANE: &str =
 
 /// Đọc đầu ra `list-panes -a -F KHUON_PANE`. Hàng hỏng bị BỎ kèm log, không
 /// đoán. Thuần.
+///
+/// 🔴 Một pane có thể hiện NHIỀU hàng: `list-panes -a` đi theo từng PHIÊN, và
+/// phiên nhóm của cửa sổ xem ([`PHIEN_XEM`]) chia chung mọi window với [`PHIEN`].
+/// Không khử thì mỗi cửa sổ xem nhân đôi danh sách phiên ⟹ giữ hàng ĐẦU mỗi pane id.
 pub fn doc_panes(out: &str) -> Vec<Pane> {
+    let mut da_thay = std::collections::HashSet::new();
     out.lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| {
@@ -128,6 +133,7 @@ pub fn doc_panes(out: &str) -> Vec<Pane> {
             }
             p
         })
+        .filter(|p| da_thay.insert(p.window))
         .collect()
 }
 
@@ -341,6 +347,9 @@ pub fn close_window(window: i64) -> Result<Closed> {
         }
         TabState::Idle => {}
     }
+    // Cửa sổ xem trước: giết pane trước thì phiên nhóm vẫn còn window khác của
+    // `huba` ⟹ cửa sổ trên màn hình nhảy sang một phiên KHÁC thay vì đóng.
+    dong_cua_so_xem(window);
     tmux(&["kill-pane", "-t", &dich(window)])?;
     if window_gone(window)? {
         Ok(Closed::Gone)
@@ -448,9 +457,193 @@ pub fn terminal_tabs(with_screens: bool) -> Result<Vec<Tab>> {
     Ok(tabs)
 }
 
+// ── Cửa sổ XEM trên màn hình ───────────────────────────────────────────────
+//
+// Quang 13/11 sau `/new -a acc8` đầu tiên trên Ubuntu: *"chưa thấy mở được
+// terminal"*. Pane tmux tách rời là đường ĐIỀU KHIỂN (gõ/đọc không cần màn
+// hình), nhưng trên máy có người ngồi thì `/new` của Mac mở một cửa sổ THẬT —
+// thiếu nó là thiếu đúng thứ luật cầu nối đòi. Nên: tmux vẫn giữ pane, còn một
+// cửa sổ terminal trên màn hình GẮN vào pane ấy. Đo tay trên Ubuntu 26.04 /
+// GNOME Wayland: `ptyxis --new-window -- tmux attach -t huba` ⟹ Quang thấy opencode.
+//
+// Mỗi cửa sổ xem là một phiên NHÓM `huba-xem-<pane>` (chung window với [`PHIEN`],
+// window đang xem riêng): `attach` thẳng vào `huba` thì `/new` thứ hai kéo cả
+// cửa sổ thứ nhất sang phiên mới. `destroy-unattached` ⟹ chủ máy đóng cửa sổ là
+// phiên nhóm tự hết; pane (và phiên claude trong đó) vẫn sống.
+
+/// Tiền tố tên phiên nhóm của cửa sổ xem.
+pub const PHIEN_XEM: &str = "huba-xem-";
+
+/// Trình terminal biết cách chạy một lệnh: `(tên, tham số đứng trước lệnh)`.
+/// Thứ tự = thứ được thử trước; ptyxis là terminal mặc định của Ubuntu ≥ 25.10.
+pub const TERMINALS: &[(&str, &[&str])] = &[
+    ("ptyxis", &["--new-window", "--"]),
+    ("gnome-terminal", &["--window", "--"]),
+    ("kgx", &["--"]),
+    ("konsole", &["-e"]),
+    ("xfce4-terminal", &["-x"]),
+    ("xterm", &["-e"]),
+];
+
+/// Dòng lệnh mở cửa sổ xem pane `%w` của phiên `phien` bằng `term`. Thuần.
+/// `None` ⟹ `term` không có trong [`TERMINALS`] (đoán cờ của một trình lạ là
+/// mở ra một cửa sổ chạy SAI lệnh).
+pub fn lenh_xem(term: &str, phien: &str, w: i64) -> Option<Vec<String>> {
+    let ten = std::path::Path::new(term).file_name()?.to_str()?;
+    let (_, truoc) = TERMINALS.iter().find(|(t, _)| *t == ten)?;
+    let mut v: Vec<String> = std::iter::once(term.to_string())
+        .chain(truoc.iter().map(|s| s.to_string()))
+        .collect();
+    let xem = format!("{PHIEN_XEM}{w}");
+    for a in [
+        "tmux",
+        "new-session",
+        "-t",
+        &format!("={phien}"),
+        "-s",
+        &xem,
+        ";",
+        "set-option",
+        "destroy-unattached",
+        "on",
+        ";",
+        "select-window",
+        "-t",
+        &dich(w),
+    ] {
+        v.push(a.to_string());
+    }
+    Some(v)
+}
+
+/// Có màn hình đồ hoạ để mở cửa sổ không — đọc biến môi trường. Thuần (nhận hàm đọc).
+pub fn co_man_hinh(env: impl Fn(&str) -> Option<String>) -> bool {
+    ["WAYLAND_DISPLAY", "DISPLAY"]
+        .iter()
+        .any(|k| env(k).is_some_and(|v| !v.trim().is_empty()))
+}
+
+/// Trình terminal dùng được: `HUBA_TERMINAL` (tên trong [`TERMINALS`]) thắng,
+/// không thì cái đầu tiên có trên PATH.
+fn chon_terminal() -> Option<String> {
+    let tren_path = |ten: &str| -> Option<String> {
+        std::env::var_os("PATH").and_then(|p| {
+            std::env::split_paths(&p)
+                .map(|d| d.join(ten))
+                .find(|f| f.is_file())
+                .map(|f| f.display().to_string())
+        })
+    };
+    if let Some(t) = std::env::var("HUBA_TERMINAL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+    {
+        return Some(if t.contains('/') {
+            t
+        } else {
+            tren_path(&t).unwrap_or(t)
+        });
+    }
+    TERMINALS.iter().find_map(|(t, _)| tren_path(t))
+}
+
+/// Mở cửa sổ xem cho pane `%w`. Không mở được KHÔNG làm hỏng `/new` (pane đã có,
+/// gõ/đọc vẫn chạy) — nhưng mọi đường bỏ qua đều GHI LOG kèm lý do.
+fn mo_cua_so_xem(phien: &str, w: i64) {
+    let doc_env = |k: &str| std::env::var(k).ok();
+    if !co_man_hinh(doc_env) {
+        crate::logging::info(
+            "tmux_xem_bo_qua",
+            serde_json::json!({ "pane": w, "why": "không có WAYLAND_DISPLAY/DISPLAY — máy không có màn hình đồ hoạ",
+                                "effect": "phiên vẫn chạy trong tmux: tmux attach -t huba" }),
+        );
+        return;
+    }
+    let Some(term) = chon_terminal() else {
+        crate::logging::warn(
+            "tmux_xem_bo_qua",
+            serde_json::json!({ "pane": w, "why": "không tìm thấy trình terminal nào",
+                                "da_thu": TERMINALS.iter().map(|(t, _)| *t).collect::<Vec<_>>(),
+                                "effect": "phiên vẫn chạy trong tmux: tmux attach -t huba" }),
+        );
+        return;
+    };
+    let Some(argv) = lenh_xem(&term, phien, w) else {
+        crate::logging::warn(
+            "tmux_xem_bo_qua",
+            serde_json::json!({ "pane": w, "terminal": term, "why": "HUBA_TERMINAL không nằm trong danh sách đã biết cờ" }),
+        );
+        return;
+    };
+    use std::os::unix::process::CommandExt;
+    let spawn = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .process_group(0)
+        .spawn();
+    if let Err(e) = spawn {
+        crate::logging::warn(
+            "tmux_xem_khong_mo",
+            serde_json::json!({ "pane": w, "terminal": term, "err": e.to_string() }),
+        );
+        return;
+    }
+    // Mã thoát của trình terminal KHÔNG nói gì (ptyxis chuyển yêu cầu cho bản
+    // đang chạy rồi thoát 0). Phép đo thật: có client tmux gắn vào phiên xem chưa.
+    let xem = format!("{PHIEN_XEM}{w}");
+    for _ in 0..25 {
+        std::thread::sleep(Duration::from_millis(200));
+        if let Ok(out) = tmux(&[
+            "list-clients",
+            "-t",
+            &format!("={xem}"),
+            "-F",
+            "#{client_tty}",
+        ]) {
+            if !out.trim().is_empty() {
+                crate::logging::info(
+                    "tmux_xem_da_gan",
+                    serde_json::json!({ "pane": w, "terminal": term, "client": out.trim() }),
+                );
+                return;
+            }
+        }
+    }
+    crate::logging::warn(
+        "tmux_xem_khong_gan",
+        serde_json::json!({ "pane": w, "terminal": term, "cho_ms": 5000,
+                            "effect": "không thấy cửa sổ trên màn hình — phiên vẫn chạy: tmux attach -t huba" }),
+    );
+}
+
+/// Đóng cửa sổ xem của pane `%w` (giết phiên nhóm ⟹ client thoát ⟹ terminal đóng).
+/// Không có phiên xem là chuyện thường (chủ máy đã đóng, máy không màn hình).
+fn dong_cua_so_xem(w: i64) {
+    let xem = format!("{PHIEN_XEM}{w}");
+    match tmux(&["kill-session", "-t", &format!("={xem}")]) {
+        Ok(_) => crate::logging::info("tmux_xem_da_dong", serde_json::json!({ "pane": w })),
+        Err(e) if e.to_string().contains("can't find session") => {}
+        Err(e) if khong_co_may_chu(&e.to_string()) => {}
+        Err(e) => crate::logging::warn(
+            "tmux_xem_khong_dong",
+            serde_json::json!({ "pane": w, "err": e.to_string() }),
+        ),
+    }
+}
+
 /// Mở một WINDOW tmux mới (phiên [`PHIEN`], chưa có thì dựng tách rời), gõ `cmd`
-/// vào shell của nó, trả `(số pane, "pts/N")`.
+/// vào shell của nó, trả `(số pane, "pts/N")` — kèm một cửa sổ XEM trên màn hình
+/// khi máy có màn hình đồ hoạ ([`mo_cua_so_xem`]).
 pub fn open_window(cmd: &str) -> Result<(i64, String)> {
+    let (w, tty) = mo_pane(cmd)?;
+    mo_cua_so_xem(&ten_phien(), w);
+    Ok((w, tty))
+}
+
+/// Phần tmux của [`open_window`], KHÔNG bật cửa sổ — tự kiểm dùng cái này.
+fn mo_pane(cmd: &str) -> Result<(i64, String)> {
     let phien = ten_phien();
     let khuon = "#{pane_id} #{pane_tty}";
     let co_phien = tmux(&["has-session", "-t", &format!("={phien}")]).is_ok();
@@ -542,7 +735,8 @@ pub fn tu_kiem() -> Vec<(String, Ket)> {
     }
     let phien = format!("huba-tu-kiem-{}", std::process::id());
     std::env::set_var("HUBA_TMUX_SESSION", &phien);
-    let mo = open_window("echo HUBA_MOC_$((40+2)); cat");
+    // `mo_pane`, không `open_window`: tự kiểm không bật cửa sổ lên màn hình chủ máy.
+    let mo = mo_pane("echo HUBA_MOC_$((40+2)); cat");
     let (w, tty) = match mo {
         Ok(x) => x,
         Err(e) => {
@@ -654,6 +848,40 @@ mod tests {
         assert_eq!(p[0].tty, "pts/4");
         assert_eq!(p[0].pid, 1234);
         assert_eq!(p[0].title, "✳ Sửa lỗi");
+    }
+
+    /// Phiên nhóm của cửa sổ xem làm `list-panes -a` in một pane HAI lần.
+    #[test]
+    fn mot_pane_hai_phien_chi_tinh_mot() {
+        let hang = "%3~|huba|~/dev/pts/4~|huba|~1234~|huba|~opencode~|huba|~t";
+        let out = format!("{hang}\n%5~|huba|~/dev/pts/6~|huba|~9~|huba|~bash~|huba|~\n{hang}\n");
+        let p = doc_panes(&out);
+        assert_eq!(p.iter().map(|x| x.window).collect::<Vec<_>>(), vec![3, 5]);
+    }
+
+    #[test]
+    fn lenh_xem_gan_dung_pane_bang_phien_nhom() {
+        let v = lenh_xem("/usr/bin/ptyxis", "huba", 7).unwrap();
+        assert_eq!(&v[..3], &["/usr/bin/ptyxis", "--new-window", "--"]);
+        let duoi = v[3..].join(" ");
+        assert_eq!(
+            duoi,
+            "tmux new-session -t =huba -s huba-xem-7 ; set-option destroy-unattached on ; select-window -t %7"
+        );
+        assert_eq!(lenh_xem("xterm", "huba", 1).unwrap()[1], "-e");
+        // Trình lạ: KHÔNG đoán cờ.
+        assert!(lenh_xem("/opt/la/terminal-la", "huba", 1).is_none());
+    }
+
+    #[test]
+    fn man_hinh_do_bien_moi_truong() {
+        let env = |m: &'static [(&'static str, &'static str)]| {
+            move |k: &str| m.iter().find(|(a, _)| *a == k).map(|(_, b)| b.to_string())
+        };
+        assert!(co_man_hinh(env(&[("WAYLAND_DISPLAY", "wayland-0")])));
+        assert!(co_man_hinh(env(&[("DISPLAY", ":0")])));
+        assert!(!co_man_hinh(env(&[])));
+        assert!(!co_man_hinh(env(&[("DISPLAY", " ")])));
     }
 
     #[test]

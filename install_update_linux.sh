@@ -34,6 +34,14 @@ fi
 [ -f "$CFG" ] || { echo "KHÔNG ĐO ĐƯỢC: chưa có $CFG — chạy ./huba init trước"; exit 2; }
 command -v tmux >/dev/null || echo "⚠ chưa có tmux — /new sẽ hỏng: sudo apt install -y tmux"
 
+# Gói mang `kem/` (cổng bảo mật + MCP codetrail cho Linux). Thiếu ⟹ opencode chạy KHÔNG có tường
+# bảo mật và báo «1 plugin failed / 1 MCP failed» — dừng, đừng cài nửa chừng.
+for f in kem/scripts/cong_bao_mat.py kem/scripts/bao-mat-policy.json kem/scripts/cong-bao-mat-plugin/index.js kem/bin/project-agent; do
+  [ -f "$DIR/$f" ] || { echo "❌ gói thiếu $f — dựng lại bằng scripts/dong-goi-linux.sh"; exit 2; }
+done
+python3 "$DIR/kem/scripts/cong_bao_mat.py" --tu-kiem >/dev/null 2>&1 \
+  || echo "⚠ cong_bao_mat.py --tu-kiem KHÔNG xanh trên máy này — xem: python3 $DIR/kem/scripts/cong_bao_mat.py --tu-kiem"
+
 mkdir -p "$BIN_DIR" "$UNIT_DIR" "$DIR/logs" || exit 1
 # Chép ra tệp mới rồi đổi tên: đè thẳng lên tệp đang chạy thì `cp` báo "Text file busy".
 cp "$DIR/hubad" "$BIN_DIR/hubd.new" && chmod 755 "$BIN_DIR/hubd.new" && mv -f "$BIN_DIR/hubd.new" "$BIN_DIR/hubd" || exit 1
@@ -50,9 +58,16 @@ ExecStart=$BIN_DIR/hubd
 WorkingDirectory=$DIR
 Environment=HUB_CONFIG=$CFG
 Environment=HUB_LOG_LEVEL=info
+Environment=HUBA_OPENCODE_PLUGIN=$DIR/kem/scripts/cong-bao-mat-plugin
+Environment=BAO_MAT_POLICY=$DIR/kem/scripts/bao-mat-policy.json
+Environment=HUBA_MCP_PROJECT_AGENT=$DIR/kem/bin/project-agent
 Environment=PATH=$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 Restart=always
 RestartSec=30
+# Máy chủ tmux (mọi phiên claude/opencode) và cửa sổ xem do hubd đẻ ra nằm trong cgroup
+# của dịch vụ. Mặc định control-group ⟹ mỗi restart/upgrade/sập GIẾT HẾT phiên (đo 13/11:
+# tmux pid 13018 trong huba-hubd.service). Trên Mac cửa sổ Terminal sống độc lập launchd.
+KillMode=process
 StandardOutput=append:$DIR/logs/hubd.out
 StandardError=append:$DIR/logs/hubd.err
 

@@ -298,7 +298,53 @@ pub fn opencode_config_content(acc: &ClaudeAccountCfg) -> Value {
             }
         }
     }
+    let mcp_bin = std::env::var("HUBA_MCP_PROJECT_AGENT").unwrap_or_default();
+    if !mcp_bin.trim().is_empty() {
+        if !Path::new(&mcp_bin).is_file() {
+            crate::logging::warn(
+                "opencode_mcp_codetrail_missing",
+                json!({ "account": acc.name, "path": mcp_bin,
+                        "effect": "opencode sẽ báo «MCP failed» — cài lại gói huba (kem/bin/project-agent)" }),
+            );
+        }
+        let ws = home_dir()
+            .map(|h| h.join("projects").to_string_lossy().to_string())
+            .unwrap_or_default();
+        chen_mcp_codetrail(&mut root, &mcp_bin, &ws);
+    }
     root
+}
+
+/// MCP codetrail (`project-agent`) đi KÈM huba (Quang 13/11: *"huba luôn đi kèm mcp
+/// codetrail"*). Khi gói đặt `HUBA_MCP_PROJECT_AGENT` (bản Linux: `kem/bin/project-agent`),
+/// lệnh của `mcp.project-agent` trỏ vào binary ấy: hàng acc đã khai thì CHỈ thay
+/// chương trình (giữ tham số, `environment`), chưa khai thì thêm mới ở chế độ router.
+/// Lý do thay chứ không tin hàng acc: hàng ấy trỏ `~/projects/AI/codetrail/…/target/release`
+/// — chép `~/projects` từ Mac sang Linux mang theo binary macOS ⟹ «1 MCP failed». Thuần.
+pub fn chen_mcp_codetrail(root: &mut Value, bin: &str, projects_root: &str) {
+    let Some(obj) = root.as_object_mut() else {
+        return;
+    };
+    let mcp = obj.entry("mcp").or_insert_with(|| json!({}));
+    let Some(mcp) = mcp.as_object_mut() else {
+        return;
+    };
+    match mcp.get_mut("project-agent").and_then(Value::as_object_mut) {
+        Some(pa) => {
+            let cmd = pa.entry("command").or_insert_with(|| json!([]));
+            match cmd.as_array_mut() {
+                Some(a) if !a.is_empty() => a[0] = json!(bin),
+                _ => *cmd = json!([bin]),
+            }
+        }
+        None => {
+            mcp.insert(
+                "project-agent".to_string(),
+                json!({ "type": "local", "command": [bin],
+                        "environment": { "PROJECTS_ROOT": projects_root } }),
+            );
+        }
+    }
 }
 
 /// Dòng shell chủ máy VIẾT TAY (`launch`), đã cắt khoảng trắng thừa.
