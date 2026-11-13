@@ -235,6 +235,15 @@ fn real_main() -> Result<()> {
             {
                 anyhow::bail!("không có tài khoản {acc} trong claude_accounts");
             }
+            // Cùng bước chuẩn bị với `/new` (effort high cho opencode) — xem
+            // `sessions::chuan_bi_mo_opencode`.
+            if let Some(row) = cfg
+                .claude_accounts_or_ambient()
+                .into_iter()
+                .find(|a| a.name == acc && a.is_opencode())
+            {
+                huba::sessions::chuan_bi_mo_opencode(&row);
+            }
             println!(
                 "{}",
                 huba::sessions::window_command(

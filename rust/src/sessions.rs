@@ -8040,15 +8040,7 @@ fn start_opencode_in_terminal(
     let Some(acc) = account_row(cfg, account) else {
         anyhow::bail!("không thấy hàng tài khoản opencode");
     };
-    crate::opencode::don_dich_vu_lech(&acc);
-    if let Some(m) = acc.model.as_deref().filter(|m| !m.trim().is_empty()) {
-        let muc = acc
-            .effort
-            .as_deref()
-            .filter(|e| !e.trim().is_empty())
-            .unwrap_or(crate::accounts::OPENCODE_VARIANT_MAC_DINH);
-        crate::opencode::dat_variant_tui(&acc, m, muc);
-    }
+    chuan_bi_mo_opencode(&acc);
     let opened_ms = chrono::Utc::now().timestamp_millis();
     let resume = resume.map(str::trim).filter(|r| !r.is_empty());
     // Đề bài rỗng ⟹ huba ĐẶT id trước (`--session <id>`), xem
@@ -9470,6 +9462,26 @@ pub fn window_command(
             resume,
             crate::accounts::prompt_khoi_dau().as_deref(),
         )
+    }
+}
+
+/// Việc phải làm TRƯỚC khi mở một TUI opencode — một chỗ cho `/new` và
+/// `huba lenh-mo`: dọn dịch vụ lệch cấu hình, rồi ghi mức effort (variant) vào
+/// tệp TUI nhớ lựa chọn (`state/opencode/model.json` đè cấu hình — 9dfce62).
+///
+/// 🔴 Quang 13/11: *"tất cả trên mac khi mở tự động phiên acc8 không thấy tự
+/// chuyển effort high"*. Đo: hai cửa sổ acc8 do `acc-mo-vai.sh` mở hiện
+/// `Build · DeepSeek V4.1 Flash … OpenCode Go` không `· high`, `model.json` giữ
+/// `"variant": … "default"`. Gốc: `lenh-mo` chỉ IN `window_command`, bỏ bước này.
+pub fn chuan_bi_mo_opencode(acc: &ClaudeAccountCfg) {
+    crate::opencode::don_dich_vu_lech(acc);
+    if let Some(m) = acc.model.as_deref().filter(|m| !m.trim().is_empty()) {
+        let muc = acc
+            .effort
+            .as_deref()
+            .filter(|e| !e.trim().is_empty())
+            .unwrap_or(crate::accounts::OPENCODE_VARIANT_MAC_DINH);
+        crate::opencode::dat_variant_tui(acc, m, muc);
     }
 }
 
