@@ -228,17 +228,50 @@ pub fn screen_scrollback(window: i64, steps: usize, _du: impl Fn(&str) -> bool) 
     tmux(&["capture-pane", "-p", "-S", &lui, "-t", &dich(window)])
 }
 
-/// Gõ một khối chữ — KHÔNG tự bấm Enter (hợp đồng của `keys::type_and_send`).
+/// Gõ một khối chữ rồi MỘT phím Enter rời — cùng hợp đồng với `do script` của
+/// macOS (luật 13: nó LUÔN kèm một dấu xuống dòng), thứ mọi chỗ gọi
+/// `keys::type_into` đang dựa vào: shell nhận là gửi (`exit` của /close, mã
+/// đăng nhập), TUI `claude` nhận là dán rồi `pipeline` bấm Enter bù khi
+/// `still_in_box` thấy chữ còn nằm đó.
+///
+/// 🔴 Quang 13/11 (Ubuntu, «gửi text thấy vào ô chat nhưng chưa gửi đi»): bản cũ
+/// gõ chữ TRẦN. Enter bù chỉ chạy khi `still_in_box` nhận ra khung ô nhập kiểu
+/// `claude`; ô `┃` của opencode thì không ⟹ màn thật pane %7 giữ `1xin chào`
+/// trong ô, còn huba báo «✓ đã gửi». Enter là phím RỜI (lượt `send-keys` thứ
+/// hai, nghỉ 150 ms) nên TUI đọc nó như phím thật, không gộp vào cú dán.
 pub fn type_into(window: i64, text: &str) -> Result<()> {
-    if text.contains('\n') || text.contains('\r') {
-        let buf = format!("huba-{}-{window}", std::process::id());
-        tmux(&["set-buffer", "-b", &buf, "--", text])?;
-        // `-p`: dán có ngoặc NẾU chương trình đã xin (claude có); `-d`: xoá bộ đệm.
-        tmux(&["paste-buffer", "-p", "-d", "-b", &buf, "-t", &dich(window)])?;
-        Ok(())
-    } else {
-        tmux(&["send-keys", "-t", &dich(window), "-l", "--", text]).map(|_| ())
+    for (prog, args) in lenh_go(window, text, std::process::id()) {
+        match prog {
+            "nghi" => std::thread::sleep(std::time::Duration::from_millis(150)),
+            _ => {
+                let a: Vec<&str> = args.iter().map(String::as_str).collect();
+                tmux(&a)?;
+            }
+        }
     }
+    Ok(())
+}
+
+/// Dãy lệnh `tmux` của [`type_into`] — tách THUẦN để bài kiểm khoá được cú
+/// Enter rời mà không cần máy chủ tmux. `("nghi", [])` = nghỉ giữa hai lượt ghi.
+pub fn lenh_go(window: i64, text: &str, pid: u32) -> Vec<(&'static str, Vec<String>)> {
+    let dich = &dich(window);
+    let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    let mut out = Vec::new();
+    if text.contains('\n') || text.contains('\r') {
+        let buf = format!("huba-{pid}-{window}");
+        out.push(("tmux", s(&["set-buffer", "-b", &buf, "--", text])));
+        // `-p`: dán có ngoặc NẾU chương trình đã xin (claude có); `-d`: xoá bộ đệm.
+        out.push((
+            "tmux",
+            s(&["paste-buffer", "-p", "-d", "-b", &buf, "-t", dich]),
+        ));
+    } else {
+        out.push(("tmux", s(&["send-keys", "-t", dich, "-l", "--", text])));
+    }
+    out.push(("nghi", Vec::new()));
+    out.push(("tmux", s(&["send-keys", "-t", dich, "Enter"])));
+    out
 }
 
 /// Dãy phím RỜI, nghỉ 30 ms giữa các phím để TUI kịp vẽ (như bản Windows).
@@ -342,13 +375,40 @@ pub fn window_size(window: i64) -> Result<(i64, i64)> {
 }
 
 /// Chọn window + pane trong tmux — client nào đang `attach` sẽ thấy nó.
+/// `/front`: chọn pane, và nếu pane ấy KHÔNG có tab xem nào trên màn thì mở một.
+///
+/// 🔴 Quang 13/11 (Ubuntu): *"chỉ có 3 tab nhưng session lại hiện 4 là sao?"*.
+/// Đo: tmux có 4 window opencode (`@0 @5 @7 @13`), ptyxis chỉ 3 tab xem
+/// (`huba-xem-5/7/13`) — `@0` mở trước khi có tab xem nên chỉ sống trong tmux.
+/// `/session` đếm ĐÚNG; cái thiếu là đường nhìn. Bản cũ chỉ `select-window`
+/// trong tmux nên `/front` vào `@0` không làm hiện ra gì.
 pub fn bring_to_front(window: i64) -> Result<()> {
-    tmux(&["select-window", "-t", &dich(window)])?;
-    tmux(&["select-pane", "-t", &dich(window)]).map(|_| ())
+    focus_window(window)?;
+    let xem = format!("{PHIEN_XEM}{window}");
+    match tmux(&[
+        "list-clients",
+        "-t",
+        &format!("={xem}"),
+        "-F",
+        "#{client_tty}",
+    ]) {
+        Ok(out) if !out.trim().is_empty() => {}
+        other => {
+            crate::logging::info(
+                "tmux_xem_mo_lai",
+                serde_json::json!({ "pane": window, "doc": format!("{other:?}"),
+                                    "why": "pane không có tab xem nào trên màn — /front mở một" }),
+            );
+            mo_cua_so_xem(&ten_phien(), window);
+        }
+    }
+    Ok(())
 }
 
+/// Chọn pane trong tmux — KHÔNG mở tab (đường gõ gọi hàm này mỗi lượt).
 pub fn focus_window(window: i64) -> Result<()> {
-    bring_to_front(window)
+    tmux(&["select-window", "-t", &dich(window)])?;
+    tmux(&["select-pane", "-t", &dich(window)]).map(|_| ())
 }
 
 /// Pane đang được chọn của phiên tmux mà client gần nhất đang xem.
@@ -841,9 +901,10 @@ pub fn tu_kiem() -> Vec<(String, Ket)> {
         },
     ));
     let gian = format!("go-thu-{}", std::process::id());
-    let go = type_into(w, &gian).and_then(|_| press_writes(w, &[vec!["enter".into()]]));
+    // `type_into` TỰ kèm Enter rời (hợp đồng `do script`, 13/11) — không bấm thêm.
+    let go = type_into(w, &gian);
     out.push((
-        "④ gõ chữ + Enter, cat in lại".into(),
+        "④ gõ chữ (type_into tự gửi Enter), cat in lại".into(),
         match go {
             Err(e) => Ket::Hong(e.to_string()),
             Ok(()) => match cho(&format!("{gian}\n{gian}")) {
@@ -923,6 +984,37 @@ pub fn tu_kiem() -> Vec<(String, Ket)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Quang 13/11 Ubuntu: «gửi text thấy vào ô chat nhưng chưa gửi đi» — màn thật
+    /// pane %7 giữ `1xin chào` trong ô opencode. Gõ phải kết thúc bằng MỘT Enter
+    /// RỜI (lượt ghi riêng, sau nhịp nghỉ), như `do script` của macOS.
+    #[test]
+    fn go_chu_ket_thuc_bang_mot_enter_roi() {
+        let mot = lenh_go(7, "xin chào", 42);
+        assert_eq!(mot.len(), 3, "{mot:?}");
+        assert_eq!(
+            mot[0].1,
+            vec!["send-keys", "-t", "%7", "-l", "--", "xin chào"]
+        );
+        assert_eq!(mot[1].0, "nghi");
+        assert_eq!(mot[2].1, vec!["send-keys", "-t", "%7", "Enter"]);
+        // Chữ KHÔNG mang Enter bên trong — Enter chỉ đi ở lượt ghi rời.
+        assert!(!mot[0].1.iter().any(|a| a == "Enter"));
+
+        let nhieu = lenh_go(7, "dòng 1\ndòng 2", 42);
+        assert_eq!(nhieu[0].1[..3], ["set-buffer", "-b", "huba-42-7"]);
+        assert_eq!(nhieu[1].1[0], "paste-buffer");
+        assert_eq!(nhieu[2].0, "nghi");
+        assert_eq!(
+            nhieu.last().unwrap().1,
+            vec!["send-keys", "-t", "%7", "Enter"]
+        );
+        let so_enter = nhieu
+            .iter()
+            .filter(|(_, a)| a.last().is_some_and(|x| x == "Enter"))
+            .count();
+        assert_eq!(so_enter, 1, "đúng MỘT cú Enter: {nhieu:?}");
+    }
 
     #[test]
     fn doc_hang_pane_va_bo_hang_hong() {
