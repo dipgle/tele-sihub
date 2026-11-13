@@ -45,6 +45,7 @@
     "macos_notification": true
   },
   "claude_cli": "claude",
+  "opencode_cli": "$HOME/.opencode/bin/opencode",
   "claude_accounts": [
     {
       "name": "acc1",
@@ -74,7 +75,8 @@
     },
     {
       "name": "acc6",
-      "config_dir": "~/.claude-acc6"
+      "config_dir": "~/.claude-acc6",
+      "locked": true
     },
     {
       "name": "acc7",
@@ -84,25 +86,25 @@
     {
       "name": "acc8",
       "config_dir": "~/.claude-acc8",
-      "cli": "opencode",
       "env_file": "~/.opencode_acc8.env",
       "api_key_env": "OPENCODE_API_KEY",
       "model": "opencode-go/deepseek-v4.1-flash",
+      "cli": "opencode",
       "opencode_config": {
-        "plugin": [
-          "~/projects/scripts/cong-bao-mat-plugin"
-        ],
         "mcp": {
           "project-agent": {
-            "type": "local",
             "command": [
               "~/projects/AI/codetrail/mcp/project-agent-rs/target/release/project-agent"
             ],
             "environment": {
               "PROJECTS_ROOT": "~/projects"
-            }
+            },
+            "type": "local"
           }
-        }
+        },
+        "plugin": [
+          "~/projects/scripts/cong-bao-mat-plugin"
+        ]
       }
     },
     {
