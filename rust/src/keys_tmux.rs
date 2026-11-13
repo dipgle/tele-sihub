@@ -518,9 +518,16 @@ pub const TERMINALS: &[(&str, &[&str])] = &[
     ("xterm", &["-e"]),
 ];
 
-/// Dòng lệnh mở cửa sổ xem pane `%w` của phiên `phien` bằng `term`. Thuần.
+/// Dòng lệnh mở cửa sổ xem cho pane `%w` của phiên `phien` bằng `term`. Thuần.
 /// `None` ⟹ `term` không có trong [`TERMINALS`] (đoán cờ của một trình lạ là
 /// mở ra một cửa sổ chạy SAI lệnh).
+///
+/// 🔴 KHÔNG chọn window trong chuỗi lệnh này. Quang 13/11: *"mở tab rồi nhưng lại
+/// đang dùng chung một cửa sổ opencode là sao"* — đo trên Ubuntu (tmux 3.6, máy chủ
+/// riêng `-L hubathu`): `select-window` đặt sau `new-session` có tác dụng NGAY trong
+/// chuỗi (`run-shell` ghi `xem-b @2`), rồi bước GẮN client ghi đè về window khác
+/// (`@0`); dạng cũ `-t %7` còn kéo cả tab trước sang `@7`. Chọn sau khi client đã gắn
+/// thì đúng và đứng yên khi có window mới ⟹ [`mo_cua_so_xem`] làm việc ấy.
 pub fn lenh_xem(term: &str, phien: &str, w: i64) -> Option<Vec<String>> {
     let ten = std::path::Path::new(term).file_name()?.to_str()?;
     let (_, truoc) = TERMINALS.iter().find(|(t, _)| *t == ten)?;
@@ -539,10 +546,6 @@ pub fn lenh_xem(term: &str, phien: &str, w: i64) -> Option<Vec<String>> {
         "set-option",
         "destroy-unattached",
         "on",
-        ";",
-        "select-window",
-        "-t",
-        &dich(w),
     ] {
         v.push(a.to_string());
     }
@@ -601,6 +604,17 @@ fn mo_cua_so_xem(phien: &str, w: i64) {
         );
         return;
     };
+    let window_id = match tmux(&["display-message", "-p", "-t", &dich(w), "#{window_id}"]) {
+        Ok(o) if o.trim().starts_with('@') => o.trim().to_string(),
+        other => {
+            crate::logging::warn(
+                "tmux_xem_bo_qua",
+                serde_json::json!({ "pane": w, "why": "không đọc được window_id của pane",
+                                    "doc": format!("{other:?}") }),
+            );
+            return;
+        }
+    };
     let Some(argv) = lenh_xem(&term, phien, w) else {
         crate::logging::warn(
             "tmux_xem_bo_qua",
@@ -645,10 +659,30 @@ fn mo_cua_so_xem(phien: &str, w: i64) {
             "#{client_tty}",
         ]) {
             if !out.trim().is_empty() {
-                crate::logging::info(
-                    "tmux_xem_da_gan",
-                    serde_json::json!({ "pane": w, "terminal": term, "client": out.trim() }),
-                );
+                // Client đã gắn ⟹ GIỜ mới chọn window, rồi ĐỌC LẠI (xem `lenh_xem`).
+                let dich_xem = format!("={xem}:{window_id}");
+                let chon = tmux(&["select-window", "-t", &dich_xem]);
+                let dang = tmux(&[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    &format!("={xem}:"),
+                    "#{window_id}",
+                ])
+                .map(|o| o.trim().to_string());
+                match (&chon, &dang) {
+                    (Ok(_), Ok(d)) if *d == window_id => crate::logging::info(
+                        "tmux_xem_da_gan",
+                        serde_json::json!({ "pane": w, "terminal": term, "client": out.trim(),
+                                            "window": window_id }),
+                    ),
+                    _ => crate::logging::warn(
+                        "tmux_xem_sai_window",
+                        serde_json::json!({ "pane": w, "can": window_id, "chon": format!("{chon:?}"),
+                                            "dang": format!("{dang:?}"),
+                                            "effect": "tab trên màn có thể đang hiện phiên khác" }),
+                    ),
+                }
                 return;
             }
         }
@@ -917,7 +951,7 @@ mod tests {
         let duoi = v[3..].join(" ");
         assert_eq!(
             duoi,
-            "tmux new-session -t =huba -s huba-xem-7 ; set-option destroy-unattached on ; select-window -t %7"
+            "tmux new-session -t =huba -s huba-xem-7 ; set-option destroy-unattached on"
         );
         assert_eq!(lenh_xem("xterm", "huba", 1).unwrap()[1], "-e");
         // Trình lạ: KHÔNG đoán cờ.
