@@ -424,6 +424,12 @@ pub fn screen_text(window: i64) -> Result<String> {
     with_console(window, read_screen)
 }
 
+/// Dòng logic + lịch sử như `keys_tmux::screen_text_noi` — CHƯA làm trên Windows:
+/// trả đúng khung nhìn (dòng dài vẫn gãy theo cột), không giả vờ đã nối.
+pub fn screen_text_noi(window: i64) -> Result<String> {
+    screen_text(window)
+}
+
 /// Console cổ điển giữ cả phần đã cuộn trong bộ đệm, nhưng ConPTY (tab Windows
 /// Terminal) chỉ giữ khung nhìn — chưa đo. Trả đúng khung nhìn, không giả vờ đã
 /// cuộn (luật 13②).

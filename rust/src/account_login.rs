@@ -242,7 +242,7 @@ pub fn start(cfg: &Config, db: &Db, name: &str) -> String {
     // Đã có cửa sổ đang chờ mã cho tài khoản này ⟹ nhắc lại đường dẫn, KHÔNG mở cái thứ hai.
     if let Some((w, at, tty)) = pending(db, name) {
         let tuoi = chrono::Utc::now().timestamp_millis() - at;
-        let man = crate::keys::screen_text(w).unwrap_or_default();
+        let man = crate::keys::screen_text_noi(w).unwrap_or_default();
         if tuoi < LOGIN_STALE_MS && la_man_dang_nhap(&man) && cli_pid(&tty).is_some() {
             if let Some(url) = login_url(&man) {
                 logging::info(
@@ -269,7 +269,7 @@ pub fn start(cfg: &Config, db: &Db, name: &str) -> String {
     let mut man = String::new();
     for _ in 0..20 {
         std::thread::sleep(Duration::from_secs(1));
-        man = crate::keys::screen_text(w).unwrap_or_default();
+        man = crate::keys::screen_text_noi(w).unwrap_or_default();
         if waiting_for_code(&man) && login_url(&man).is_some() {
             break;
         }
@@ -322,7 +322,7 @@ pub fn finish(cfg: &Config, db: &Db, name: &str, code: &str) -> String {
             "⚠ không có cửa sổ đăng nhập nào đang chờ mã cho {name}. Mở lại: /accounts {name} -l"
         );
     };
-    let truoc = crate::keys::screen_text(w).unwrap_or_default();
+    let truoc = crate::keys::screen_text_noi(w).unwrap_or_default();
     if !la_man_dang_nhap(&truoc) || cli_pid(&tty).is_none() {
         forget(db, name);
         logging::warn(
@@ -344,7 +344,7 @@ pub fn finish(cfg: &Config, db: &Db, name: &str, code: &str) -> String {
     let mut song = true;
     for _ in 0..30 {
         std::thread::sleep(Duration::from_secs(1));
-        moi = new_after(&truoc, &crate::keys::screen_text(w).unwrap_or_default());
+        moi = new_after(&truoc, &crate::keys::screen_text_noi(w).unwrap_or_default());
         song = cli_pid(&tty).is_some();
         if !song {
             break;
@@ -358,7 +358,7 @@ pub fn finish(cfg: &Config, db: &Db, name: &str, code: &str) -> String {
                     break;
                 }
             }
-            moi = new_after(&truoc, &crate::keys::screen_text(w).unwrap_or_default());
+            moi = new_after(&truoc, &crate::keys::screen_text_noi(w).unwrap_or_default());
             break;
         }
     }
@@ -610,7 +610,7 @@ fn forget(db: &Db, name: &str) {
 /// Bỏ một lượt chờ mã: TẮT đúng tiến trình `auth login` của cửa sổ ấy (không gõ gì vào
 /// nó — đo 11/10: chữ gõ vào bị nhận làm mã), rồi đóng cửa sổ shell như mọi cửa sổ khác.
 fn cancel(db: &Db, name: &str, w: i64, tty: &str, vi: &str) {
-    let man = crate::keys::screen_text(w).unwrap_or_default();
+    let man = crate::keys::screen_text_noi(w).unwrap_or_default();
     if !la_man_dang_nhap(&man) {
         // Không phải cửa sổ của mình (đã đóng, hoặc id đã thuộc về cửa sổ khác) ⟹ KHÔNG đụng.
         logging::info(

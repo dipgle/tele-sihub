@@ -18,6 +18,8 @@
 //!   `Up`, `C-c`…). Khối nhiều dòng đi bằng `paste-buffer -p` (dán có ngoặc khi
 //!   chương trình xin) — gửi từng dòng kèm Enter là gửi từng mảnh đề bài.
 //! * Đọc: `capture-pane -p` (khung đang hiện); cuộn ngược bằng `-S -<dòng>`.
+//!   Dòng dài gãy theo CỘT (Terminal.app thì không) ⟹ chỗ cần dòng nguyên
+//!   (đường dẫn đăng nhập) đọc bằng [`screen_text_noi`] (`-J` + lịch sử).
 //!
 //! Không cần quyền hệ điều hành nào, không cần màn hình đồ hoạ, không giành
 //! tiêu điểm: tmux là máy chủ chữ, nên hubd chạy bằng systemd `--user` vẫn gõ
@@ -219,6 +221,37 @@ pub fn window_gone(window: i64) -> Result<bool> {
 /// cùng hình dạng `contents of tab` của Terminal.app mà bộ phân tích đã quen.
 pub fn screen_text(window: i64) -> Result<String> {
     tmux(&["capture-pane", "-p", "-t", &dich(window)])
+}
+
+/// Số hàng lịch sử [`screen_text_noi`] lấy thêm phía trên khung nhìn.
+const NOI_LICH_SU: &str = "-200";
+
+/// Tham số `capture-pane` của [`screen_text_noi`]. Thuần.
+pub fn lenh_doc_noi(window: i64) -> Vec<String> {
+    [
+        "capture-pane",
+        "-p",
+        "-J",
+        "-S",
+        NOI_LICH_SU,
+        "-t",
+        &dich(window),
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// Chữ của pane theo DÒNG LOGIC (`-J` nối chỗ gãy mềm) kèm phần đã trôi khỏi
+/// khung nhìn — hình dạng `contents of tab` của Terminal.app cho một dòng dài.
+///
+/// 🔴 Quang 13/11 Ubuntu `/accounts acc3 -l`: pane 147×23, `capture-pane -p` trả
+/// đường dẫn OAuth (~500 ký tự) gãy thành nhiều hàng và dòng `visit:` đã trôi lên
+/// trên khung ⟹ `account_login_no_url` dù ô dán mã đang chờ; lượt acc6 tìm được
+/// `visit:` thì lấy đường dẫn CỤT ở cột 147.
+pub fn screen_text_noi(window: i64) -> Result<String> {
+    let so = lenh_doc_noi(window);
+    tmux(&so.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
 /// Khung nhìn + `steps` khung cuộn ngược. `du` không cần: tmux trả một lượt.
@@ -984,6 +1017,16 @@ pub fn tu_kiem() -> Vec<(String, Ket)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Đọc cho luồng đăng nhập phải nối dòng gãy (`-J`) và lấy cả lịch sử (`-S`) —
+    /// thiếu một trong hai là đường dẫn OAuth cụt hoặc mất dòng `visit:`.
+    #[test]
+    fn doc_noi_noi_dong_gay_va_lay_lich_su() {
+        assert_eq!(
+            lenh_doc_noi(3),
+            vec!["capture-pane", "-p", "-J", "-S", "-200", "-t", "%3"]
+        );
+    }
 
     /// Quang 13/11 Ubuntu: «gửi text thấy vào ô chat nhưng chưa gửi đi» — màn thật
     /// pane %7 giữ `1xin chào` trong ô opencode. Gõ phải kết thúc bằng MỘT Enter

@@ -80,6 +80,17 @@ pub fn send_bare(window: i64, keys: &[String]) -> Result<()> {
 pub fn screen_scrollback(window: i64, steps: usize, du: impl Fn(&str) -> bool) -> Result<String> {
     nen::screen_scrollback(window, steps, du)
 }
+/// Chữ theo DÒNG LOGIC kèm phần đã trôi — xem `keys_tmux::screen_text_noi`.
+#[cfg(not(target_os = "macos"))]
+pub fn screen_text_noi(window: i64) -> Result<String> {
+    nen::screen_text_noi(window)
+}
+/// macOS: `contents of tab` đã trả dòng dài trên MỘT dòng logic (đo 11/10, đầu
+/// `account_login.rs`) — chính là [`screen_text`].
+#[cfg(target_os = "macos")]
+pub fn screen_text_noi(window: i64) -> Result<String> {
+    screen_text(window)
+}
 #[cfg(not(target_os = "macos"))]
 pub fn window_of(tty: &str) -> Result<Option<i64>> {
     nen::window_of(tty)
