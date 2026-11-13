@@ -114,7 +114,7 @@ for cli in $(python3 "$PY" can-cli "$CFG"); do
     opencode)
       if [ ! -x "$HOME/.opencode/bin/opencode" ]; then
         if [ "${HUBA_KHONG_CAI_CLI:-0}" = 1 ]; then echo "  ⚠ thiếu opencode (HUBA_KHONG_CAI_CLI=1 — không tự cài)"
-        else echo "  cài opencode $OPENCODE_VER…"; curl -fsSL https://opencode.ai/v2/install | bash -s -- --version "$OPENCODE_VER" --no-modify-path || echo "  ❌ cài opencode hỏng"; fi
+        else echo "  cài opencode ${OPENCODE_VER}…"; curl -fsSL https://opencode.ai/v2/install | bash -s -- --version "$OPENCODE_VER" --no-modify-path || echo "  ❌ cài opencode hỏng"; fi
       fi
       [ -x "$HOME/.opencode/bin/opencode" ] && echo "  ✓ opencode $("$HOME/.opencode/bin/opencode" --version 2>/dev/null | head -1)" ;;
   esac
