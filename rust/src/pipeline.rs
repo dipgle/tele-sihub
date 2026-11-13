@@ -5584,10 +5584,23 @@ fn close_and_say(db: &Db, cfg: &Config, s: &crate::sessions::LiveSession) -> Str
                             now,
                             now,
                         );
-                        format!(
-                            "⏳ Đã gửi lệnh thoát vào {} (claude: /exit · opencode: Ctrl+C · shell: exit) — chờ CLI chạy nốt lượt đang dở rồi mới đóng cửa sổ. Kiểm 30 giây một lần, xong tôi báo.",
-                            crate::sessions::shown(s)
-                        )
+                        // Gọn (Quang 13/11): nêu ĐÚNG lệnh thoát của loại phiên
+                        // này, không liệt cả ba.
+                        let lenh = match s.kind.as_str() {
+                            "opencode" => "Ctrl+C",
+                            "shell" => "exit",
+                            _ => "/exit",
+                        };
+                        let ack = format!(
+                            "⏳ Đã gửi {lenh} — chờ CLI xong lượt dở rồi đóng cửa sổ (kiểm 30 giây/lần)."
+                        );
+                        // Có tin sống (tin hỏi xác nhận) ⟹ chặng «⏹ đã thoát» sửa
+                        // tiếp đúng tin ấy. Chữ ghi sổ = chữ SẼ hiện sau khi
+                        // `reply_in_channel` nối dòng ⏳ này vào.
+                        if let Some(t) = crate::confirm::tin_song() {
+                            gan_tin_song_closing(db, &s.session_id, t.message_id, &chu_noi(&t.chu, &ack));
+                        }
+                        ack
                     }
                 }
         }
@@ -6432,6 +6445,14 @@ pub struct Closing {
     /// Lần thử đóng LẠI gần nhất sau khi ẩn (epoch giây; 0 = chưa thử lần nào).
     #[serde(default)]
     pub r: i64,
+    /// Tin sống của lượt `/close` (tin hỏi xác nhận) — `0` = không có. Chặng
+    /// «⏹ đã thoát» SỬA tin này thay vì gửi tin mới (Quang 13/11 «1 tin thôi»).
+    /// Nằm trong sổ vì chặng ấy chạy ở vòng SAU, có thể sau khởi động lại.
+    #[serde(default)]
+    pub m: i64,
+    /// Chữ tin ấy đang hiện, tới hết dòng `⏳` (TRƠN).
+    #[serde(default)]
+    pub mt: String,
     /// Lúc `/exit` được gõ vào cửa sổ ấy (epoch giây; **0 = sổ chưa thấy lần nào**).
     ///
     /// 🔴 Vì sao phải có — Hà 2026-09-13, ảnh danh sách: *"Vẫn còn hiện tượng
@@ -6617,10 +6638,28 @@ pub fn remember_closing(
             c: 0,
             h: 0,
             r: 0,
+            m: 0,
+            mt: String::new(),
             x: exit_sent_at,
         },
     );
     save_closing(db, &book);
+}
+
+/// Gắn tin sống vào mục sổ chờ đóng vừa ghi.
+fn gan_tin_song_closing(db: &Db, session_id: &str, message_id: i64, chu: &str) {
+    let mut book = closing_book(db);
+    match book.get_mut(session_id) {
+        Some(c) => {
+            c.m = message_id;
+            c.mt = chu.to_string();
+            save_closing(db, &book);
+        }
+        None => logging::warn(
+            "closing_live_msg_no_row",
+            json!({ "session": session_id, "effect": "«đã thoát» sẽ là tin riêng" }),
+        ),
+    }
 }
 
 fn closing_book(db: &Db) -> BTreeMap<String, Closing> {
@@ -7148,7 +7187,7 @@ pub fn close_pending_tick(db: &Db, cfg: &Config, now: i64) {
                         "close_hidden_gave_up",
                         json!({ "session": id, "window": c.w, "hidden_sec": now - c.h }),
                     );
-                    say_closed(cfg, &format!(
+                    say_closed_c(cfg, c, &format!(
                         "⚠ {} — huba thử đóng lại cửa sổ đã ẩn suốt {} tiếng mà Terminal vẫn không chịu, nên thôi. \
                          Nó vẫn khuất mắt và khuất khỏi mọi danh sách của huba; ⌘W khi anh ngồi máy là hết hẳn.",
                         c.n,
@@ -7171,8 +7210,9 @@ pub fn close_pending_tick(db: &Db, cfg: &Config, now: i64) {
                                 "close_hidden_window_gone",
                                 json!({ "session": id, "window": c.w, "hidden_sec": now - c.h }),
                             );
-                            say_closed(
+                            say_closed_c(
                                 cfg,
+                                c,
                                 &format!("⏹ Cửa sổ đã ẩn của {} nay không còn — hết hẳn.", c.n),
                             );
                             done.push(id.clone());
@@ -7183,7 +7223,7 @@ pub fn close_pending_tick(db: &Db, cfg: &Config, now: i64) {
                                     "close_hidden_retry_worked",
                                     json!({ "session": id, "window": c.w, "hidden_sec": now - c.h }),
                                 );
-                                say_closed(cfg, &format!(
+                                say_closed_c(cfg, c, &format!(
                                     "⏹ Đóng hẳn được cửa sổ của {} rồi — Terminal từ chối lúc nãy, thử lại sau {} phút thì ăn.",
                                     c.n,
                                     (now - c.h) / 60
@@ -7209,7 +7249,7 @@ pub fn close_pending_tick(db: &Db, cfg: &Config, now: i64) {
                                 "close_hidden_now_occupied",
                                 json!({ "session": id, "window": c.w, "procs": n }),
                             );
-                            say_closed(cfg, &format!(
+                            say_closed_c(cfg, c, &format!(
                                 "⚠ Cửa sổ đã ẩn của {} nay đang chạy thứ khác ({} tiến trình) — huba KHÔNG đóng nó nữa.",
                                 c.n, n
                             ));
@@ -7285,7 +7325,7 @@ pub fn close_pending_tick(db: &Db, cfg: &Config, now: i64) {
                         } else {
                             format!("\nDừng theo: {}", tasks.join(" · "))
                         };
-                        say_closed(cfg, &format!(
+                        say_closed_c(cfg, c, &format!(
                             "⌨ {} đang đứng ở hộp *lệnh nền còn chạy* của claude — huba bấm {n} \
                              (thoát và dừng lệnh nền) rồi đóng nốt cửa sổ.{stopped}",
                             c.n
@@ -7333,7 +7373,7 @@ pub fn close_pending_tick(db: &Db, cfg: &Config, now: i64) {
                     }
                 });
                 if waited >= CLOSE_GIVE_UP_SEC {
-                    say_closed(cfg, &format!(
+                    say_closed_c(cfg, c, &format!(
                         "⚠ {} vẫn chưa đóng được sau {} phút — {vi_sao}.\nhub THÔI chờ (không tự đóng \
                          cửa sổ đang chạy: làm thế Terminal bật hộp thoại và khoá luôn mọi lệnh sau \
                          đó). Gõ /close lần nữa khi phiên rảnh, hoặc dừng lượt đang chạy rồi /close.",
@@ -7352,7 +7392,7 @@ pub fn close_pending_tick(db: &Db, cfg: &Config, now: i64) {
                     // Nhắc thưa thôi, nhưng phải có: một lời hứa "xong tôi báo"
                     // mà im mười phút thì người ta đi kiểm tay, đúng cái huba
                     // sinh ra để khỏi phải làm.
-                    say_closed(cfg, &format!(
+                    say_closed_c(cfg, c, &format!(
                         "⏳ {} chưa đóng được sau {} phút — {vi_sao}. huba vẫn chờ (bỏ cuộc ở phút thứ {}).",
                         c.n,
                         waited / 60,
@@ -7370,7 +7410,7 @@ pub fn close_pending_tick(db: &Db, cfg: &Config, now: i64) {
                         );
                         // Ẩn KHÔNG phải đóng, nên câu báo cũng khác — xem
                         // `keys::close_window`.
-                        say_closed(cfg, &match what {
+                        say_closed_c(cfg, c, &match what {
                             // 🔴 Hà 2026-08-19: *"sao nội dung lại thừa và mâu thuẫn nhau thế"*.
                             // Câu cũ nói MỘT sự kiện ba lần — *"Đã đóng hẳn"* + *"CLI chạy nốt rồi
                             // thoát"* + *"cửa sổ terminal đã đóng"* — vì nó được viết để đối lập với
@@ -7410,7 +7450,7 @@ pub fn close_pending_tick(db: &Db, cfg: &Config, now: i64) {
                             json!({ "session": id, "window": c.w,
                                     "err": crate::logging::err_chain(&e) }),
                         );
-                        say_closed(cfg, &format!("⏹ {} đã thoát, cửa sổ không còn.", c.n));
+                        say_closed_c(cfg, c, &format!("⏹ {} đã thoát, cửa sổ không còn.", c.n));
                     }
                 }
                 done.push(id.clone());
@@ -7426,7 +7466,7 @@ pub fn close_pending_tick(db: &Db, cfg: &Config, now: i64) {
                     json!({ "session": id, "window": c.w, "waited_sec": waited,
                             "seen": "tab_state" }),
                 );
-                say_closed(cfg, &format!(
+                say_closed_c(cfg, c, &format!(
                     "⏹ {} đã thoát — cửa sổ ấy không còn nữa (Terminal tự dọn khi shell thoát, hoặc anh đã đóng tay). huba đóng sổ chờ.",
                     c.n
                 ));
@@ -7442,7 +7482,7 @@ pub fn close_pending_tick(db: &Db, cfg: &Config, now: i64) {
                     "close_gave_up_blind",
                     json!({ "session": id, "window": c.w, "waited_sec": waited }),
                 );
-                say_closed(cfg, &format!(
+                say_closed_c(cfg, c, &format!(
                     "⚠ {} — {} phút liền huba hỏi Terminal mà không lần nào biết được cửa sổ ấy còn bận hay không, \
                      nên huba THÔI canh. Cửa sổ có thể vẫn còn: ⌘W khi anh ngồi máy, hoặc /terminal để xem lại. \
                      Lý do từng lượt nằm ở log `close_check_failed`.",
@@ -7463,6 +7503,41 @@ pub fn close_pending_tick(db: &Db, cfg: &Config, now: i64) {
 
 /// Một câu ra Telegram, không cần biết lệnh đến từ đâu — lúc này lượt lệnh đã
 /// trả lời xong từ lâu, đây là tin của vòng chạy.
+/// Chữ tin sống sau khi nối thêm một dòng. Thuần.
+pub fn chu_noi(chu_cu: &str, them: &str) -> String {
+    format!("{chu_cu}\n{them}")
+}
+
+/// SỬA tin `message_id` (đang hiện `chu_cu`) thành `chu_cu` + dòng `them`.
+/// `false` = không sửa được (đã log) — chỗ gọi gửi tin riêng như cũ.
+fn noi_vao_tin(message_id: i64, chu_cu: &str, them: &str) -> bool {
+    let Some(tg) = crate::telegram::inbox() else {
+        return false;
+    };
+    let moi = chu_noi(chu_cu, them);
+    match tg.edit_html(message_id, &crate::telegram::html_escape(&moi), &[]) {
+        Ok(_) => true,
+        Err(e) => {
+            logging::warn(
+                "tin_song_khong_sua_duoc",
+                json!({ "message_id": message_id, "err": e, "effect": "gửi thành tin riêng" }),
+            );
+            false
+        }
+    }
+}
+
+/// Lời báo của sổ chờ đóng: có tin sống (tin hỏi xác nhận của `/close`) thì
+/// SỬA nó — câu cũ `mt` + dòng mới, nên dòng «⏳ chưa đóng được…» của lượt trước
+/// được THAY bằng dòng sau chứ không chồng thêm; không có thì gửi tin như cũ.
+fn say_closed_c(cfg: &Config, c: &Closing, text: &str) {
+    if c.m > 0 && noi_vao_tin(c.m, &c.mt, text) {
+        logging::info("close_ack_folded", json!({ "message_id": c.m }));
+        return;
+    }
+    say_closed(cfg, text);
+}
+
 fn say_closed(cfg: &Config, text: &str) {
     if let Some(tg) = crate::telegram::inbox() {
         if let Err(e) = tg.send_text(text) {
@@ -14295,6 +14370,8 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
     // duy nhất mọi mệnh lệnh đều đi qua.
     let _lane = crate::exec::urgent();
     for cmd in commands {
+        // Tin sống của lệnh TRƯỚC không được để lệnh này nối nhầm vào.
+        crate::confirm::bo_tin_song();
         // ĐỒNG HỒ cho từng lệnh. Hà 2026-08-12: *"bấm vào phiên trên tele vẫn
         // đang phải đợi rất lâu"* — và lúc ấy không ai trả lời được "lâu ở khúc
         // nào", vì log chỉ có lúc nhận và lúc xong. Một con số cho mỗi route thì
@@ -19929,6 +20006,18 @@ fn reply_in_channel(db: &Db, _cfg: &Config, adapter: &str, cmd: &ChannelCommand,
     // vào nhánh "adapter lạ" và chỉ ghi log — tức người gõ ngồi nhìn màn hình
     // trống, còn câu trả lời nằm trong một tệp trên máy.
     if adapter == crate::telegram::NAME {
+        // Lệnh vừa hỏi xác nhận ⟹ câu trả lời NỐI vào tin hỏi ấy (Quang 13/11:
+        // *"chỉnh cho gọn lại thành 1 tin thôi"*). Lấy rồi xoá ô: một lượt nối.
+        if let Some(t) = crate::confirm::tin_song() {
+            crate::confirm::bo_tin_song();
+            if noi_vao_tin(t.message_id, &t.chu, text) {
+                logging::info(
+                    "reply_folded_into_confirm",
+                    json!({ "message_id": t.message_id, "kind": format!("{:?}", cmd.kind) }),
+                );
+                return;
+            }
+        }
         if let Some(i) = crate::telegram::inbox() {
             // 🔴 Hà 2026-08-14: *"Có thể đổi cách phản hồi tin đã gửi bằng 1
             // emoji trực tiếp vào tin nhắn cho gọn"*.

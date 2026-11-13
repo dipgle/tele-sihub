@@ -135,7 +135,40 @@ pub fn tell(cfg: &Config, text: &str) -> Result<(), String> {
     }
 }
 
+/// Tin hỏi xác nhận vừa chốt — chỗ để câu trả lời của CHÍNH lượt lệnh ấy nối vào.
+///
+/// 🔴 Quang 13/11 (ảnh `/close`): ba tin cho một việc — `🔒 Đóng hẳn…? ✅ Đã xác
+/// nhận` · `⏳ Đã gửi lệnh thoát…` · `⏹ … đã thoát` — *"chỉnh cho gọn lại thành 1
+/// tin thôi"*. Theo LUỒNG (`thread_local`): `ask` và câu trả lời của lệnh chạy
+/// cùng một luồng, nên một lệnh khác ở luồng khác không bao giờ nối nhầm vào đây;
+/// vòng lệnh xoá ô này trước mỗi lệnh (`bo_tin_song`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TinSong {
+    pub message_id: i64,
+    /// Chữ tin ấy đang hiện (TRƠN, chưa thoát HTML).
+    pub chu: String,
+}
+
+thread_local! {
+    static TIN_SONG: std::cell::RefCell<Option<TinSong>> = const { std::cell::RefCell::new(None) };
+}
+
+fn dat_tin_song(message_id: i64, chu: String) {
+    TIN_SONG.with(|t| *t.borrow_mut() = Some(TinSong { message_id, chu }));
+}
+
+/// Xem (không lấy) tin sống của luồng này.
+pub fn tin_song() -> Option<TinSong> {
+    TIN_SONG.with(|t| t.borrow().clone())
+}
+
+/// Xoá ô — vòng lệnh gọi trước MỖI lệnh, và chỗ nối gọi sau khi đã dùng.
+pub fn bo_tin_song() {
+    TIN_SONG.with(|t| *t.borrow_mut() = None);
+}
+
 pub fn ask(cfg: &Config, what: &str) -> Verdict {
+    bo_tin_song();
     if !cfg.confirm.enabled {
         // Tắt hẳn là một lựa chọn có chủ ý của chủ máy, không phải lỗi. Vẫn ghi
         // lại: một chốt chặn bị tắt mà không để dấu vết là thứ không ai nhớ.
@@ -265,14 +298,33 @@ pub fn ask(cfg: &Config, what: &str) -> Verdict {
             Verdict::TimedOut => "⌛ Hết hạn — huba KHÔNG làm gì",
             Verdict::Unavailable(_) => "⚠ Hỏng đường hỏi",
         };
-        let _ = client
+        let chu = format!("🔒 {what}\n\n{stamp}");
+        let sua = client
             .post(api("editMessageText"))
-            .json(&json!({
-                "chat_id": chat_id,
-                "message_id": mid,
-                "text": format!("🔒 {what}\n\n{stamp}"),
-            }))
-            .send();
+            .json(&json!({ "chat_id": chat_id, "message_id": mid, "text": chu }))
+            .send()
+            .map_err(|e| e.to_string())
+            .and_then(|r| {
+                let v: Value = r.json().unwrap_or_else(|_| json!({}));
+                if v.get("ok").and_then(Value::as_bool) == Some(true) {
+                    Ok(())
+                } else {
+                    Err(v
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Telegram từ chối editMessageText")
+                        .to_string())
+                }
+            });
+        match sua {
+            // Tin này thành TIN SỐNG của lượt lệnh: câu trả lời kế tiếp nối vào
+            // đây thay vì mọc một tin mới (Quang 13/11 «gọn lại thành 1 tin»).
+            Ok(()) => dat_tin_song(mid, chu),
+            Err(e) => logging::warn(
+                "confirm_stamp_failed",
+                json!({ "err": e, "effect": "tin hỏi vẫn mang nút cũ; câu trả lời sẽ là tin riêng" }),
+            ),
+        }
     }
     logging::info(
         "confirm_resolved",
@@ -393,6 +445,19 @@ fn watermark(client: &reqwest::blocking::Client, url: &str) -> anyhow::Result<i6
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Tin sống chỉ thuộc LUỒNG đã hỏi: lệnh ở luồng khác không nối nhầm vào.
+    #[test]
+    fn tin_song_theo_luong_va_xoa_duoc() {
+        bo_tin_song();
+        assert_eq!(tin_song(), None);
+        dat_tin_song(42, "🔒 Đóng hẳn phiên X?\n\n✅ Đã xác nhận".into());
+        assert_eq!(tin_song().map(|t| t.message_id), Some(42));
+        let luong_khac = std::thread::spawn(tin_song).join().expect("luồng");
+        assert_eq!(luong_khac, None, "luồng khác KHÔNG được thấy tin sống");
+        bo_tin_song();
+        assert_eq!(tin_song(), None);
+    }
 
     /// Chỉ MỘT trạng thái được đi tiếp. Nếu ai đó thêm biến thể mới mà quên,
     /// mặc định phải là "không cho qua" — chốt chặn hỏng theo hướng an toàn.
