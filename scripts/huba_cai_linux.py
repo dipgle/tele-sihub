@@ -118,6 +118,52 @@ def thu_muc_acc(cfg, home=HOME):
     return tao
 
 
+def tep_cau_hinh_claude(a, home=HOME):
+    """Tệp cấu hình NGƯỜI DÙNG của một acc claude: có `config_dir` ⟹ `<dir>/.claude.json`,
+    acc mặc định ⟹ `~/.claude.json` (CLI đặt nó cạnh, không trong, `~/.claude`). Thuần."""
+    d = (a.get("config_dir") or "").strip()
+    if not d:
+        return os.path.join(home, ".claude.json")
+    d = mo_rong(d)
+    d = d if os.path.isabs(d) else os.path.join(home, d)
+    return os.path.join(d, ".claude.json")
+
+
+def dat_mcp_claude(cfg, mcp_bin, home=HOME):
+    """MCP codetrail cho MỌI acc claude — Quang 13/11 «trên ubuntu tài khoản claude sao
+    không nhận mcp codetrail». Đo Ubuntu: không có `~/projects/.mcp.json` (Mac có, trỏ
+    binary macOS), `.claude.json` của acc3/acc6 `mcpServers: []`, `claude mcp list` không
+    có `project-agent` — gói chỉ chèn nó cho opencode (`accounts::chen_mcp_codetrail`).
+    Ghi `mcpServers.project-agent` phạm vi NGƯỜI DÙNG trỏ `kem/bin/project-agent`: hàng
+    đã có thì CHỈ thay `command` (giữ `env`/`args` khác), chưa có thì thêm. Trả danh sách
+    tệp đã ghi."""
+    root = os.path.join(home, "projects")
+    ghi = []
+    for a in cfg.get("claude_accounts", []) or [{}]:
+        if (a.get("cli") or "claude").strip().lower() == "opencode":
+            continue
+        p = tep_cau_hinh_claude(a, home)
+        d = doc_json(p) if os.path.isfile(p) else {}
+        if not isinstance(d, dict):
+            print(f"  ⚠ {p} không phải object JSON — KHÔNG ghi")
+            continue
+        srv = d.setdefault("mcpServers", {})
+        cu = srv.get("project-agent")
+        moi = dict(cu) if isinstance(cu, dict) else {}
+        moi["type"] = "stdio"
+        moi["command"] = mcp_bin
+        env = dict(moi.get("env") or {})
+        env.setdefault("PROJECTS_ROOT", root)
+        moi["env"] = env
+        if moi == cu:
+            continue
+        srv["project-agent"] = moi
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        ghi_json(p, d)
+        ghi.append(p)
+    return ghi
+
+
 def can_cli(cfg):
     can = set()
     for a in cfg.get("claude_accounts", []) or [{}]:
@@ -209,6 +255,30 @@ def tu_kiem():
         ok(os.path.islink(os.path.join(h, ".claude-acc3", "projects")), "liên kết projects có thật")
         ok(not os.path.exists(os.path.join(h, ".x8")), "không đụng acc opencode")
         ok(thu_muc_acc(cfg, h) == 0, "chạy lại ⟹ không tạo gì (bất biến)")
+    with tempfile.TemporaryDirectory() as h:
+        bin_ = os.path.join(h, "kem", "bin", "project-agent")
+        cfg = {"claude_accounts": [{"name": "acc1"}, {"name": "acc3", "config_dir": os.path.join(h, ".claude-acc3")},
+                                   {"name": "acc8", "cli": "opencode", "config_dir": os.path.join(h, ".x8")}]}
+        os.makedirs(os.path.join(h, ".claude-acc3"))
+        # acc3 đã có tệp, mang hàng project-agent trỏ binary macOS + một máy chủ khác.
+        ghi_json(os.path.join(h, ".claude-acc3", ".claude.json"),
+                 {"userID": "x", "mcpServers": {"project-agent": {"type": "stdio", "command": "/Users/mac/project-agent",
+                                                                  "env": {"PROJECTS_ROOT": "/khac", "X": "1"}},
+                                                "vault": {"command": "node"}}})
+        da = dat_mcp_claude(cfg, bin_, h)
+        ok(sorted(da) == sorted([os.path.join(h, ".claude.json"), os.path.join(h, ".claude-acc3", ".claude.json")]),
+           "ghi acc mặc định (~/.claude.json) + acc3, bỏ acc opencode")
+        a3 = doc_json(os.path.join(h, ".claude-acc3", ".claude.json"))
+        pa = a3["mcpServers"]["project-agent"]
+        ok(pa["command"] == bin_ and pa["env"] == {"PROJECTS_ROOT": "/khac", "X": "1"},
+           "hàng cũ: chỉ thay command, giữ env")
+        ok(a3["userID"] == "x" and "vault" in a3["mcpServers"], "không đụng khoá/máy chủ khác")
+        a1 = doc_json(os.path.join(h, ".claude.json"))
+        ok(a1["mcpServers"]["project-agent"] == {"type": "stdio", "command": bin_,
+                                                 "env": {"PROJECTS_ROOT": os.path.join(h, "projects")}},
+           "chưa có tệp ⟹ tạo hàng mới")
+        ok(dat_mcp_claude(cfg, bin_, h) == [], "chạy lại ⟹ không ghi gì (bất biến)")
+        ok(not os.path.exists(os.path.join(h, ".x8")), "không đụng acc opencode (mcp)")
     ok(can_cli({"claude_accounts": [{"name": "a"}, {"name": "b", "cli": "opencode"}]}) == ["claude", "opencode"], "cần cả hai CLI")
     ok(can_cli({}) == ["claude"], "không có acc ⟹ acc mặc định cần claude")
     with tempfile.TemporaryDirectory() as h:
@@ -252,6 +322,13 @@ def main(argv):
             print(" ".join(can_cli(cfg)))
         else:
             print(goc_workspace(cfg, os.path.dirname(os.path.abspath(argv[2]))))
+        return 0
+    if len(argv) == 4 and argv[1] == "mcp-claude":
+        if not os.path.isfile(argv[2]) or not os.path.isfile(argv[3]):
+            print(f"KHÔNG ĐO ĐƯỢC: thiếu {argv[2]} hoặc {argv[3]}")
+            return 2
+        da = dat_mcp_claude(doc_json(argv[2]), argv[3])
+        print(f"  MCP codetrail cho claude: {len(da)} tệp ghi" + "".join(f"\n    · {p}" for p in da))
         return 0
     if len(argv) == 4 and argv[1] == "luat-goc":
         if not os.path.isfile(argv[2]):

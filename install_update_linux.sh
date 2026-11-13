@@ -111,6 +111,8 @@ LUAT_ENV=""
 # ④ Thư mục tài khoản + liên kết projects (sổ phiên chung — /session thấy phiên của mọi acc).
 buoc "④ thư mục tài khoản"
 python3 "$PY" thu-muc-acc "$CFG" || exit 1
+# MCP codetrail cho mọi acc claude (opencode được chèn lúc mở — `accounts::chen_mcp_codetrail`).
+python3 "$PY" mcp-claude "$CFG" "$DIR/kem/bin/project-agent" || exit 1
 
 # ⑤ CLI mà các tài khoản cần. Trình cài GỐC của nhà sản xuất; opencode ghim bản đã đo.
 buoc "⑤ CLI"

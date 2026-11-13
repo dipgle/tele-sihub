@@ -422,6 +422,27 @@ pub fn resolve_program(name: &str) -> String {
     name.to_string()
 }
 
+/// Locale ép cho một chương trình mà ĐẦU RA phụ thuộc locale của tiến trình gọi.
+/// `opts.env` của chỗ gọi vẫn đè được. Thuần.
+///
+/// 🔴 `ps` (Quang 13/11 «rất nhiều phiên đang chạy acc8 nhưng danh sách phiên lại
+/// không có»): `hubd` chạy dưới launchd KHÔNG có `LANG`, và `ps` của macOS khi ấy
+/// mã hoá byte ngoài ASCII — `đọc` ra `M-DM^QM-aM-;M^Mc` (đo: cùng tiến trình 592
+/// byte trong shell, 922 byte qua `env -i`). Mọi phép so chữ trên dòng lệnh (đề bài
+/// `--prompt` ↔ câu đầu trong kho opencode) hỏng ÂM THẦM ở daemon mà vẫn xanh khi
+/// chạy tay `huba sessions` — đúng hình dạng phép đo dính vào môi trường của nó.
+pub fn locale_cho(cmd: &str) -> Option<&'static str> {
+    let ten = Path::new(cmd).file_name().and_then(|n| n.to_str())?;
+    if ten != "ps" {
+        return None;
+    }
+    Some(if cfg!(target_os = "macos") {
+        "en_US.UTF-8"
+    } else {
+        "C.UTF-8"
+    })
+}
+
 /// Run a command, capture stdout/stderr, enforce a hard timeout.
 /// Never errors on a non-zero exit — the caller decides what failure means.
 /// Only a spawn failure is an `Err`.
@@ -466,6 +487,9 @@ pub fn run(cmd: &str, args: &[&str], opts: RunOpts) -> Result<RunOut> {
     }
     if let Some(dir) = opts.cwd {
         command.current_dir(dir);
+    }
+    if let Some(loc) = locale_cho(cmd) {
+        command.env("LC_ALL", loc);
     }
     for (key, value) in &opts.env {
         match value {
