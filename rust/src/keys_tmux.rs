@@ -279,6 +279,32 @@ pub fn tab_proc_count(window: i64) -> Result<usize> {
     Ok(tab_process_count(window)?.unwrap_or(0))
 }
 
+/// Pane `%window` có tiến trình tên `name` không — bản Linux của `keys::tab_runs`
+/// (`processes of tab` của Terminal.app). Pane đã hết ⟹ `Err`, không phải `false`:
+/// "không có pane" và "pane không chạy opencode" dẫn tới hai cách thoát khác nhau.
+pub fn tab_runs(window: i64, name: &str) -> Result<bool> {
+    let Some(p) = pane(window)? else {
+        return Err(anyhow!("pane %{window} không còn"));
+    };
+    let r = run(
+        "ps",
+        &["-o", "comm=", "-t", &p.tty],
+        RunOpts {
+            timeout: Some(Duration::from_secs(5)),
+            ..Default::default()
+        },
+    )?;
+    if r.code != Some(0) {
+        return Err(anyhow!(
+            "ps -t {} thoát {:?}: {}",
+            p.tty,
+            r.code,
+            r.stderr.trim()
+        ));
+    }
+    Ok(crate::keys::tab_procs_has(&r.stdout, name))
+}
+
 /// `Ok(None)` = pane đã HẾT — cùng hợp đồng với macOS.
 pub fn tab_process_count(window: i64) -> Result<Option<usize>> {
     let Some(p) = pane(window)? else {
@@ -781,6 +807,15 @@ pub fn tu_kiem() -> Vec<(String, Ket)> {
         match (tab_state(w), window_of(&tty)) {
             (Ok(TabState::Busy), Ok(Some(x))) if x == w => Ket::Dat("Busy · khớp".into()),
             (a, b) => Ket::Hong(format!("{a:?} · {b:?}")),
+        },
+    ));
+    // /close rẽ opencode bằng câu này (Quang 13/11 «có vẻ thiếu /») — hai chiều:
+    // thấy đúng chương trình đang chạy, và KHÔNG nhận nhầm tên khác.
+    out.push((
+        "⑤b tab_runs thấy cat, không thấy opencode".into(),
+        match (tab_runs(w, "cat"), tab_runs(w, "opencode")) {
+            (Ok(true), Ok(false)) => Ket::Dat("cat ✓ · opencode ✗".into()),
+            (a, b) => Ket::Hong(format!("cat {a:?} · opencode {b:?}")),
         },
     ));
     let ctrl = press_writes(w, &[vec!["ctrl-c".into()]]);

@@ -9809,6 +9809,21 @@ pub fn close_session(cfg: &Config, session: &LiveSession) -> Result<Closing> {
                 crate::keys::Closed::Hidden => Closing::Hidden(window),
             });
         }
+        // 🔴 "Cửa sổ trần" có thể đang chạy opencode: TUI opencode chưa ghi
+        // phiên nào cho tới câu hỏi đầu ⟹ không ghép được ⟹ rơi vào đây. Quang
+        // 13/11 trên Ubuntu: *"gõ close nhận exit rồi nhưng không gửi đi"* —
+        // `exit` nằm trong ô nhập opencode. Thoát bằng phím gốc của nó.
+        if crate::keys::tab_runs(window, "opencode").unwrap_or_else(|e| {
+            logging::warn(
+                "close_cli_unknown",
+                json!({ "window": window, "err": e.to_string(),
+                        "effect": "không hỏi được tab chạy gì — coi là shell, gõ `exit`" }),
+            );
+            false
+        }) {
+            crate::keys::send_exit(window)?;
+            return Ok(Closing::Exiting(window));
+        }
         // Đây là một dấu nhắc SHELL, không phải TUI — ở shell thì dấu
         // xuống dòng `do script` tự kèm chính là cú Enter. Luật 13 chỉ
         // nói về ô nhập của `claude`.

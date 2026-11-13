@@ -2882,7 +2882,17 @@ fn send_exit_opencode(window: i64) -> Result<()> {
 pub const OPENCODE_EXIT_CTRL_C: usize = 2;
 
 /// Tab của cửa sổ này có tiến trình tên `name` không (`processes of tab`).
-fn tab_runs(window: i64, name: &str) -> Result<bool> {
+///
+/// 🔴 Linux có bản riêng: bản AppleScript này trên Ubuntu luôn `Err` ⟹ [`send_exit`]
+/// rơi về `/exit` cho cả opencode ⟹ Quang 13/11 *"gõ close nhận exit rồi nhưng không
+/// gửi đi"* · *"có vẻ thiếu /"* — đúng ca Mac đã trả giá ngày 12/11.
+#[cfg(target_os = "linux")]
+pub fn tab_runs(window: i64, name: &str) -> Result<bool> {
+    nen::tab_runs(window, name)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn tab_runs(window: i64, name: &str) -> Result<bool> {
     let out = osascript(&format!(
         "tell application \"Terminal\"\n\
            set AppleScript's text item delimiters to linefeed\n\
