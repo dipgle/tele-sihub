@@ -143,14 +143,31 @@ fn callback_data_cua_nut(src: &str, acc: &str, ngan: &str) -> Option<String> {
     Some(lit.replace("{acc}", acc).replace("{ngan}", ngan))
 }
 
-/// Điểm gọi cắt id ngắn dài bao nhiêu ký tự (`…take(N)…` ngay trên dòng gắn
-/// nút). `None` = không đọc được ⟹ đỏ, không được đoán lấy 8.
-fn do_dai_id_ngan(src: &str) -> Option<usize> {
+/// Cách điểm gọi cắt id ngắn ngay trên dòng gắn nút.
+#[derive(Debug, PartialEq)]
+enum CachCat {
+    /// `…take(N)…` — cắt N ký tự đầu.
+    Take(usize),
+    /// `sessions::ma_lien_ket(…)` — đúng hàm tin báo dùng (`watch.rs`, 13/11:
+    /// id opencode `ses_…` cắt `take(8)` ra `ses_e2b5`, nút câm).
+    MaLienKet,
+}
+
+/// `None` = không đọc được ⟹ đỏ, không được đoán lấy 8. Lấy cách cắt GẦN dòng
+/// gắn nút nhất.
+fn cach_cat_id_ngan(src: &str) -> Option<CachCat> {
     let i = src.find("format!(\"ho:")?;
     let truoc = &src[..i];
-    let j = truoc.rfind(".take(")?;
-    let sau = &truoc[j + ".take(".len()..];
-    sau[..sau.find(')')?].trim().parse().ok()
+    let take = truoc.rfind(".take(");
+    let mlk = truoc.rfind("ma_lien_ket(");
+    match (take, mlk) {
+        (Some(j), m) if m.is_none_or(|m| j > m) => {
+            let sau = &truoc[j + ".take(".len()..];
+            sau[..sau.find(')')?].trim().parse().ok().map(CachCat::Take)
+        }
+        (_, Some(_)) => Some(CachCat::MaLienKet),
+        _ => None,
+    }
 }
 
 /// Dòng lệnh mà TIN đang hiện — nguồn sự thật chung của cả hai phía.
@@ -200,13 +217,15 @@ fn id_ngan_cua_nut_dai_dung_bang_id_trong_tin() {
         .split_whitespace()
         .next_back()
         .expect("dòng lệnh phải kết thúc bằng id");
-    let n = do_dai_id_ngan(&nguon_pipeline())
-        .expect("không đọc được `.take(N)` của id ngắn ở điểm gọi");
+    let cach = cach_cat_id_ngan(&nguon_pipeline())
+        .expect("không đọc được cách cắt id ngắn (`.take(N)` / `ma_lien_ket`) ở điểm gọi");
+    let id_nut = match cach {
+        CachCat::Take(n) => ID.chars().take(n).collect::<String>(),
+        CachCat::MaLienKet => huba::sessions::ma_lien_ket(ID),
+    };
     assert_eq!(
-        n,
-        ngan.chars().count(),
-        "nút mang id {n} ký tự trong khi tin in {} ký tự",
-        ngan.chars().count()
+        id_nut, ngan,
+        "nút mang id {id_nut} ({cach:?}) trong khi tin in {ngan}"
     );
 }
 
@@ -227,7 +246,12 @@ fn nguon_lanh_thi_doc_ra_dung_chuoi() {
         callback_data_cua_nut(NGUON_LANH, "acc3", NGAN).as_deref(),
         Some("ho:acc3:931cd3fa")
     );
-    assert_eq!(do_dai_id_ngan(NGUON_LANH), Some(8));
+    assert_eq!(cach_cat_id_ngan(NGUON_LANH), Some(CachCat::Take(8)));
+    let mlk = NGUON_LANH.replace(
+        "id.chars().take(8).collect()",
+        "crate::sessions::ma_lien_ket(id)",
+    );
+    assert_eq!(cach_cat_id_ngan(&mlk), Some(CachCat::MaLienKet));
 }
 
 /// Cấy ca HỎNG ①: đảo hai vế ⇒ chuỗi đọc ra phải KHÁC, tức cổng đỏ.
@@ -249,7 +273,7 @@ fn dao_hai_ve_thi_khong_con_khop() {
 fn doi_tien_to_thi_khong_do_duoc() {
     let doi = NGUON_LANH.replace("format!(\"ho:", "format!(\"hov:");
     assert_eq!(callback_data_cua_nut(&doi, "acc3", NGAN), None);
-    assert_eq!(do_dai_id_ngan(&doi), None);
+    assert_eq!(cach_cat_id_ngan(&doi), None);
 }
 
 /// Cấy ca HỎNG ③: xoá hẳn dòng gắn nút ⇒ `None`. Đây đúng ca mà bốn bài đầu
@@ -269,5 +293,5 @@ fn xoa_nut_thi_khong_do_duoc() {
 #[test]
 fn doi_do_dai_id_ngan_thi_phep_do_thay() {
     let doi = NGUON_LANH.replace("take(8)", "take(4)");
-    assert_eq!(do_dai_id_ngan(&doi), Some(4));
+    assert_eq!(cach_cat_id_ngan(&doi), Some(CachCat::Take(4)));
 }
