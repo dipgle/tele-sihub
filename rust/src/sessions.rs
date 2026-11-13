@@ -6342,6 +6342,59 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
         }
         let mut an: Vec<String> = Vec::new();
         let kho_ids: HashSet<String> = rows.iter().map(|s| s.id.clone()).collect();
+        // Cửa sổ huba không tự mở (`huba lenh-mo` ⟹ `acc-mo-vai.sh`) — ghép từ
+        // `--session <id>` của TUI đang sống, xem `opencode::lien_ket_thieu`.
+        let mut bindings = bindings;
+        if procs.ok {
+            let tuis: Vec<(String, String)> = procs
+                .by_pid
+                .values()
+                .filter(|p| is_opencode_tui(&p.command))
+                .map(|p| (p.tty.clone(), p.command.clone()))
+                .collect();
+            for (id, tty) in crate::opencode::lien_ket_thieu(&tuis, &bindings, &kho_ids) {
+                let window = match crate::keys::window_of(&tty) {
+                    Ok(Some(w)) => w,
+                    Ok(None) => {
+                        logging::info(
+                            "opencode_bind_argv_no_window",
+                            json!({ "account": account.name, "session": id, "tty": tty }),
+                        );
+                        continue;
+                    }
+                    Err(e) => {
+                        logging::warn(
+                            "opencode_bind_argv_no_window",
+                            json!({ "account": account.name, "session": id, "tty": tty,
+                                    "err": e.to_string() }),
+                        );
+                        continue;
+                    }
+                };
+                match crate::opencode::write_binding(account, &id, window, &tty, None) {
+                    Ok(()) => {
+                        logging::info(
+                            "opencode_bind_from_argv",
+                            json!({ "account": account.name, "session": id, "tty": tty, "window": window }),
+                        );
+                        bindings.insert(
+                            id,
+                            crate::opencode::WindowBinding {
+                                window,
+                                tty,
+                                at_ms: chrono::Utc::now().timestamp_millis(),
+                                dir: None,
+                            },
+                        );
+                    }
+                    Err(e) => logging::error(
+                        "opencode_bind_write_failed",
+                        json!({ "account": account.name, "session": id, "err": e,
+                                "effect": "phiên mở bằng lenh-mo vẫn bị ẩn — thử lại vòng sau" }),
+                    ),
+                }
+            }
+        }
         for s in rows {
             let binding = bindings.get(&s.id);
             let tty = binding.map(|b| b.tty.clone()).unwrap_or_default();

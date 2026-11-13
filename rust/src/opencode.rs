@@ -878,6 +878,62 @@ pub fn tty_cua_lien_ket_moi_nhat(
     })
 }
 
+/// Id sau `--session` trong dòng lệnh một TUI opencode (bỏ nháy). Thuần.
+pub fn session_trong_argv(command: &str) -> Option<String> {
+    let mut it = command.split_whitespace();
+    while let Some(t) = it.next() {
+        if t == "--session" {
+            let id = it.next()?.trim_matches(|c| c == '\'' || c == '"');
+            return id.starts_with("ses_").then(|| id.to_string());
+        }
+    }
+    None
+}
+
+/// Liên kết còn THIẾU, đọc từ TUI đang sống: `(id, tty)` cho mỗi TUI mang
+/// `--session <id>` mà id đã có trong kho của tài khoản này và chưa có liên kết.
+///
+/// 🔴 Quang 13/11 (mac): phiên acc8 treo bảng hỏi mà huba không báo, không đọc
+/// được màn. Cửa sổ do `acc-mo-vai.sh` mở qua `huba lenh-mo` — huba chỉ IN dòng
+/// lệnh, không phải nó mở cửa sổ, nên không có lúc nào ghi `windows.json` như
+/// `/new` ⟹ phiên bị ẩn (luật phiên ma), chỉ còn hàng `win-<tty>`. Nay `lenh-mo`
+/// đặt trước id, và mỗi vòng huba tự ghép từ `ps`.
+///
+/// Fail-closed: id không có trong kho của tài khoản này (TUI của tài khoản khác,
+/// hoặc chưa gửi câu đầu) ⟹ bỏ; hai TUI mang cùng id ⟹ bỏ cả hai; đã có liên
+/// kết ⟹ không đè (liên kết `/new` / `--resume` ghi lúc mở là nguồn đúng hơn).
+pub fn lien_ket_thieu(
+    tuis: &[(String, String)],
+    bindings: &BTreeMap<String, WindowBinding>,
+    kho_ids: &std::collections::HashSet<String>,
+) -> Vec<(String, String)> {
+    let mut theo_id: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (tty, command) in tuis {
+        let t = tty.trim_start_matches("/dev/");
+        if !crate::sessions::is_real_tty(t) {
+            continue;
+        }
+        if let Some(id) = session_trong_argv(command) {
+            theo_id.entry(id).or_default().push(t.to_string());
+        }
+    }
+    theo_id
+        .into_iter()
+        .filter(|(id, _)| kho_ids.contains(id) && !bindings.contains_key(id))
+        .filter_map(|(id, ttys)| match ttys.as_slice() {
+            [mot] => Some((id, mot.clone())),
+            _ => {
+                crate::logging::warn(
+                    "opencode_bind_argv_ambiguous",
+                    json!({ "session": id, "ttys": ttys,
+                            "effect": "không ghép — hai cửa sổ mang cùng một id" }),
+                );
+                None
+            }
+        })
+        .collect()
+}
+
 pub fn bindings_path(acc: &ClaudeAccountCfg) -> PathBuf {
     profile_dir(acc).join("huba").join("windows.json")
 }
@@ -1335,6 +1391,58 @@ mod tests {
 
     fn tap(xs: &[&str]) -> HashSet<String> {
         xs.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Quang 13/11 mac: cửa sổ acc8 do `acc-mo-vai.sh` mở (qua `lenh-mo`) không
+    /// có liên kết ⟹ phiên ẩn, bảng hỏi không báo. Ghép từ `--session` trong argv.
+    #[test]
+    fn ghep_cua_so_tu_session_trong_argv() {
+        let oc = "/Users/x/.opencode/bin/opencode --session ses_e2b689ef7fffHubaDoThu0001A --prompt cd /w && đọc brief";
+        assert_eq!(
+            session_trong_argv(oc).as_deref(),
+            Some("ses_e2b689ef7fffHubaDoThu0001A")
+        );
+        assert_eq!(
+            session_trong_argv("opencode --session 'ses_1'").as_deref(),
+            Some("ses_1")
+        );
+        assert_eq!(session_trong_argv("opencode --prompt cd /w"), None);
+        assert_eq!(session_trong_argv("opencode --session"), None);
+
+        let tuis = vec![
+            ("ttys004".to_string(), oc.to_string()),
+            (
+                "ttys011".to_string(),
+                "opencode --prompt việc khác".to_string(),
+            ),
+        ];
+        let kho = tap(&["ses_e2b689ef7fffHubaDoThu0001A"]);
+        let trong = BTreeMap::new();
+        assert_eq!(
+            lien_ket_thieu(&tuis, &trong, &kho),
+            vec![(
+                "ses_e2b689ef7fffHubaDoThu0001A".to_string(),
+                "ttys004".to_string()
+            )]
+        );
+        // Đã có liên kết ⟹ không đè.
+        let mut co = BTreeMap::new();
+        co.insert(
+            "ses_e2b689ef7fffHubaDoThu0001A".to_string(),
+            lk("ttys009", 1),
+        );
+        assert!(lien_ket_thieu(&tuis, &co, &kho).is_empty());
+        // Id chưa có trong kho của tài khoản này ⟹ không ghép (có thể là acc khác).
+        assert!(lien_ket_thieu(&tuis, &trong, &tap(&[])).is_empty());
+        // Hai cửa sổ cùng id ⟹ không ghép cái nào.
+        let doi = vec![
+            ("ttys004".to_string(), oc.to_string()),
+            ("ttys005".to_string(), oc.to_string()),
+        ];
+        assert!(lien_ket_thieu(&doi, &trong, &kho).is_empty());
+        // tty không thật (`??`) ⟹ bỏ.
+        let mu = vec![("??".to_string(), oc.to_string())];
+        assert!(lien_ket_thieu(&mu, &trong, &kho).is_empty());
     }
 
     #[test]

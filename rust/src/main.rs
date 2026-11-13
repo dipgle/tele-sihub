@@ -237,13 +237,19 @@ fn real_main() -> Result<()> {
             }
             // Cùng bước chuẩn bị với `/new` (effort high cho opencode) — xem
             // `sessions::chuan_bi_mo_opencode`.
-            if let Some(row) = cfg
+            //
+            // opencode: ĐẶT TRƯỚC id phiên (`--session <id>`) — cửa sổ do người gọi
+            // mở, huba không có lúc nào ghi liên kết; vòng sau tự ghép từ argv
+            // (`opencode::lien_ket_thieu`). Đo 13/11 mac: `--session <id mới>`
+            // + `--prompt` ⟹ phiên sinh mang đúng id ấy.
+            let dat_truoc = cfg
                 .claude_accounts_or_ambient()
                 .into_iter()
                 .find(|a| a.name == acc && a.is_opencode())
-            {
-                huba::sessions::chuan_bi_mo_opencode(&row);
-            }
+                .map(|row| {
+                    huba::sessions::chuan_bi_mo_opencode(&row);
+                    huba::opencode::tao_id_phien(chrono::Utc::now().timestamp_millis())
+                });
             println!(
                 "{}",
                 huba::sessions::window_command(
@@ -251,7 +257,7 @@ fn real_main() -> Result<()> {
                     Some(&acc),
                     &cfg.workspace_root,
                     prompt.as_deref(),
-                    None
+                    dat_truoc.as_deref()
                 )
             );
             Ok(())
