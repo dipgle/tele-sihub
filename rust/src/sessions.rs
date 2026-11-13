@@ -7973,6 +7973,7 @@ fn start_opencode_in_terminal(
     let Some(acc) = account_row(cfg, account) else {
         anyhow::bail!("không thấy hàng tài khoản opencode");
     };
+    crate::opencode::don_dich_vu_lech(&acc);
     let opened_ms = chrono::Utc::now().timestamp_millis();
     let cmd = window_command(
         cfg,

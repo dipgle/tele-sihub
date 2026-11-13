@@ -292,6 +292,23 @@ pub fn opencode_config_content(acc: &ClaudeAccountCfg) -> Value {
         if let Some(obj) = root.as_object_mut() {
             let arr = obj.entry("plugin").or_insert_with(|| json!([]));
             if let Some(arr) = arr.as_array_mut() {
+                // MỘT cổng: hàng acc chép từ máy khác còn khai bản cổng ở đường của
+                // máy ấy (`~/projects/scripts/cong-bao-mat-plugin`, Ubuntu 13/11 ⟹
+                // «1 plugin failed») — bản cổng nào khác `plugin` thì bỏ, kèm log.
+                let truoc = arr.len();
+                arr.retain(|v| {
+                    v.as_str().is_none_or(|p| {
+                        p == plugin
+                            || Path::new(p).file_name().and_then(|n| n.to_str())
+                                != Some("cong-bao-mat-plugin")
+                    })
+                });
+                if arr.len() != truoc {
+                    crate::logging::info(
+                        "opencode_security_plugin_replaced",
+                        json!({ "account": acc.name, "bo": truoc - arr.len(), "dung": plugin }),
+                    );
+                }
                 if !arr.iter().any(|v| v.as_str() == Some(plugin.as_str())) {
                     arr.push(json!(plugin));
                 }

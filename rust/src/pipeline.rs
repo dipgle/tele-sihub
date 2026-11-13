@@ -5585,7 +5585,7 @@ fn close_and_say(db: &Db, cfg: &Config, s: &crate::sessions::LiveSession) -> Str
                             now,
                         );
                         format!(
-                            "⏳ Đã gõ /exit vào {} — chờ CLI chạy nốt lượt đang dở rồi mới đóng cửa sổ. Kiểm 30 giây một lần, xong tôi báo.",
+                            "⏳ Đã gửi lệnh thoát vào {} (claude: /exit · opencode: Ctrl+C · shell: exit) — chờ CLI chạy nốt lượt đang dở rồi mới đóng cửa sổ. Kiểm 30 giây một lần, xong tôi báo.",
                             crate::sessions::shown(s)
                         )
                     }

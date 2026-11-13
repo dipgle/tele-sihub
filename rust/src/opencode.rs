@@ -987,6 +987,161 @@ pub fn fork_call(
     parse_run_stream(&out.stdout, source_id)
 }
 
+// ── Máy chủ dịch vụ mang cấu hình CŨ ──────────────────────────────────────
+//
+// TUI `opencode` 2.x không tự chạy một mình: lần đầu nó dựng `opencode serve
+// --service` cho phân vùng (XDG_CONFIG_HOME) rồi NỐI vào; dịch vụ sống tiếp sau
+// khi TUI thoát, và giữ nguyên `OPENCODE_CONFIG_CONTENT` lúc dựng. Đo 13/11 trên
+// Ubuntu: dịch vụ pid 13351 dựng 09:32 (chưa có `kem`), `/new` lúc 09:57 truyền
+// cấu hình MỚI đúng (`/proc/<tui>/environ` có `kem/bin/project-agent`) mà màn vẫn
+// «1 MCP failed · 1 plugin failed» — TUI chỉ nối vào dịch vụ cũ. Cấu hình đổi
+// (plugin, MCP, bức tường quyền) không bao giờ tới phiên mới cho tới khi dịch vụ chết.
+
+/// Phán quyết cho một tiến trình khi `/new` sắp mở phân vùng `profile_cfg`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DichVu {
+    /// Không phải dịch vụ của phân vùng này.
+    KhongLienQuan,
+    /// Dịch vụ của phân vùng này, cùng cấu hình — để yên.
+    Khop,
+    /// Dịch vụ của phân vùng này, cấu hình KHÁC (hoặc không đọc ra) — phải dựng lại.
+    Lech,
+}
+
+/// Thuần: `argv` + biến môi trường của một tiến trình ⟹ [`DichVu`]. So cấu hình
+/// bằng JSON đã PHÂN TÍCH (thứ tự khoá không phải sự khác biệt).
+pub fn xet_dich_vu(
+    argv: &[String],
+    env: &BTreeMap<String, String>,
+    profile_cfg: &str,
+    noi_dung: &Value,
+) -> DichVu {
+    let la_opencode = argv
+        .first()
+        .and_then(|a| Path::new(a).file_name())
+        .is_some_and(|n| n == "opencode");
+    let la_dich_vu = argv.iter().any(|a| a == "serve") && argv.iter().any(|a| a == "--service");
+    if !la_opencode || !la_dich_vu {
+        return DichVu::KhongLienQuan;
+    }
+    if env.get("XDG_CONFIG_HOME").map(String::as_str) != Some(profile_cfg) {
+        return DichVu::KhongLienQuan;
+    }
+    match env
+        .get("OPENCODE_CONFIG_CONTENT")
+        .and_then(|c| serde_json::from_str::<Value>(c).ok())
+    {
+        Some(v) if &v == noi_dung => DichVu::Khop,
+        _ => DichVu::Lech,
+    }
+}
+
+/// TUI (không phải dịch vụ) của cùng phân vùng — còn TUI thì giết dịch vụ là cắt phiên đang sống.
+pub fn la_tui_cua(argv: &[String], env: &BTreeMap<String, String>, profile_cfg: &str) -> bool {
+    argv.first()
+        .and_then(|a| Path::new(a).file_name())
+        .is_some_and(|n| n == "opencode")
+        && !argv.iter().any(|a| a == "serve" || a == "run")
+        && env.get("XDG_CONFIG_HOME").map(String::as_str) == Some(profile_cfg)
+}
+
+#[cfg(target_os = "linux")]
+fn doc_proc(pid: i32) -> Option<(Vec<String>, BTreeMap<String, String>)> {
+    let tach = |b: Vec<u8>| -> Vec<String> {
+        b.split(|c| *c == 0)
+            .filter(|x| !x.is_empty())
+            .map(|x| String::from_utf8_lossy(x).into_owned())
+            .collect()
+    };
+    let argv = tach(std::fs::read(format!("/proc/{pid}/cmdline")).ok()?);
+    let env = tach(std::fs::read(format!("/proc/{pid}/environ")).ok()?)
+        .into_iter()
+        .filter_map(|kv| {
+            kv.split_once('=')
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+        })
+        .collect();
+    Some((argv, env))
+}
+
+/// Trước `/new` một acc opencode: dịch vụ của phân vùng mang cấu hình CŨ thì tắt
+/// để TUI dựng lại bằng cấu hình mới — CHỈ khi không còn TUI nào của phân vùng
+/// đang nối vào (không cắt phiên đang sống). Mọi nhánh đều ghi log.
+///
+/// macOS: CHƯA làm — `ps` không đưa biến môi trường của tiến trình khác ra một
+/// cách tin được; ghi ở sổ nợ. Nền ấy vẫn mắc đúng lỗi này.
+#[cfg(target_os = "linux")]
+pub fn don_dich_vu_lech(acc: &ClaudeAccountCfg) {
+    let profile_cfg = crate::accounts::opencode_profile_dir(acc)
+        .join("config")
+        .display()
+        .to_string();
+    let noi_dung = crate::accounts::opencode_config_content(acc);
+    let Ok(rd) = std::fs::read_dir("/proc") else {
+        crate::logging::warn(
+            "opencode_dich_vu_khong_do_duoc",
+            json!({ "account": acc.name, "why": "không đọc được /proc" }),
+        );
+        return;
+    };
+    let mut lech: Vec<i32> = Vec::new();
+    let mut tuis: Vec<i32> = Vec::new();
+    for e in rd.flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<i32>().ok()) else {
+            continue;
+        };
+        let Some((argv, env)) = doc_proc(pid) else {
+            continue;
+        };
+        match xet_dich_vu(&argv, &env, &profile_cfg, &noi_dung) {
+            DichVu::Lech => lech.push(pid),
+            DichVu::Khop | DichVu::KhongLienQuan => {}
+        }
+        if la_tui_cua(&argv, &env, &profile_cfg) {
+            tuis.push(pid);
+        }
+    }
+    if lech.is_empty() {
+        return;
+    }
+    if !tuis.is_empty() {
+        crate::logging::warn(
+            "opencode_dich_vu_cu_con_phien",
+            json!({ "account": acc.name, "dich_vu": lech, "tui": tuis,
+                    "effect": "phiên mới nối vào dịch vụ CŨ ⟹ plugin/MCP/bức tường của cấu hình cũ, tới khi đóng hết phiên của acc này" }),
+        );
+        return;
+    }
+    for pid in lech {
+        let r = exec::run("kill", &[&pid.to_string()], RunOpts::default());
+        let mut het = false;
+        for _ in 0..30 {
+            if !Path::new(&format!("/proc/{pid}")).exists() {
+                het = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if het {
+            crate::logging::info(
+                "opencode_dich_vu_cu_da_tat",
+                json!({ "account": acc.name, "pid": pid,
+                        "why": "cấu hình khác cấu hình /new sắp mở — TUI sẽ dựng dịch vụ mới" }),
+            );
+        } else {
+            crate::logging::warn(
+                "opencode_dich_vu_cu_khong_tat",
+                json!({ "account": acc.name, "pid": pid,
+                        "kill": format!("{:?}", r.map(|x| x.code)),
+                        "effect": "phiên mới vẫn nối vào dịch vụ cấu hình cũ" }),
+            );
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn don_dich_vu_lech(_acc: &ClaudeAccountCfg) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
