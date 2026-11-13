@@ -13499,21 +13499,29 @@ pub fn press_ack_from_screen(
     // Bảng NHIỀU câu mà không xác định được câu ⟹ trả về danh sách nút RỖNG. Chủ
     // máy mất một đích chạm và phải `/shot` nhìn — đắt, nhưng rẻ hơn hẳn một cú
     // bấm im lặng đi nhầm chỗ. Bảng MỘT câu không có chuyện nhầm: mã là số trần.
+    //
+    // 🔴 ĐẢO 13/11 — mù câu thì gắn SỐ TRẦN, không bỏ trống. Quang: *"Lựa chọn
+    // nhiều tab vẫn có vấn đề: bấm lần nào xong cũng phải hiện lại luôn danh
+    // sách"* · *"Làm gọn cả vụ bấm lựa chọn này nữa"*. Đo gốc: bảng đang TREO
+    // chưa vào nhật ký (nhật ký a2edb96d: dòng `AskUserQuestion` mốc 04:55:16 nằm
+    // SAU dòng mốc 04:55:47 — ghi lúc trả lời xong 05:09:19), nên `questions`
+    // rỗng ⟹ `cursor_on` luôn `None` ⟹ bảng nhiều câu LUÔN mù, mọi lượt bấm.
+    // Cái nguy của 01/09 là mã `<câu>.<n>` ĐOÁN câu rồi nhảy tuyệt đối tới đó.
+    // Số trần (`k_`) không nhảy: nó gửi số vào CÂU ĐANG MỞ — chính câu mà danh
+    // sách này vừa đọc từ màn. `/shot` gắn đúng loại nút ấy khi thiếu nhật ký,
+    // và Quang bấm nó 13/11 09:31 ra «đủ 2/2 câu». Mã `<câu>.<n>` vẫn chỉ dùng
+    // khi ĐO được câu.
     let cau = crate::keys::cursor_on(screen, questions).map(|i| i + 1);
-    let mu = table.is_some() && cau.is_none();
-    let choices: Vec<(String, String)> = if mu {
-        Vec::new()
-    } else {
-        opts.iter()
-            .map(|(n, l)| {
-                let code = match (table.is_some(), cau) {
-                    (true, Some(c)) => format!("{c}.{n}"),
-                    _ => n.to_string(),
-                };
-                (code, l.clone())
-            })
-            .collect()
-    };
+    let choices: Vec<(String, String)> = opts
+        .iter()
+        .map(|(n, l)| {
+            let code = match (table.is_some(), cau) {
+                (true, Some(c)) => format!("{c}.{n}"),
+                _ => n.to_string(),
+            };
+            (code, l.clone())
+        })
+        .collect();
     let submit = crate::keys::has_submit(screen);
     let ack = if opts.is_empty() {
         // Hết lựa chọn: hoặc bảng đóng thật, hoặc ô nhập chữ vừa mở ra. huba
@@ -13547,6 +13555,7 @@ pub fn press_ack_from_screen(
             // câu mọc một neo ↪ (`tab_<sid>_<n>`) — một chạm là sang đúng câu ấy
             // và route `/tab` dựng lại danh sách CÓ nút. Trước: bắt /shot rồi gõ
             // tay `/pick`.
+            // Thanh tab đi kèm để mỗi câu mọc neo ↪ (`SessionData::tabs`).
             (Some(t), None) => {
                 let thanh = screen
                     .lines()
@@ -13554,9 +13563,8 @@ pub fn press_ack_from_screen(
                     .map(|l| format!("\n{}", l.trim()))
                     .unwrap_or_default();
                 format!(
-                    "⚠ đã bấm '{typed}' — nhưng KHÔNG đọc ra đang đứng ở câu nào (bảng {} câu) · {name}\n\
-                     Chưa gắn nút lựa chọn (đoán sai câu là ghi đè câu đã chốt). \
-                     Bấm ↪ ở câu muốn trả lời — tôi chuyển sang câu ấy rồi hiện lại danh sách có nút:{thanh}",
+                    "✓ đã bấm '{typed}' — còn {}/{} câu · {name}{thanh}",
+                    t.left(),
                     t.answered.len()
                 )
             }
@@ -17938,7 +17946,11 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                                                         // đang vẽ dở lúc đọc lần đầu (Quang 13/11 12:06).
                                                         let mut man = screen.to_string();
                                                         let mut doc_lai = 0u32;
+                                                        // Không có câu nào trong nhật ký (bảng TREO
+                                                        // chưa được ghi — 13/11) thì đọc lại bao
+                                                        // nhiêu lần cũng mù: đừng bắt chờ 1,8 s.
                                                         while doc_lai < 3
+                                                            && !cau_hoi.is_empty()
                                                             && press_screen_blind(&man, &cau_hoi)
                                                         {
                                                             std::thread::sleep(
@@ -18480,7 +18492,16 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                         // cuối. Còn `/shot` là ẢNH của một thời điểm — sửa đè
                         // lên ảnh cũ là xoá mất thứ chủ máy có thể đang đối
                         // chiếu, nên nó vẫn gửi tin mới.
-                        let panel = if data.choices.is_empty() {
+                        // 🔴 Bấm trên bảng (`Key` · `Pick` · `Tab`) ⟹ LUÔN sửa tin bảng
+                        // cũ, kể cả khi màn sau đó hết lựa chọn — Quang 13/11: *"Làm gọn
+                        // cả vụ bấm lựa chọn này nữa"* (ảnh: mỗi cú bấm một tin mới; đo
+                        // 09:30–09:31: ⚠ mù ⟹ tin 81000, /tab ⟹ tin 81003, «màn KHÔNG còn
+                        // lựa chọn» ⟹ tin 81006 — chỉ cú bấm còn lựa chọn mới sửa).
+                        let bam_bang = matches!(
+                            cmd.kind,
+                            CommandKind::Key | CommandKind::Pick | CommandKind::Tab
+                        );
+                        let panel = if data.choices.is_empty() && !bam_bang {
                             None
                         } else {
                             panel_id(db, &shot_sid)
@@ -18491,9 +18512,9 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                             &quick,
                             "quick_buttons_failed",
                             &data,
-                            panel.filter(|_| matches!(cmd.kind, CommandKind::Key)),
+                            panel.filter(|_| bam_bang),
                         );
-                        if !data.choices.is_empty() {
+                        if !data.choices.is_empty() || bam_bang {
                             remember_panel(db, &shot_sid, sent);
                         }
                     }

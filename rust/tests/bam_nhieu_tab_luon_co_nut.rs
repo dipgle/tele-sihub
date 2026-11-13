@@ -62,8 +62,9 @@ fn vet_khung_cu_phia_tren_khong_lam_mu_cau_dang_mo() {
     assert!(!press_screen_blind(&man, &hai_cau()));
 }
 
-/// Mù thật (câu đang mở bị cắt khỏi khung) ⟹ vẫn không đoán câu, nhưng tin PHẢI
-/// mang thanh tab để mỗi câu mọc neo ↪ — một chạm là ra danh sách có nút.
+/// Mù (câu đang mở không đọc ra — ca THƯỜNG, vì bảng đang treo chưa vào nhật ký)
+/// ⟹ không đoán câu, nhưng VẪN có nút: số trần vào câu đang mở (đảo 13/11), và tin
+/// mang thanh tab để mỗi câu mọc neo ↪.
 #[test]
 fn mu_cau_thi_tin_mang_thanh_tab_de_bam_sang_cau() {
     let cut: String = MAN
@@ -76,11 +77,19 @@ fn mu_cau_thi_tin_mang_thanh_tab_de_bam_sang_cau() {
         "màn cắt câu phải là MÙ"
     );
     let (ack, nut, _) = press_ack_from_screen(&cut, "3", "[tfl5]", &hai_cau());
-    assert!(
-        nut.is_empty(),
-        "không biết câu thì không gắn nút lựa chọn: {nut:?}"
+    let ma: Vec<&str> = nut.iter().map(|(m, _)| m.as_str()).collect();
+    assert_eq!(
+        ma,
+        vec!["1", "2", "3", "4"],
+        "số TRẦN, không mã câu đoán: {nut:?}"
     );
     let t = huba::keys::ask_table(&ack).expect("tin phải mang thanh tab:\n{ack}");
     assert_eq!(t.answered.len(), 2, "{ack}");
-    assert!(ack.contains("Bấm ↪"), "{ack}");
+    assert!(ack.contains("còn 1/2 câu"), "{ack}");
+
+    // Ca THẬT: bảng treo chưa vào nhật ký ⟹ KHÔNG có câu nào trong tay. Màn in rõ
+    // câu 2 mà vẫn phải ra nút (số trần) — trước 13/11 là «KHÔNG gắn nút».
+    let (_, nut0, _) = press_ack_from_screen(MAN, "3", "[tfl5]", &[]);
+    assert_eq!(nut0.len(), 4, "{nut0:?}");
+    assert!(nut0.iter().all(|(m, _)| !m.contains('.')), "{nut0:?}");
 }

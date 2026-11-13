@@ -334,11 +334,18 @@ Enter to select · Tab/Arrow keys to navigate · Esc to cancel";
     );
 }
 
-/// ⑩ KHÔNG xác định được câu ⟹ KHÔNG gắn nút, và NÓI RA.
+/// ⑩ KHÔNG xác định được câu ⟹ KHÔNG gắn mã `<câu>.<n>` nào — chỉ SỐ TRẦN.
 ///
 /// "Không đo được" phải là trạng thái riêng. Đường lùi cũ (`unwrap_or(1)`) biến
 /// nó thành một con số trông y như đã đo, rồi con số ấy ghi đè lên một câu đã
 /// chốt — thứ không lùi lại được.
+///
+/// 🔴 ĐẢO 13/11 (không xoá): bản 01/09 bỏ TRỐNG nút. Nhưng bảng đang treo chưa
+/// vào nhật ký nên `questions` luôn rỗng ⟹ bảng nhiều câu MỌI lượt bấm đều mù và
+/// không có nút (Quang: *"bấm lần nào xong cũng phải hiện lại luôn danh sách"*).
+/// Số trần (`k_`) không đoán câu: nó gửi vào CÂU ĐANG MỞ, đúng câu danh sách vừa
+/// đọc từ màn — loại nút `/shot` đã gắn sẵn khi thiếu nhật ký. Cái bài này vẫn
+/// khoá: KHÔNG có mã nào mang số câu đoán.
 #[test]
 fn khong_biet_dang_o_cau_nao_thi_khong_gan_nut() {
     // Câu đang mở bị CẮT khỏi khung nhìn (hộp cao hơn cửa sổ) — ca có thật.
@@ -358,20 +365,26 @@ Enter to select · Tab/Arrow keys to navigate · Esc to cancel";
     );
 
     let (ack, nut, _) = press_ack_from_screen(cut, "1", "[dwork]", &qs);
-    assert!(
-        nut.is_empty(),
-        "không biết câu nào thì KHÔNG được gắn nút: {nut:?}"
+    let ma: Vec<&str> = nut.iter().map(|(m, _)| m.as_str()).collect();
+    assert_eq!(
+        ma,
+        vec!["1", "2"],
+        "không biết câu ⟹ số TRẦN vào câu đang mở, không mã `<câu>.<n>` đoán: {nut:?}"
     );
     assert!(
-        ack.contains("KHÔNG đọc ra đang đứng ở câu nào"),
-        "và phải nói ra chỗ mù:\n{ack}"
+        ack.contains('←'),
+        "tin mang thanh tab để có neo ↪ sang câu khác:\n{ack}"
     );
 
-    // ĐỐI CHỨNG NGƯỢC: thêm đúng câu đang mở vào màn thì nút hiện lại. Không có
-    // vế này thì một hàm luôn trả rỗng cũng làm bài trên xanh.
+    // ĐỐI CHỨNG NGƯỢC: thêm đúng câu đang mở vào màn thì mã mang SỐ CÂU đo được.
     let du = format!("{cut}\nQ3 — Hai lượt cùng chiều thì tính sao?");
     let (_, nut2, _) = press_ack_from_screen(&du, "1", "[dwork]", &qs);
-    assert_eq!(nut2.len(), 2, "có câu rồi thì phải gắn nút lại: {nut2:?}");
+    let ma2: Vec<&str> = nut2.iter().map(|(m, _)| m.as_str()).collect();
+    assert_eq!(
+        ma2,
+        vec!["2.1", "2.2"],
+        "đo được câu ⟹ mã mang số câu: {nut2:?}"
+    );
 }
 
 /// ⑪ Hai câu cùng khớp dưới thanh tab ⟹ NHẬP NHẰNG ⟹ `None`, không chọn bừa.
