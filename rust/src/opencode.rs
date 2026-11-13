@@ -288,6 +288,16 @@ fn fill_tails_v2(conn: &Connection, sessions: &mut [OcSession]) -> Result<(), St
         let Ok(v) = serde_json::from_str::<Value>(&data) else {
             continue;
         };
+        let hoi = v
+            .get("content")
+            .and_then(Value::as_array)
+            .map(|items| cau_hoi_treo_kieu_claude(items))
+            .unwrap_or_default();
+        if !hoi.is_empty() {
+            let rec = serde_json::json!({ "type": "assistant", "message": { "content": hoi } });
+            tail.push_str(&rec.to_string());
+            tail.push('\n');
+        }
         let text = v
             .get("content")
             .and_then(Value::as_array)
@@ -318,6 +328,35 @@ fn fill_tails_v2(conn: &Connection, sessions: &mut [OcSession]) -> Result<(), St
         }
     }
     Ok(())
+}
+
+/// Lời gọi công cụ `question` CÒN TREO (`state.status = "running"`) ⟹ khối
+/// `tool_use` `AskUserQuestion` của Claude, để `sessions::pending_question` đọc
+/// chung một cửa. Thuần.
+///
+/// 🔴 Quang 13/11 (mac, ảnh tfl5 `wt-bio-1113`): phiên acc8 treo bảng
+/// «Questions · 1. Cho phép — thử push lại …» mà điện thoại không được báo. Đo
+/// kho: bản ghi assistant cuối mang `{"type":"tool","name":"question",
+/// "state":{"status":"running","input":{"questions":[{header,question,
+/// options:[{label,description}]}]}}}` — đúng khuôn `input` của
+/// `AskUserQuestion`. Đã trả lời thì status rời `running` ⟹ không dịch, nên
+/// không cần dựng `tool_result`.
+pub fn cau_hoi_treo_kieu_claude(content: &[Value]) -> Vec<Value> {
+    content
+        .iter()
+        .filter(|it| it.get("type").and_then(Value::as_str) == Some("tool"))
+        .filter(|it| it.get("name").and_then(Value::as_str) == Some("question"))
+        .filter(|it| it.pointer("/state/status").and_then(Value::as_str) == Some("running"))
+        .filter_map(|it| {
+            let input = it.pointer("/state/input")?;
+            input.get("questions")?.as_array()?;
+            let id = it
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("oc-question");
+            Some(json!({ "type": "tool_use", "name": "AskUserQuestion", "id": id, "input": input }))
+        })
+        .collect()
 }
 
 /// Một cửa sổ hạn mức gói Go — đúng kiểu `UsageLimits.Meter` của opencode.
@@ -1443,6 +1482,44 @@ mod tests {
         // tty không thật (`??`) ⟹ bỏ.
         let mu = vec![("??".to_string(), oc.to_string())];
         assert!(lien_ket_thieu(&mu, &trong, &kho).is_empty());
+    }
+
+    /// Quang 13/11 mac: bảng hỏi opencode treo mà không báo. Khuôn bản ghi đo
+    /// trong kho acc8 (`ses_e2bb47ee…`, công cụ `question` status `running`).
+    #[test]
+    fn cau_hoi_opencode_dang_treo_thanh_asking() {
+        let ban_ghi = json!({
+            "agent": "build",
+            "content": [
+                { "type": "reasoning", "text": "Use question tool." },
+                { "type": "tool", "id": "call_3c42", "name": "question", "executed": false,
+                  "state": { "status": "running", "input": { "questions": [ {
+                      "header": "Đẩy nhánh lên origin",
+                      "question": "Cổng hoangha đã XANH — bạn muốn?",
+                      "options": [
+                          { "label": "Cho phép — thử push lại", "description": "…" },
+                          { "label": "Bạn tự đẩy", "description": "…" },
+                          { "label": "Chưa đẩy, để sau", "description": "…" } ] } ] } } }
+            ]
+        });
+        let khoi = cau_hoi_treo_kieu_claude(ban_ghi["content"].as_array().unwrap());
+        assert_eq!(khoi.len(), 1);
+        let tail = json!({ "type": "assistant", "message": { "content": khoi } }).to_string();
+        let hoi = crate::sessions::pending_question(&tail).expect("phải đọc ra bảng hỏi");
+        assert_eq!(hoi.header, "Đẩy nhánh lên origin");
+        assert_eq!(
+            hoi.options,
+            vec!["Cho phép — thử push lại", "Bạn tự đẩy", "Chưa đẩy, để sau"]
+        );
+
+        // Đã trả lời (status rời `running`) ⟹ không còn treo.
+        let mut xong = ban_ghi.clone();
+        xong["content"][1]["state"]["status"] = json!("completed");
+        assert!(cau_hoi_treo_kieu_claude(xong["content"].as_array().unwrap()).is_empty());
+        // Công cụ khác đang chạy ⟹ không phải bảng hỏi.
+        let mut khac = ban_ghi.clone();
+        khac["content"][1]["name"] = json!("bash");
+        assert!(cau_hoi_treo_kieu_claude(khac["content"].as_array().unwrap()).is_empty());
     }
 
     #[test]

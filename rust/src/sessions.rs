@@ -6466,6 +6466,9 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
                 context_tokens: s.context_tokens,
                 model: s.model,
                 tty,
+                // Bảng hỏi opencode (công cụ `question`) đã được dịch sang khuôn
+                // `AskUserQuestion` trong đuôi — `opencode::cau_hoi_treo_kieu_claude`.
+                asking: pending_question(&s.tail),
                 last_text: s.last_text.clone(),
                 last_role: s.last_role.clone(),
                 note: if s.last_text.is_some() {
