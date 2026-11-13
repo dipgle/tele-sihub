@@ -504,12 +504,17 @@ pub const PHIEN_XEM: &str = "huba-xem-";
 
 /// Trình terminal biết cách chạy một lệnh: `(tên, tham số đứng trước lệnh)`.
 /// Thứ tự = thứ được thử trước; ptyxis là terminal mặc định của Ubuntu ≥ 25.10.
+///
+/// 🔴 Mở TAB, không mở cửa sổ — Quang 13/11 trên Ubuntu: *"sao mở 2 phiên ra 2 cửa
+/// sổ khác nhau?"*; đúng quyết định đã có trên Mac từ 11/11 (*"mở chung 1 cửa sổ
+/// thôi"*, `tests/tab_chung_mot_cua_so.rs`). ptyxis 50.1 `--tab` = "New terminal
+/// tab in active window" (chưa có cửa sổ thì nó tự dựng). xterm không có tab.
 pub const TERMINALS: &[(&str, &[&str])] = &[
-    ("ptyxis", &["--new-window", "--"]),
-    ("gnome-terminal", &["--window", "--"]),
-    ("kgx", &["--"]),
-    ("konsole", &["-e"]),
-    ("xfce4-terminal", &["-x"]),
+    ("ptyxis", &["--tab", "--"]),
+    ("gnome-terminal", &["--tab", "--"]),
+    ("kgx", &["--tab", "--"]),
+    ("konsole", &["--new-tab", "-e"]),
+    ("xfce4-terminal", &["--tab", "-x"]),
     ("xterm", &["-e"]),
 ];
 
@@ -899,7 +904,7 @@ mod tests {
     #[test]
     fn lenh_xem_gan_dung_pane_bang_phien_nhom() {
         let v = lenh_xem("/usr/bin/ptyxis", "huba", 7).unwrap();
-        assert_eq!(&v[..3], &["/usr/bin/ptyxis", "--new-window", "--"]);
+        assert_eq!(&v[..3], &["/usr/bin/ptyxis", "--tab", "--"]);
         let duoi = v[3..].join(" ");
         assert_eq!(
             duoi,

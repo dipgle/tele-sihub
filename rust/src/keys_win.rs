@@ -688,8 +688,12 @@ pub fn open_window(script: &str) -> Result<(i64, String)> {
         "-EncodedCommand",
         enc.as_str(),
     ];
+    // 🔴 TAB trong MỘT cửa sổ tên "huba", không phải cửa sổ mới — cùng quyết định
+    // với Mac (11/11 *"mở chung 1 cửa sổ thôi"*) và Ubuntu (13/11 *"sao mở 2 phiên
+    // ra 2 cửa sổ khác nhau?"*). `-w <tên>` nhắm cửa sổ theo tên (chưa có thì dựng);
+    // `-w new` cũ mở MỖI phiên một cửa sổ. CHƯA đo trên máy Windows thật.
     let via_wt = std::process::Command::new("wt.exe")
-        .args(["-w", "new", "powershell.exe"])
+        .args(["-w", "huba", "new-tab", "powershell.exe"])
         .args(ps_args)
         .spawn();
     let how = match via_wt {
