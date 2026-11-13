@@ -9207,14 +9207,31 @@ pub fn is_shell_id(id: &str) -> bool {
 /// e349d2d1 không còn trong danh sách phiên đang chạy"*. Sai: nó nằm trong sổ
 /// opencode suốt. `focus_target_gone_fast` chỉ hỏi sổ theo dõi + `claude agents`
 /// — hai nguồn của Claude — nên mọi phiên opencode bị tuyên bố CHẾT ngay.
+///
+/// 🔴 13/11 (Quang, Ubuntu): `/shot` vào hàng «(chờ câu đầu)» trả *"phiên không
+/// còn trong danh sách"* — phiên ấy CHƯA có trong kho (opencode sinh ở câu đầu),
+/// chỉ có liên kết huba đặt trước. Nay liên kết cũng tính là «có tên» (sống hay
+/// chết thì đường ảnh chụp quyết). Và đọc kho/liên kết HỎNG ⟹ `true` kèm log:
+/// hàm này chỉ dùng để kết luận «đã đi», nên không đo được thì không được kết luận.
 pub fn listed_in_opencode(cfg: &Config, id: &str) -> bool {
     cfg.claude_accounts_or_ambient()
         .iter()
         .filter(|a| a.is_opencode())
         .any(|a| {
-            crate::opencode::read_sessions(a)
-                .map(|v| v.iter().any(|s| s.id == id))
-                .unwrap_or(false)
+            let kho = crate::opencode::read_sessions(a).map(|v| v.iter().any(|s| s.id == id));
+            let lk = crate::opencode::read_bindings(a).map(|b| b.contains_key(id));
+            match (kho, lk) {
+                (Ok(k), Ok(l)) => k || l,
+                (k, l) => {
+                    logging::warn(
+                        "opencode_listed_blind",
+                        json!({ "account": a.name, "session": id,
+                                "kho": format!("{k:?}"), "lien_ket": format!("{l:?}"),
+                                "effect": "không kết luận phiên đã đi — để đường ảnh chụp quyết" }),
+                    );
+                    true
+                }
+            }
         })
 }
 

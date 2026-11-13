@@ -308,7 +308,8 @@ fn confirm_poll(
         // Long-poll: đứng chờ ở phía Telegram thay vì hỏi lại liên tục. Trần 25s
         // để vòng lặp còn nhìn lại hạn chót của chính nó.
         let wait = left.as_secs().clamp(1, 25);
-        let url = format!("{}?offset={}&timeout={}", api("getUpdates"), offset, wait);
+        // Khai `allowed_updates` — bot có thể đang nhớ `["message"]` (13/11).
+        let url = crate::telegram::url_get_updates(&api("getUpdates"), *offset, wait);
         let resp = match client.get(&url).send().and_then(|r| r.json::<Value>()) {
             Ok(v) => v,
             Err(e) => {
@@ -375,7 +376,7 @@ fn confirm_poll(
 /// `update_id` kế tiếp cần đọc, tính từ những gì Telegram còn đang giữ.
 fn watermark(client: &reqwest::blocking::Client, url: &str) -> anyhow::Result<i64> {
     let v: Value = client
-        .get(format!("{url}?offset=-1&timeout=0"))
+        .get(crate::telegram::url_get_updates(url, -1, 0))
         .send()?
         .json()?;
     let next = v

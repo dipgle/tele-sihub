@@ -496,6 +496,31 @@ pub const TELEGRAM_DELETE_WINDOW_SEC: i64 = 48 * 3600;
 /// nào" và quay lại hỏi ngay — không một dòng log, mà `timeout=20` cũng mất tác
 /// dụng vì server đáp tức thì. Kênh chết câm, và bên ngoài nhìn y hệt một buổi
 /// chiều không ai nhắn gì.
+/// Loại update huba đọc. KHAI TƯỜNG MINH ở mọi lượt `getUpdates`.
+///
+/// 🔴 Quang 13/11 (Ubuntu, `@ai_hubha_bot`): *"bấm /close -> hiện xác nhận nhưng
+/// bấm không có tác dụng"*. Log: `confirm_asked` → 90 s → `TimedOut`, và sổ
+/// `tin_den` của máy ấy CHƯA TỪNG có một `callback_query`. `getWebhookInfo` của
+/// bot trả `"allowed_updates": ["message"]` — Telegram NHỚ danh sách của lượt gọi
+/// trước (ai đó từng dùng token này đặt), và lượt không khai thì dùng lại nó. Nên
+/// mọi nút inline trên bot ấy câm, còn bot Mac (mặc định = mọi loại) thì chạy.
+pub const ALLOWED_UPDATES: &str = r#"["message","edited_message","callback_query"]"#;
+
+/// URL `getUpdates` — một chỗ dựng cho vòng chính và đường lùi của `confirm`.
+pub fn url_get_updates(api_get_updates: &str, offset: i64, timeout: u64) -> String {
+    let allowed: String = ALLOWED_UPDATES
+        .chars()
+        .map(|c| match c {
+            '[' => "%5B".to_string(),
+            ']' => "%5D".to_string(),
+            '"' => "%22".to_string(),
+            ',' => "%2C".to_string(),
+            c => c.to_string(),
+        })
+        .collect();
+    format!("{api_get_updates}?offset={offset}&timeout={timeout}&allowed_updates={allowed}")
+}
+
 pub fn poll_rejected(resp: &Value) -> Option<String> {
     if resp.get("ok").and_then(Value::as_bool) == Some(true) {
         return None;
@@ -2509,11 +2534,7 @@ impl Inbox {
             // nên nó chỉ tạo ra cảm giác an toàn cộng 11 lượt `Conflict` một
             // ngày. Vòng này đọc LIÊN TỤC, và cú bấm xác nhận được giao tận tay
             // trong `handle_update` (`deliver_confirm`).
-            let url = format!(
-                "{}?offset={}&timeout=20",
-                self.api("getUpdates"),
-                self.offset_now()
-            );
+            let url = url_get_updates(&self.api("getUpdates"), self.offset_now(), 20);
             let resp = match client.get(&url).send().and_then(|r| r.json::<Value>()) {
                 Ok(v) => v,
                 Err(e) => {
