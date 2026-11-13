@@ -9843,6 +9843,19 @@ pub fn close_session(cfg: &Config, session: &LiveSession) -> Result<Closing> {
     Ok(Closing::Exiting(window))
 }
 
+/// Hàng "cửa sổ trần" (`host == "shell"`) đang chạy một CLI PHIÊN — claude/opencode
+/// chưa ghép được với sổ phiên (opencode chưa ghi phiên nào trước câu hỏi đầu tiên).
+/// Với chủ máy đó LÀ một phiên đang sống, nên `/session` phải liệt kê. Thuần.
+pub fn la_phien_chua_ghep(s: &LiveSession) -> bool {
+    s.host == "shell"
+        && s.activity.as_deref().is_some_and(|a| {
+            matches!(
+                a.split(" · ").next().map(str::trim),
+                Some("opencode" | "claude")
+            )
+        })
+}
+
 /// Ba kết cục của một lệnh đóng, và chúng phải là BA — không phải `Option`.
 ///
 /// 🔴 Bản cũ trả `Option<i64>`: `None` nghĩa là "phiên nền, không có cửa sổ

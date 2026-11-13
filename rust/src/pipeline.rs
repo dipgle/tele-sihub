@@ -18515,10 +18515,14 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                     // phiên `claude`, một cái gõ vào là chạy lệnh shell. Cùng
                     // một danh sách, hai nghĩa của cú bấm: đó đúng là chỗ sinh
                     // ra cảm giác rối.
+                    // Ngoại lệ: "cửa sổ trần" mà đang chạy claude/opencode chưa ghép
+                    // được phiên (opencode chưa ghi phiên nào trước câu hỏi đầu) LÀ
+                    // một phiên sống — Quang 13/11 Ubuntu: hai `/new` xong, `/session`
+                    // đáp "Không có phiên nào đang sống" trong khi ảnh chụp có 3 hàng.
                     let cli_rows: Vec<crate::sessions::LiveSession> = live
                         .sessions
                         .iter()
-                        .filter(|s| s.host != "shell")
+                        .filter(|s| s.host != "shell" || crate::sessions::la_phien_chua_ghep(s))
                         .cloned()
                         .collect();
                     // 🔴 MÀN HÌNH SINH RA HÀNG, SỔ CHỈ CHÚ THÍCH — Hà 2026-09-06:

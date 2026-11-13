@@ -616,12 +616,21 @@ fn mo_cua_so_xem(phien: &str, w: i64) {
         .stderr(std::process::Stdio::null())
         .process_group(0)
         .spawn();
-    if let Err(e) = spawn {
-        crate::logging::warn(
-            "tmux_xem_khong_mo",
-            serde_json::json!({ "pane": w, "terminal": term, "err": e.to_string() }),
-        );
-        return;
+    match spawn {
+        Err(e) => {
+            crate::logging::warn(
+                "tmux_xem_khong_mo",
+                serde_json::json!({ "pane": w, "terminal": term, "err": e.to_string() }),
+            );
+            return;
+        }
+        // Thu tiến trình con: `ptyxis --tab` chuyển yêu cầu cho bản đang chạy rồi
+        // THOÁT — không ai `wait` thì nó nằm lại `<defunct>` dưới hubd (đo 13/11).
+        Ok(mut con) => {
+            std::thread::spawn(move || {
+                let _ = con.wait();
+            });
+        }
     }
     // Mã thoát của trình terminal KHÔNG nói gì (ptyxis chuyển yêu cầu cho bản
     // đang chạy rồi thoát 0). Phép đo thật: có client tmux gắn vào phiên xem chưa.
