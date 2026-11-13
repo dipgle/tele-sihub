@@ -9368,28 +9368,12 @@ pub fn terminal_command_resuming(
     prompt: Option<&str>,
     resume: Option<&str>,
 ) -> String {
-    terminal_command_full(launch, root, prompt, resume, None)
-}
-
-/// Như [`terminal_command_resuming`], kèm tệp lời nhắc khởi đầu
-/// (`accounts::prompt_khoi_dau`) qua `--append-system-prompt-file` — NỐI vào lời
-/// nhắc hệ thống của claude, không thay. Cờ đứng TRƯỚC `--disallowedTools` vì cờ
-/// ấy là variadic (luật 10: nó nuốt mọi thứ đứng sau).
-pub fn terminal_command_full(
-    launch: &str,
-    root: &Path,
-    prompt: Option<&str>,
-    resume: Option<&str>,
-    prompt_file: Option<&Path>,
-) -> String {
-    let launch = match prompt_file {
-        Some(p) => format!(
-            "{launch} --append-system-prompt-file {}",
-            shell_quote(&p.to_string_lossy())
-        ),
-        None => launch.to_string(),
-    };
-    let launch = launch.as_str();
+    // 🔴 KHÔNG thêm `--append-system-prompt-file` cho "luật chung của máy":
+    // claude TỰ nạp `CLAUDE.md` của thư mục hiện tại và mọi thư mục cha (đúng
+    // cấu trúc `~/projects/CLAUDE.md` chủ máy đang dùng). Một cờ ở đây là bản
+    // sao thứ hai của cùng một tệp, và bản sao ấy lệch im lặng. opencode không
+    // đọc CLAUDE.md ⇒ nó nhận cùng tệp qua `instructions` (xem
+    // `accounts::chen_luat_goc`).
     // MỌI mẫu công cụ phải được bọc. Chúng chứa `(`, `)`, `*`, `:` —
     // `Bash(git push:*)` để trần là LỖI CÚ PHÁP của shell, và cửa sổ sẽ mở ra
     // với một dòng đỏ thay vì một phiên. Nhánh `--bg` không dính vì nó truyền
@@ -9454,14 +9438,7 @@ pub fn window_command(
     if cfg!(windows) {
         terminal_script_ps(&account_launch_ps(cfg, account), root, prompt, resume)
     } else {
-        // Windows chưa nhận tệp lời nhắc khởi đầu (chưa đo `terminal_script_ps`).
-        terminal_command_full(
-            &account_launch(cfg, account),
-            root,
-            prompt,
-            resume,
-            crate::accounts::prompt_khoi_dau().as_deref(),
-        )
+        terminal_command_resuming(&account_launch(cfg, account), root, prompt, resume)
     }
 }
 

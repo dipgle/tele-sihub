@@ -9,6 +9,7 @@ Trình cài tự làm, việc nào đã xong thì bỏ qua (chạy lại bao nhi
   ① chép vào ~/huba — KHÔNG đè huba.config.json · huba.env · data/ (đổi chỗ: HUBA_HOME=…)
   ② tmux + linger (sudo hỏi mật khẩu của bạn)
   ③ cấu hình: gốc dự án ~/projects · thêm các tài khoản CÒN THIẾU từ mẫu (hàng đã có giữ nguyên)
+     · luật chung = CLAUDE.md ở GỐC workspace (chưa có thì chép bản sạch của gói; đã có thì giữ)
   ④ thư mục tài khoản + liên kết projects
   ⑤ claude CLI · opencode 2.2.7 nếu thiếu (tắt: HUBA_KHONG_CAI_CLI=1)
   ⑥ dịch vụ systemd --user "huba-hubd" (tự chạy lại khi chết; restart KHÔNG giết phiên)

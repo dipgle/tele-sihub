@@ -8,6 +8,8 @@ alias zsh `claude2`/`claude3`), tạo thư mục acc + liên kết `projects` �
   python3 huba_cai_linux.py cau-hinh <huba.config.json> <tai-khoan.mau.json>
   python3 huba_cai_linux.py thu-muc-acc <huba.config.json>
   python3 huba_cai_linux.py can-cli <huba.config.json>      # in: claude / opencode
+  python3 huba_cai_linux.py goc-workspace <huba.config.json>  # in: đường tuyệt đối (hoặc rỗng)
+  python3 huba_cai_linux.py luat-goc <huba.config.json> <kem/CLAUDE.md>
   python3 huba_cai_linux.py tu-kiem                          # bài kiểm của chính tệp này
 
 Luật: KHÔNG sửa hàng tài khoản đã có (chỉ thêm hàng còn thiếu) · ghi tệp mới rồi đổi
@@ -123,6 +125,58 @@ def can_cli(cfg):
     return sorted(can)
 
 
+def goc_workspace(cfg, cfg_dir, home=HOME):
+    """Gốc workspace mà cấu hình đã khai, dạng ĐƯỜNG TUYỆT ĐỐI và có thật.
+
+    Cùng phép `config::absolutize`: `~/…` mở theo nhà, đường tương đối tính từ
+    thư mục chứa `huba.config.json` (đó là `hub_home` trong config.rs). Không
+    khai / không phải thư mục ⟹ "" — người gọi nói ra, không đoán. KHÔNG tự dò
+    `~/projects`: một bản sao thứ hai của `find_workspace_root` là chỗ để lệch.
+    """
+    g = (cfg.get("workspace_root") or "").strip()
+    if not g:
+        return ""
+    g = mo_rong(g)
+    if not os.path.isabs(g):
+        g = os.path.join(cfg_dir, g)
+    if not os.path.isdir(g):
+        return ""
+    return os.path.abspath(g)
+
+
+def dat_luat_goc(goc, mau_p):
+    """Đặt `<gốc>/CLAUDE.md` = bản sạch của gói — CHỈ khi chưa có.
+
+    Quang 13/11: *"sao không giữ cấu trúc file md như hiện tại trong thư mục
+    /projects?"*. Nên tệp cài ra đúng tên/tình trạng ấy: `CLAUDE.md` ở gốc
+    workspace, claude tự nạp. Chủ máy đã có tệp (dù khác bản sạch) ⟹ GIỮ, chỉ
+    nói bản sạch nằm đâu: ghi đè luật của người ta là việc huba không được làm.
+    Chạy lại nhiều lần ⟹ không đổi gì. Trả (mã, câu nói); mã: moi · giong ·
+    giu · khong-co-goc · khong-co-ban-sach.
+    """
+    if not goc:
+        return "khong-co-goc", ("⚠ chưa xác định được gốc workspace (chưa khai `workspace_root`, hoặc thư mục "
+                                "chưa gắn — /run/media chỉ có sau khi đăng nhập) — KHÔNG đặt CLAUDE.md; "
+                                "gắn đĩa/khai gốc rồi chạy lại trình cài")
+    if not os.path.isfile(mau_p):
+        return "khong-co-ban-sach", f"❌ gói thiếu bản sạch {mau_p}"
+    dich = os.path.join(goc, "CLAUDE.md")
+    with open(mau_p, "rb") as f:
+        sach = f.read()
+    if not os.path.exists(dich):
+        tmp = dich + ".huba-cai-tmp"
+        with open(tmp, "wb") as f:
+            f.write(sach)
+        os.replace(tmp, dich)
+        return "moi", f"tạo {dich} (bản sạch của gói)"
+    with open(dich, "rb") as f:
+        dang_co = f.read()
+    if dang_co == sach:
+        return "giong", f"{dich} = bản sạch của gói"
+    return "giu", (f"giữ {dich} (bản của chủ máy — KHÔNG ghi đè) · "
+                   f"bản sạch của gói: {mau_p}")
+
+
 def tu_kiem():
     hong = 0
     tong = 0
@@ -157,6 +211,27 @@ def tu_kiem():
         ok(thu_muc_acc(cfg, h) == 0, "chạy lại ⟹ không tạo gì (bất biến)")
     ok(can_cli({"claude_accounts": [{"name": "a"}, {"name": "b", "cli": "opencode"}]}) == ["claude", "opencode"], "cần cả hai CLI")
     ok(can_cli({}) == ["claude"], "không có acc ⟹ acc mặc định cần claude")
+    with tempfile.TemporaryDirectory() as h:
+        g = os.path.join(h, "ws")
+        os.mkdir(g)
+        ok(goc_workspace({"workspace_root": g}, h) == g, "gốc tuyệt đối")
+        ok(goc_workspace({"workspace_root": "ws"}, h) == g, "gốc tương đối tính từ hub_home")
+        ok(goc_workspace({"workspace_root": os.path.join(h, "khong-co")}, h) == "", "không có thư mục ⟹ rỗng")
+        ok(goc_workspace({}, h) == "", "chưa khai ⟹ rỗng")
+        mau = os.path.join(h, "kem-CLAUDE.md")
+        with open(mau, "w", encoding="utf-8") as f:
+            f.write("# luat sach\n")
+        ok(dat_luat_goc(g, mau)[0] == "moi"
+           and open(os.path.join(g, "CLAUDE.md"), encoding="utf-8").read() == "# luat sach\n",
+           "chưa có ⟹ đặt bản sạch")
+        ok(dat_luat_goc(g, mau)[0] == "giong", "chạy lại ⟹ không đổi (bất biến)")
+        with open(os.path.join(g, "CLAUDE.md"), "w", encoding="utf-8") as f:
+            f.write("# cua toi\n")
+        ok(dat_luat_goc(g, mau)[0] == "giu"
+           and open(os.path.join(g, "CLAUDE.md"), encoding="utf-8").read() == "# cua toi\n",
+           "đã sửa ⟹ GIỮ, không ghi đè")
+        ok(dat_luat_goc("", mau)[0] == "khong-co-goc", "không gốc ⟹ không đặt")
+        ok(dat_luat_goc(g, os.path.join(h, "thieu.md"))[0] == "khong-co-ban-sach", "thiếu bản sạch ⟹ báo")
     print(f"== {tong - hong}/{tong} ca đúng ==")
     return 1 if hong else 0
 
@@ -166,16 +241,26 @@ def main(argv):
         return tu_kiem()
     if len(argv) >= 3 and argv[1] == "cau-hinh":
         return cmd_cau_hinh(argv[2], argv[3] if len(argv) > 3 else None)
-    if len(argv) == 3 and argv[1] in ("thu-muc-acc", "can-cli"):
+    if len(argv) == 3 and argv[1] in ("thu-muc-acc", "can-cli", "goc-workspace"):
         if not os.path.isfile(argv[2]):
             print(f"KHÔNG ĐO ĐƯỢC: chưa có {argv[2]}")
             return 2
         cfg = doc_json(argv[2])
         if argv[1] == "thu-muc-acc":
             print(f"  thư mục/liên kết acc mới: {thu_muc_acc(cfg)}")
-        else:
+        elif argv[1] == "can-cli":
             print(" ".join(can_cli(cfg)))
+        else:
+            print(goc_workspace(cfg, os.path.dirname(os.path.abspath(argv[2]))))
         return 0
+    if len(argv) == 4 and argv[1] == "luat-goc":
+        if not os.path.isfile(argv[2]):
+            print(f"KHÔNG ĐO ĐƯỢC: chưa có {argv[2]}")
+            return 2
+        goc = goc_workspace(doc_json(argv[2]), os.path.dirname(os.path.abspath(argv[2])))
+        ma, cau = dat_luat_goc(goc, argv[3])
+        print(f"  {cau}")
+        return 1 if ma == "khong-co-ban-sach" else 0
     print(__doc__)
     return 2
 

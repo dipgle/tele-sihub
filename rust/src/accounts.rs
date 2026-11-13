@@ -170,16 +170,23 @@ pub fn opencode_security_plugin() -> String {
         })
 }
 
-/// Tệp «lời nhắc khởi đầu» mà mọi phiên huba mở phải nạp ĐẦU TIÊN.
+/// Tệp LUẬT CHUNG của máy, ở gốc workspace — `CLAUDE.md`, đúng cấu trúc chủ máy
+/// đang dùng trên Mac (`~/projects/CLAUDE.md`).
 ///
 /// Quang 13/11: *"bản đóng gói cần một file prompt sạch khi cài đặt để chạy là
-/// luôn đọc file đó đầu tiên"*. Trình cài Linux chép bản sạch ra
-/// `~/huba/prompt-khoi-dau.md` (chỉ khi chưa có) và khai `HUBA_PROMPT_KHOI_DAU`
-/// trong unit systemd. Không khai (máy Mac đang dùng `~/projects/CLAUDE.md`) ⟹
-/// `None`, không đổi gì. Khai mà tệp KHÔNG có ⟹ `None` + log lỗi: phiên vẫn mở
-/// (chặn `/new` vì một tệp chữ là cắt đường làm việc), nhưng không im.
-pub fn prompt_khoi_dau() -> Option<std::path::PathBuf> {
-    let p = std::env::var("HUBA_PROMPT_KHOI_DAU")
+/// luôn đọc file đó đầu tiên"*, rồi *"sao không giữ cấu trúc file md như hiện tại
+/// trong thư mục /projects?"*. Nên KHÔNG có tệp lời nhắc riêng, KHÔNG có cờ
+/// `--append-system-prompt-file`: claude tự nạp `CLAUDE.md` của cwd và mọi thư
+/// mục cha. Chỉ opencode cần một đường dẫn tường minh (đo 13/11 trên 2.2.7: nó
+/// chỉ tự nạp `AGENTS.md`, và chỉ trong phạm vi git worktree của cwd) ⇒ trình cài
+/// Linux khai `HUBA_LUAT_GOC=<gốc workspace>/CLAUDE.md` trong unit systemd, và
+/// opencode nhận tệp ấy qua `instructions` (xem [`chen_luat_goc`]).
+///
+/// Không khai ⟹ `None`, không đổi gì (máy Mac). Khai mà tệp KHÔNG có ⟹ `None` +
+/// log lỗi: phiên vẫn mở (chặn `/new` vì một tệp chữ là cắt đường làm việc),
+/// nhưng không im.
+pub fn luat_goc() -> Option<std::path::PathBuf> {
+    let p = std::env::var("HUBA_LUAT_GOC")
         .ok()
         .filter(|s| !s.trim().is_empty())?;
     let path = crate::config::expand_home(std::path::Path::new(p.trim()));
@@ -187,9 +194,9 @@ pub fn prompt_khoi_dau() -> Option<std::path::PathBuf> {
         Some(path)
     } else {
         crate::logging::error(
-            "prompt_khoi_dau_missing",
+            "luat_goc_missing",
             json!({ "path": path.display().to_string(),
-                    "effect": "phiên mở KHÔNG có lời nhắc khởi đầu — cài lại huba hoặc chép kem/prompt-khoi-dau.md" }),
+                    "effect": "phiên opencode KHÔNG nạp luật chung — cài lại huba (kem/CLAUDE.md) hoặc sửa HUBA_LUAT_GOC" }),
         );
         None
     }
@@ -355,16 +362,19 @@ pub fn opencode_config_content(acc: &ClaudeAccountCfg) -> Value {
             .unwrap_or_default();
         chen_mcp_codetrail(&mut root, &mcp_bin, &ws);
     }
-    if let Some(p) = prompt_khoi_dau() {
-        chen_prompt_khoi_dau(&mut root, &p.to_string_lossy());
+    if let Some(p) = luat_goc() {
+        chen_luat_goc(&mut root, &p.to_string_lossy());
     }
     root
 }
 
-/// Đưa tệp lời nhắc khởi đầu lên ĐẦU `instructions` của opencode (giữ mọi mục
-/// tài khoản đã khai, không lặp). Đo 13/11: opencode 2.2.7 nhận khoá này trong
-/// `OPENCODE_CONFIG_CONTENT` (`opencode debug config` hiện đúng đường tệp). Thuần.
-pub fn chen_prompt_khoi_dau(root: &mut Value, path: &str) {
+/// Đưa luật chung của máy lên ĐẦU `instructions` của opencode (giữ mọi mục tài
+/// khoản đã khai, không lặp). Đo 13/11 trên 2.2.7: (a) `opencode run` trong một
+/// git worktree KHÔNG nạp `CLAUDE.md` ở thư mục cha — nó chỉ tìm `AGENTS.md` và
+/// dừng ở gốc worktree của cwd; (b) khoá `instructions` trong
+/// `OPENCODE_CONFIG_CONTENT` thì nạp đúng tệp tuyệt đối, log `watcher subscribe`
+/// trỏ tới chính nó. Thuần.
+pub fn chen_luat_goc(root: &mut Value, path: &str) {
     let Some(obj) = root.as_object_mut() else {
         return;
     };
