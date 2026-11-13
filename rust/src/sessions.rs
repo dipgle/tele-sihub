@@ -7974,6 +7974,14 @@ fn start_opencode_in_terminal(
         anyhow::bail!("không thấy hàng tài khoản opencode");
     };
     crate::opencode::don_dich_vu_lech(&acc);
+    if let Some(m) = acc.model.as_deref().filter(|m| !m.trim().is_empty()) {
+        let muc = acc
+            .effort
+            .as_deref()
+            .filter(|e| !e.trim().is_empty())
+            .unwrap_or(crate::accounts::OPENCODE_VARIANT_MAC_DINH);
+        crate::opencode::dat_variant_tui(&acc, m, muc);
+    }
     let opened_ms = chrono::Utc::now().timestamp_millis();
     let cmd = window_command(
         cfg,

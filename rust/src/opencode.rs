@@ -1142,6 +1142,86 @@ pub fn don_dich_vu_lech(acc: &ClaudeAccountCfg) {
 #[cfg(not(target_os = "linux"))]
 pub fn don_dich_vu_lech(_acc: &ClaudeAccountCfg) {}
 
+/// Ghi mức variant TUI nhớ cho `model` vào `model.json` (thuần trên `Value`).
+/// `None` ⟹ tệp không phải object như mong đợi — không sửa.
+pub fn dat_variant_trong_state(doc: &mut Value, model: &str, muc: &str) -> Option<()> {
+    let obj = doc.as_object_mut()?;
+    let v = obj.entry("variant").or_insert_with(|| json!({}));
+    v.as_object_mut()?.insert(model.to_string(), json!(muc));
+    Some(())
+}
+
+/// `/new` mở ĐÚNG mức effort của acc (Quang 13/11: *"lẽ ra phải mặc định là high"*).
+///
+/// Đo trên Ubuntu: cấu hình đã mang `agent.build.variant = "high"` mà màn vẫn
+/// Default — vì TUI NHỚ lựa chọn của lần trước ở `state/opencode/model.json`
+/// (`"variant":{"<model>":"default"}`, do chính một lượt Ctrl+T để lại) và nó đè
+/// cấu hình. Nên trước khi mở TUI, ghi mức của acc vào đúng ô ấy. Ghi tệp mới rồi
+/// đổi tên; tệp đọc hỏng ⟹ KHÔNG đụng, ghi log.
+pub fn dat_variant_tui(acc: &ClaudeAccountCfg, model: &str, muc: &str) {
+    let path = crate::accounts::opencode_profile_dir(acc)
+        .join("state")
+        .join("opencode")
+        .join("model.json");
+    let mut doc = match std::fs::read_to_string(&path) {
+        Ok(t) => match serde_json::from_str::<Value>(&t) {
+            Ok(v) => v,
+            Err(e) => {
+                crate::logging::warn(
+                    "opencode_variant_state_hong",
+                    json!({ "account": acc.name, "path": path.display().to_string(),
+                            "err": e.to_string(), "effect": "không ghi mức — /new mở mức TUI nhớ" }),
+                );
+                return;
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            json!({ "recent": [], "favorite": [], "variant": {} })
+        }
+        Err(e) => {
+            crate::logging::warn(
+                "opencode_variant_state_hong",
+                json!({ "account": acc.name, "path": path.display().to_string(),
+                        "err": e.to_string(), "effect": "không ghi mức — /new mở mức TUI nhớ" }),
+            );
+            return;
+        }
+    };
+    let cu = doc
+        .get("variant")
+        .and_then(|v| v.get(model))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if cu.as_deref() == Some(muc) {
+        return;
+    }
+    if dat_variant_trong_state(&mut doc, model, muc).is_none() {
+        crate::logging::warn(
+            "opencode_variant_state_hong",
+            json!({ "account": acc.name, "path": path.display().to_string(),
+                    "err": "model.json không phải object", "effect": "không ghi mức" }),
+        );
+        return;
+    }
+    let tmp = path.with_extension("json.huba-tmp");
+    let ghi = path
+        .parent()
+        .map(std::fs::create_dir_all)
+        .unwrap_or(Ok(()))
+        .and_then(|_| std::fs::write(&tmp, doc.to_string()))
+        .and_then(|_| std::fs::rename(&tmp, &path));
+    match ghi {
+        Ok(()) => crate::logging::info(
+            "opencode_variant_tui_dat",
+            json!({ "account": acc.name, "model": model, "tu": cu, "thanh": muc }),
+        ),
+        Err(e) => crate::logging::warn(
+            "opencode_variant_state_khong_ghi",
+            json!({ "account": acc.name, "path": path.display().to_string(), "err": e.to_string() }),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

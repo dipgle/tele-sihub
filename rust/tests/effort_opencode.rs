@@ -65,3 +65,20 @@ fn new_mac_dinh_high_cho_build_va_plan() {
     );
     assert_eq!(r["agent"]["plan"]["variant"], "high");
 }
+
+/// TUI nhớ variant ở `state/opencode/model.json` và nó ĐÈ cấu hình (đo Ubuntu 13/11).
+#[test]
+fn ghi_variant_vao_state_giu_khoa_khac() {
+    use huba::opencode::dat_variant_trong_state;
+    use serde_json::json;
+    let mut d =
+        json!({"recent":[1],"favorite":[],"variant":{"opencode-go/ds":"default","khac":"low"}});
+    dat_variant_trong_state(&mut d, "opencode-go/ds", "high").unwrap();
+    assert_eq!(d["variant"]["opencode-go/ds"], "high");
+    assert_eq!(d["variant"]["khac"], "low");
+    assert_eq!(d["recent"], json!([1]));
+    let mut d = json!({"recent":[]});
+    dat_variant_trong_state(&mut d, "m", "max").unwrap();
+    assert_eq!(d["variant"]["m"], "max");
+    assert!(dat_variant_trong_state(&mut json!([1, 2]), "m", "high").is_none());
+}
