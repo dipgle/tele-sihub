@@ -10332,10 +10332,14 @@ pub fn tame_auto_links(escaped: &str) -> String {
             .skip(1)
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
             .collect();
+        // Lệnh tự tô sáng (`/pick_<mã>_1_1`, `/send_<mã>`…) mang tham số trong
+        // TÊN nên bảng route không có — hỏi chính bộ đọc lệnh. Quang 13/11: dòng
+        // `/pick_…` của bảng hỏi opencode bị bọc ⇒ chạm là chép chữ, không chọn.
         let is_hub_route = mark == '/'
             && !name.is_empty()
             && core.len() == name.len() + 1
-            && crate::commands::lookup(&name).is_some();
+            && (crate::commands::lookup(&name).is_some()
+                || crate::verbs::parse_command(core).is_some());
         // Tên tài khoản Telegram tối thiểu 5 ký tự — ngắn hơn thì nó không nối
         // liên kết, và bọc bừa là biến một chữ thường thành thứ trông như mã.
         let worth_taming = match mark {

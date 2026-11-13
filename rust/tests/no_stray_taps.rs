@@ -161,6 +161,37 @@ fn the_hubs_own_routes_stay_tappable() {
     );
 }
 
+/// 🔴 Lệnh TỰ TÔ SÁNG của huba (`/pick_…`, `/send_…`, `/k_…`, `/clr_…`) cũng
+/// là route thật — chỉ là tham số nằm trong tên nên bảng route không có chúng.
+///
+/// Quang 2026-11-13 20:32, ảnh `/shot` phiên opencode có bảng hỏi: dòng
+/// `/pick_e2b5ef6d_1_1` hiện ra đơn cách, *"bấm vào thành copy text của tele"*.
+/// Phiên opencode không có liên kết ◉ trên dòng lựa chọn, nên dòng lệnh ấy là
+/// đường bấm DUY NHẤT — bọc `<code>` là cắt mất nó. Cái biết lệnh nào thật là
+/// bộ đọc lệnh (`verbs::parse_command`), không phải một danh sách chép tay.
+#[test]
+fn the_hubs_self_highlighting_commands_stay_tappable() {
+    for cmd in [
+        "/pick_e2b5ef6d_1_1",
+        "/send_e2b5ef6d",
+        "/k_e2b5ef6d_2",
+        "/clr_e2b5ef6d",
+    ] {
+        let line = format!("chọn: {cmd}");
+        assert_eq!(tame_auto_links(&line), line, "{cmd} phải bấm được");
+    }
+    assert_eq!(
+        tame_auto_links("/healthz /Users/x"),
+        "<code>/healthz</code> <code>/Users/x</code>",
+        "chữ không phải lệnh huba thì vẫn bọc"
+    );
+    assert_eq!(
+        tame_auto_links("/pick_e2b5ef6d"),
+        "<code>/pick_e2b5ef6d</code>",
+        "tiền tố đúng mà thiếu trường thì bộ đọc lệnh không nhận ⇒ vẫn bọc"
+    );
+}
+
 /// 🔴 `@update-be` bị Telegram tô thành MENTION — cùng cái bẫy, khác ký tự.
 ///
 /// Ảnh `/shot` `[dwork]` 2026-08-17: hai dòng `printf '@update-be …'` hiện ra
