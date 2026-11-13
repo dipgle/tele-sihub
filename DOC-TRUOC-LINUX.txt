@@ -1,44 +1,43 @@
 huba cho Linux (Ubuntu, qua tmux) — đọc trước khi chạy
 =======================================================
 
-Bản này dựng trên macOS (zig, x86_64). Lớp tmux ĐÃ đo trên Ubuntu 24.04 · tmux 3.4
-(container): mở pane · gõ · đọc lại · phím rời · bận/rảnh · đóng — 7/7. CHƯA đo trên
-máy Ubuntu thật có `claude` đăng nhập. Bước 1 là PHÉP ĐO, chạy nó trước.
+CÀI (lần đầu) hoặc CẬP NHẬT — một lệnh, không sửa tệp nào bằng tay:
 
-Cần: tmux (sudo apt install -y tmux), claude CLI đã đăng nhập, systemd --user.
+    tar -xzf huba-linux-<sha>.tar.gz && bash huba-linux-<sha>/install_update_linux.sh
 
-  1) ĐO (khoảng 10 giây, không cần cấu hình):
-       ./huba linux-tu-kiem
-     Mã thoát: 0 = đạt hết · 1 = có mục hỏng · 2 = có mục KHÔNG ĐO ĐƯỢC.
-     Dùng phiên tmux riêng (huba-tu-kiem-<pid>), tự xoá sau khi đo.
+Trình cài tự làm, việc nào đã xong thì bỏ qua (chạy lại bao nhiêu lần cũng được):
+  ① chép vào ~/huba — KHÔNG đè huba.config.json · huba.env · data/ (đổi chỗ: HUBA_HOME=…)
+  ② tmux + linger (sudo hỏi mật khẩu của bạn)
+  ③ cấu hình: gốc dự án ~/projects · thêm các tài khoản CÒN THIẾU từ mẫu (hàng đã có giữ nguyên)
+  ④ thư mục tài khoản + liên kết projects
+  ⑤ claude CLI · opencode 2.2.7 nếu thiếu (tắt: HUBA_KHONG_CAI_CLI=1)
+  ⑥ dịch vụ systemd --user "huba-hubd" (tự chạy lại khi chết; restart KHÔNG giết phiên)
+  ⑦ lối vào «huba — quản lý» trong menu ứng dụng
+  ⑧ tự kiểm lớp tmux (linux-tu-kiem)
+  ⑨ chưa có bot Telegram ⟹ mở trang quản lý: dán token, nhắn một câu cho bot, bấm Lưu —
+     trang tự dò chat id, ghi huba.env (600), khởi động lại huba.
 
-  2) Tạo cấu hình + sổ:
-       ./huba init
-     Sửa huba.config.json: "claude_accounts" của MÁY NÀY (config_dir từng tài khoản),
-     "project_roots" trỏ vào thư mục dự án trên máy này.
+!! Dùng BOT RIÊNG cho máy này — hai máy cùng một bot sẽ giành đường đọc tin (409).
 
-  3) Điền bí mật Telegram (trang 127.0.0.1 để điền; máy không màn hình thì sửa tay
-     huba.env theo huba.env.example, chmod 600):
-       ./huba setup
-     !! Dùng BOT RIÊNG cho máy này — hai hubd cùng một bot sẽ giành getUpdates (409).
+Quản lý sau khi cài — menu ứng dụng «huba — quản lý» (hoặc ~/huba/huba accounts):
+  · Bot Telegram: đổi token / chat id.
+  · Tài khoản: thêm · sửa · khoá · model · đăng nhập (acc claude phải đăng nhập RIÊNG trên
+    máy này — token đăng nhập không chép giữa hai máy) · khoá API của acc opencode.
 
-  4) Cài + chạy nền (systemd --user "huba-hubd", tự chạy lại khi chết):
-       bash install_update_linux.sh
-     Kiểm:     bash install_update_linux.sh --verify
-     Nhật ký:  logs/hubd.err  ·  journalctl --user -u huba-hubd -n 50
-     Chạy cả khi đăng xuất: sudo loginctl enable-linger $USER   (một lần)
+Kiểm:     bash ~/huba/install_update_linux.sh --verify
+Nhật ký:  ~/huba/logs/hubd.err  ·  journalctl --user -u huba-hubd -n 50
 
 Cách bản Linux làm việc
 -----------------------
-· Mỗi phiên `claude` sống trong một PANE tmux. /new mở một window mới trong phiên
-  tmux "huba" (chưa có thì dựng) rồi gõ lệnh vào shell của nó.
+· Mỗi phiên sống trong một PANE tmux (phiên tmux "huba"); /new mở thêm một TAB terminal
+  (ptyxis/gnome-terminal…) gắn vào pane ấy — mọi phiên chung một cửa sổ, như trên Mac.
+· Gói mang theo cổng bảo mật + MCP codetrail cho Linux (~/huba/kem) — opencode của mọi
+  acc tự dùng bản này.
 · Xem / gõ tay ngay trên máy:  tmux attach -t huba   (Ctrl-b d để rời, phiên vẫn chạy)
-· Phiên claude mở TAY cũng được huba thấy — miễn chạy trong tmux (cùng người dùng).
-  Phiên chạy ngoài tmux thì huba liệt kê được nhưng KHÔNG gõ/đọc màn được.
 · "tty" của một phiên là pts/N; trong nút/ID nó là ttyptsN.
 
 Đã biết CHƯA làm trên Linux
 ---------------------------
 /anh (ảnh cửa sổ) · /web (trình duyệt) · /upgrade và `huba self-install` (dùng
 install_update_linux.sh) · xoá hàng chờ trong ô nhập (/clean) · phát hiện màn khoá ·
-thông báo nền máy (notify-send).
+thông báo nền máy (notify-send) · sổ việc Redis (huba chạy bằng bộ nhớ, mất khi restart).
