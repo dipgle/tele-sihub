@@ -781,6 +781,101 @@ pub struct WindowBinding {
     pub window: i64,
     pub tty: String,
     pub at_ms: i64,
+    /// Thư mục huba mở cửa sổ — cần cho hàng [`phien_cho_cau_dau`], thứ CHƯA có
+    /// hàng nào trong kho để đọc `directory`. Tệp ghi trước 13/11 không có ⟹ `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+}
+
+/// Id phiên opencode do HUBA đặt trước, cùng khuôn opencode tự sinh.
+///
+/// 🔴 Vì sao (Ubuntu 13/11): `/new -a acc8` không đề bài thì opencode CHƯA có
+/// phiên nào — nó chỉ sinh phiên ở câu đầu tiên — nên huba không có id để ghi
+/// liên kết cửa sổ. Từ bản vá phiên ma 12/11, hàng không liên kết bị ẩn ⟹ phiên
+/// ấy KHÔNG BAO GIỜ lên danh sách (chú thích cũ hứa «tự lên khi gõ câu đầu»).
+/// Ghép muộn theo «thư mục + giờ» thì mơ hồ: Quang mở 3 cửa sổ cùng thư mục.
+/// opencode 2.2.7 có `--session <id>` = *"continue, or create if it does not
+/// exist"*; ĐO trong hồ sơ tạm: TUI hỏi `GET /api/session/<id>` ⟹ 404, và câu
+/// đầu tiên sinh phiên mang ĐÚNG id ấy. Nên biết id ngay lúc mở, như `--resume`.
+///
+/// Khuôn: `ses_` + 12 hex (48 bit thấp của `!(ms·0x1000 + đếm)` — sắp giảm dần
+/// theo giờ như id thật, đối chiếu `ses_e2d1955d…` trong kho Ubuntu) + 14 base62.
+pub fn tao_id_phien(now_ms: i64) -> String {
+    use std::hash::{BuildHasher, Hasher};
+    static DEM: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dem = DEM.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let n = (now_ms.max(0) as u64)
+        .wrapping_mul(0x1000)
+        .wrapping_add(dem & 0xfff);
+    let thoi_gian = !n & 0xffff_ffff_ffff;
+    const B62: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    // `RandomState` lấy hạt từ hệ điều hành — đủ để hai lần mở không trùng,
+    // không cần thêm crate (Cargo chạy `--offline`).
+    let mut duoi = String::with_capacity(14);
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u64(dem);
+    h.write_i64(now_ms);
+    let mut r = h.finish();
+    for i in 0..14 {
+        if i == 7 {
+            let mut h2 = std::collections::hash_map::RandomState::new().build_hasher();
+            h2.write_u64(r);
+            r = h2.finish();
+        }
+        duoi.push(B62[(r % 62) as usize] as char);
+        r /= 62;
+    }
+    format!("ses_{thoi_gian:012x}{duoi}")
+}
+
+/// Hàng «phiên chờ câu đầu»: liên kết huba đã ghi cho một id đặt trước
+/// ([`tao_id_phien`]) mà kho CHƯA có hàng, và TUI ở tty ấy còn sống.
+///
+/// Không có hàng này thì cửa sổ vừa mở chỉ lên dạng `win-<tty>`, con trỏ trỏ
+/// vào cái tên ấy, và câu đầu tiên sinh phiên `ses_…` làm hàng trần biến mất —
+/// con trỏ treo. Có nó thì MỘT id đi suốt đời phiên.
+///
+/// Ba luật, đều fail-closed (thà không bịa hàng):
+/// * `tui_song = None` (`ps` mù) ⟹ rỗng — không phân biệt được sống/chết.
+/// * chỉ id khuôn opencode, tty khác rỗng và có TUI sống.
+/// * tty là của liên kết MỚI NHẤT trên nó ([`tty_cua_lien_ket_moi_nhat`]) —
+///   tty được dùng lại (luật 11b), liên kết cũ không được mượn TUI mới.
+pub fn phien_cho_cau_dau(
+    bindings: &BTreeMap<String, WindowBinding>,
+    kho_ids: &std::collections::HashSet<String>,
+    tui_song: Option<&std::collections::HashSet<String>>,
+) -> Vec<(String, WindowBinding)> {
+    let Some(song) = tui_song else {
+        return Vec::new();
+    };
+    bindings
+        .iter()
+        .filter(|(id, _)| id.starts_with("ses_") && !kho_ids.contains(*id))
+        .filter(|(_, b)| {
+            let t = b.tty.trim_start_matches("/dev/");
+            !t.is_empty() && song.contains(t)
+        })
+        .filter(|(id, b)| tty_cua_lien_ket_moi_nhat(bindings, id, b))
+        .map(|(id, b)| (id.clone(), b.clone()))
+        .collect()
+}
+
+/// Liên kết `id → b` có phải liên kết MỚI NHẤT trên tty của nó không.
+///
+/// Cùng một `pts/1` lần lượt mang nhiều cửa sổ; liên kết cũ hơn trên tty ấy là
+/// phiên đã rời cửa sổ, dù TUI hiện ở đó còn sống. Bằng giờ ⟹ id lớn hơn thắng
+/// (thứ tự cố định, không phụ thuộc thứ tự đọc).
+pub fn tty_cua_lien_ket_moi_nhat(
+    bindings: &BTreeMap<String, WindowBinding>,
+    id: &str,
+    b: &WindowBinding,
+) -> bool {
+    let t = b.tty.trim_start_matches("/dev/");
+    !bindings.iter().any(|(k, o)| {
+        k != id
+            && o.tty.trim_start_matches("/dev/") == t
+            && (o.at_ms > b.at_ms || (o.at_ms == b.at_ms && k.as_str() > id))
+    })
 }
 
 pub fn bindings_path(acc: &ClaudeAccountCfg) -> PathBuf {
@@ -808,6 +903,7 @@ pub fn write_binding(
     session_id: &str,
     window: i64,
     tty: &str,
+    dir: Option<&str>,
 ) -> Result<(), String> {
     let p = bindings_path(acc);
     if let Some(dir) = p.parent() {
@@ -820,6 +916,7 @@ pub fn write_binding(
             window,
             tty: tty.to_string(),
             at_ms: chrono::Utc::now().timestamp_millis(),
+            dir: dir.map(str::to_string),
         },
     );
     let text =
@@ -1225,6 +1322,110 @@ pub fn dat_variant_tui(acc: &ClaudeAccountCfg, model: &str, muc: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+
+    fn lk(tty: &str, at_ms: i64) -> WindowBinding {
+        WindowBinding {
+            window: 5,
+            tty: tty.into(),
+            at_ms,
+            dir: Some("/w".into()),
+        }
+    }
+
+    fn tap(xs: &[&str]) -> HashSet<String> {
+        xs.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn id_dat_truoc_cung_khuon_id_opencode_that() {
+        // Id thật trong kho Ubuntu 13/11: `ses_e2d1955daffewmTXb7FBLtOMq1`,
+        // time_created 1794539694647 (id sinh sớm hơn ~18 ms).
+        let id = tao_id_phien(1_794_539_694_629);
+        assert_eq!(id.len(), "ses_e2d1955daffewmTXb7FBLtOMq1".len(), "{id}");
+        assert!(crate::sessions::is_opencode_session_id(&id), "{id}");
+        assert!(
+            id.starts_with("ses_e2d1955"),
+            "phần giờ phải giải như id thật: {id}"
+        );
+        let hex = &id[4..16];
+        assert!(
+            hex.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "{id}"
+        );
+        assert!(id[16..].chars().all(|c| c.is_ascii_alphanumeric()), "{id}");
+        // Sắp GIẢM dần theo giờ, như opencode.
+        let sau = tao_id_phien(1_794_539_694_629 + 60_000);
+        assert!(sau[4..16] < id[4..16], "{sau} phải nhỏ hơn {id}");
+        // Hai lần mở cùng một ms không trùng.
+        assert_ne!(tao_id_phien(1), tao_id_phien(1));
+    }
+
+    #[test]
+    fn cua_so_chua_co_phien_trong_kho_len_hang_cho_cau_dau() {
+        let mut b = BTreeMap::new();
+        b.insert("ses_moi".to_string(), lk("pts/1", 200));
+        let song = tap(&["pts/1"]);
+        let r = phien_cho_cau_dau(&b, &HashSet::new(), Some(&song));
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].0, "ses_moi");
+        assert_eq!(r[0].1.dir.as_deref(), Some("/w"));
+    }
+
+    #[test]
+    fn hang_cho_cau_dau_fail_closed() {
+        let mut b = BTreeMap::new();
+        b.insert("ses_moi".to_string(), lk("pts/1", 200));
+        let song = tap(&["pts/1"]);
+        // `ps` mù ⟹ không bịa hàng.
+        assert!(phien_cho_cau_dau(&b, &HashSet::new(), None).is_empty());
+        // TUI đã chết ⟹ không có hàng.
+        assert!(phien_cho_cau_dau(&b, &HashSet::new(), Some(&tap(&["pts/9"]))).is_empty());
+        // Kho đã có hàng ⟹ hàng THẬT lo, không dựng bản sao.
+        assert!(phien_cho_cau_dau(&b, &tap(&["ses_moi"]), Some(&song)).is_empty());
+        // Không phải khuôn id opencode / tty rỗng.
+        let mut c = BTreeMap::new();
+        c.insert("win-ttypts1".to_string(), lk("pts/1", 200));
+        c.insert("ses_rong".to_string(), lk("", 300));
+        assert!(phien_cho_cau_dau(&c, &HashSet::new(), Some(&song)).is_empty());
+    }
+
+    #[test]
+    fn tty_dung_lai_thuoc_lien_ket_moi_nhat() {
+        // pts/1 từng mang `ses_cu` (chưa gõ câu nào, cửa sổ đã đóng), rồi /new
+        // mới nhận lại đúng pts/1 cho `ses_moi`. TUI sống ở pts/1 là của ses_moi.
+        let mut b = BTreeMap::new();
+        b.insert("ses_cu".to_string(), lk("pts/1", 100));
+        b.insert("ses_moi".to_string(), lk("/dev/pts/1", 200));
+        let song = tap(&["pts/1"]);
+        let r = phien_cho_cau_dau(&b, &HashSet::new(), Some(&song));
+        assert_eq!(
+            r.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(),
+            vec!["ses_moi"]
+        );
+        assert!(!tty_cua_lien_ket_moi_nhat(&b, "ses_cu", &b["ses_cu"]));
+        assert!(tty_cua_lien_ket_moi_nhat(&b, "ses_moi", &b["ses_moi"]));
+        // Bằng giờ ⟹ thứ tự cố định (id lớn hơn), đúng MỘT bên thắng.
+        let mut d = BTreeMap::new();
+        d.insert("ses_a".to_string(), lk("pts/2", 100));
+        d.insert("ses_b".to_string(), lk("pts/2", 100));
+        let thang: Vec<_> = d
+            .iter()
+            .filter(|(k, v)| tty_cua_lien_ket_moi_nhat(&d, k, v))
+            .map(|(k, _)| k.as_str())
+            .collect();
+        assert_eq!(thang, vec!["ses_b"]);
+    }
+
+    #[test]
+    fn lien_ket_cu_khong_co_dir_van_doc_duoc() {
+        let cu = r#"{"ses_x":{"window":3,"tty":"ttys004","at_ms":7}}"#;
+        let m: BTreeMap<String, WindowBinding> = serde_json::from_str(cu).expect("tệp cũ");
+        assert_eq!(m["ses_x"].dir, None);
+        let ghi = serde_json::to_string(&m).expect("ghi");
+        assert!(!ghi.contains("dir"), "None không ghi ra: {ghi}");
+    }
 
     #[test]
     fn parse_model_doc_dung_provider_va_id() {

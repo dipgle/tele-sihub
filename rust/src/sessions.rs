@@ -6331,11 +6331,18 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
             );
         }
         let mut an: Vec<String> = Vec::new();
+        let kho_ids: HashSet<String> = rows.iter().map(|s| s.id.clone()).collect();
         for s in rows {
             let binding = bindings.get(&s.id);
             let tty = binding.map(|b| b.tty.clone()).unwrap_or_default();
             if let Some(song) = &tui_song {
-                if tty.is_empty() || !song.contains(tty.trim_start_matches("/dev/")) {
+                // tty được dùng lại (luật 11b): liên kết CŨ trên một tty mà nay
+                // có liên kết mới hơn là phiên đã rời cửa sổ — TUI sống ở đó là
+                // của phiên kia, đừng cho hàng này mượn.
+                let nhuong = binding.is_some_and(|b| {
+                    !crate::opencode::tty_cua_lien_ket_moi_nhat(&bindings, &s.id, b)
+                });
+                if tty.is_empty() || nhuong || !song.contains(tty.trim_start_matches("/dev/")) {
                     an.push(s.id.chars().take(12).collect());
                     continue;
                 }
@@ -6403,6 +6410,53 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
                 } else {
                     Some("opencode: chưa có lượt assistant nào đọc được trong kho phiên".into())
                 },
+                ..Default::default()
+            });
+        }
+        // Cửa sổ `/new` không đề bài: id đặt trước, kho chưa có hàng (opencode
+        // sinh phiên ở câu đầu). Dựng hàng từ liên kết để con trỏ, `/type`,
+        // `/shot`, `/close` có một cái tên DUY NHẤT suốt đời phiên.
+        let cho = crate::opencode::phien_cho_cau_dau(&bindings, &kho_ids, tui_song.as_ref());
+        if !cho.is_empty() {
+            logging::info(
+                "opencode_pending_rows",
+                json!({ "account": account.name, "count": cho.len(),
+                        "ids": cho.iter().map(|(id, _)| id.chars().take(12).collect::<String>()).collect::<Vec<_>>() }),
+            );
+        }
+        for (id, b) in cho {
+            let dir = b.dir.clone().unwrap_or_default();
+            let folder = if dir.is_empty() {
+                String::new()
+            } else {
+                opencode_project_label(&cfg.workspace_root, &dir)
+            };
+            out.sessions.push(LiveSession {
+                account: account.name.clone(),
+                session_id: id,
+                name: "(chờ câu đầu)".to_string(),
+                label: String::new(),
+                lane: String::new(),
+                cwd: dir,
+                folder,
+                kind: "opencode".to_string(),
+                host: "terminal".to_string(),
+                pid: 0,
+                started_at_ms: b.at_ms,
+                last_activity: chrono::DateTime::from_timestamp_millis(b.at_ms)
+                    .map(|d| d.to_rfc3339()),
+                working: false,
+                status: Some("idle".to_string()),
+                state: None,
+                context_tokens: 0,
+                model: account.model.clone().filter(|m| !m.trim().is_empty()),
+                tty: b.tty,
+                last_text: None,
+                last_role: None,
+                note: Some(
+                    "opencode: cửa sổ đã mở, phiên sinh ở câu đầu tiên — gõ /type <chữ> để bắt đầu"
+                        .into(),
+                ),
                 ..Default::default()
             });
         }
@@ -7956,8 +8010,11 @@ fn start_in_terminal(
 /// * `--resume <id>` (nối phiên cũ): id đã biết ngay — gắn cửa sổ rồi trả.
 /// * có đề bài: opencode sinh phiên ở lượt đầu tiên, nên chờ kho xuất hiện id
 ///   mới trong đúng thư mục — đây là "nhật ký chào đời" của opencode.
-/// * đề bài rỗng: chưa có phiên nào; trả id `win-<tty>` như cửa sổ trần, và
-///   phiên sẽ tự lên danh sách khi chủ máy gõ câu đầu tiên.
+/// * đề bài rỗng: chưa có phiên nào — huba ĐẶT id trước (`--session <id>`,
+///   `opencode::tao_id_phien`), ghi liên kết ngay; danh sách dựng hàng «chờ câu
+///   đầu» (`opencode::phien_cho_cau_dau`) và câu đầu sinh phiên mang đúng id ấy.
+///   (Trước 13/11: trả `win-<tty>` và hứa «tự lên khi gõ câu đầu» — từ bản vá
+///   phiên ma 12/11 lời hứa ấy SAI: hàng không liên kết bị ẩn.)
 ///
 /// Không có nhánh `--bg`: opencode không có chế độ phiên nền, và bịa một
 /// phiên không có cửa sổ là đúng thứ luật 1 cấm.
@@ -7983,21 +8040,44 @@ fn start_opencode_in_terminal(
         crate::opencode::dat_variant_tui(&acc, m, muc);
     }
     let opened_ms = chrono::Utc::now().timestamp_millis();
+    let resume = resume.map(str::trim).filter(|r| !r.is_empty());
+    // Đề bài rỗng ⟹ huba ĐẶT id trước (`--session <id>`), xem
+    // `opencode::tao_id_phien`. Có đề bài thì vẫn chờ kho như cũ: `--prompt`
+    // đi cùng một id chưa tồn tại thì CHƯA đo.
+    let dat_truoc = (resume.is_none() && task.trim().is_empty())
+        .then(|| crate::opencode::tao_id_phien(opened_ms));
     let cmd = window_command(
         cfg,
         account,
         root,
         (!task.trim().is_empty()).then_some(task),
-        resume,
+        resume.or(dat_truoc.as_deref()),
     );
     let (window, tty) = crate::keys::open_window(&cmd)?;
     let tty_short = tty.trim_start_matches("/dev/").to_string();
     logging::info(
         "new_window_opened",
-        json!({ "window": window, "tty": tty_short, "cli": "opencode", "task": truncate(task, 80) }),
+        json!({ "window": window, "tty": tty_short, "cli": "opencode", "task": truncate(task, 80),
+                "id_dat_truoc": dat_truoc }),
     );
-    let session_id = if let Some(id) = resume.map(str::trim).filter(|r| !r.is_empty()) {
-        if let Err(e) = crate::opencode::write_binding(&acc, id, window, &tty_short) {
+    let root_s = root.to_string_lossy().to_string();
+    let session_id = if let Some(id) = dat_truoc {
+        match crate::opencode::write_binding(&acc, &id, window, &tty_short, Some(&root_s)) {
+            Ok(()) => id,
+            // Không ghi được liên kết thì hàng chờ câu đầu không dựng được ⟹
+            // trả về tên cửa sổ trần, thứ VẪN lên danh sách và gõ được.
+            Err(e) => {
+                logging::error(
+                    "opencode_bind_write_failed",
+                    json!({ "account": acc.name, "session": id, "err": e,
+                            "effect": "con trỏ theo cửa sổ trần win-<tty>; phiên sinh ở câu đầu sẽ bị ẩn" }),
+                );
+                shell_id(&tty_short)
+            }
+        }
+    } else if let Some(id) = resume {
+        if let Err(e) = crate::opencode::write_binding(&acc, id, window, &tty_short, Some(&root_s))
+        {
             logging::error(
                 "opencode_bind_write_failed",
                 json!({ "account": acc.name, "session": id, "err": e,
@@ -8005,10 +8085,12 @@ fn start_opencode_in_terminal(
             );
         }
         id.to_string()
-    } else if !task.trim().is_empty() {
+    } else {
         match wait_opencode_session(&acc, root, opened_ms, 45) {
             Some(s) => {
-                if let Err(e) = crate::opencode::write_binding(&acc, &s.id, window, &tty_short) {
+                if let Err(e) =
+                    crate::opencode::write_binding(&acc, &s.id, window, &tty_short, Some(&root_s))
+                {
                     logging::error(
                         "opencode_bind_write_failed",
                         json!({ "account": acc.name, "session": s.id, "err": e,
@@ -8022,13 +8104,11 @@ fn start_opencode_in_terminal(
                     "opencode_session_not_seen",
                     json!({ "account": acc.name, "tty": tty_short,
                             "why": "cửa sổ đã mở nhưng chưa thấy phiên trong kho sau 45 s — vẫn giữ cửa sổ",
-                            "effect": "id tạm win-<tty>; phiên sẽ lên danh sách riêng khi opencode ghi sổ" }),
+                            "effect": "id tạm win-<tty>; phiên opencode ghi sổ sau đó KHÔNG có liên kết cửa sổ nên bị ẩn (luật phiên ma)" }),
                 );
                 shell_id(&tty_short)
             }
         }
-    } else {
-        shell_id(&tty_short)
     };
     Ok(Started {
         session_id,
