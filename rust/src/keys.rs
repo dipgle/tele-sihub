@@ -6129,7 +6129,9 @@ impl AskTable {
 /// đầu (`←` … `→`) VÀ ít nhất một ô. Một dòng văn xuôi lỡ mang chữ `☐` thì
 /// không đủ điều kiện, nên hàm không dựng ra một cái bảng không có thật.
 pub fn ask_table(screen: &str) -> Option<AskTable> {
-    for line in screen.lines() {
+    // Từ DƯỚI lên: khung hiện hành nằm dưới cùng, vệt khung cũ (nếu còn) ở trên
+    // — cùng luật với `cursor_on` (13/11).
+    for line in screen.lines().collect::<Vec<_>>().into_iter().rev() {
         if !line.contains('←') || !line.contains('→') {
             continue;
         }
@@ -6262,9 +6264,16 @@ pub fn cursor_on(screen: &str, questions: &[String]) -> Option<usize> {
     let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
     // Thanh tab nhận đúng như `ask_table` nhận: một dòng có cả `←` lẫn `→`.
     // Không có thanh tab ⟹ bảng MỘT câu ⟹ cả màn là vùng của nó.
+    // 🔴 Thanh tab CUỐI CÙNG, không phải đầu tiên (Quang 13/11 12:06, bảng 2 câu
+    // `[tfl5]`: bấm `3` ở câu 1 ⟹ «KHÔNG đọc ra đang đứng ở câu nào», trong khi
+    // `/shot` cùng màn 26 s sau đọc ra câu 2). Màn đọc 500 ms sau cú bấm có thể
+    // còn VỆT khung cũ phía trên — khung hiện hành luôn nằm DƯỚI CÙNG. Neo thanh
+    // đầu thì vùng soi ôm cả câu 1 (khung cũ) lẫn câu 2 ⟹ khớp hai ⟹ `None`.
     let vung: String = match screen
         .lines()
-        .position(|l| l.contains('←') && l.contains('→'))
+        .collect::<Vec<_>>()
+        .iter()
+        .rposition(|l| l.contains('←') && l.contains('→'))
     {
         Some(i) => screen.lines().skip(i + 1).collect::<Vec<_>>().join("\n"),
         None => screen.to_string(),

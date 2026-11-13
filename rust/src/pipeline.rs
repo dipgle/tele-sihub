@@ -13345,6 +13345,16 @@ fn tab_move(s: &crate::sessions::LiveSession, w: i64, arg: &str) -> Result<(), S
     Ok(())
 }
 
+/// Màn sau cú bấm có ở ca «bảng nhiều câu còn ô trống, có lựa chọn, mà KHÔNG đọc
+/// ra con trỏ ở câu nào» không — đúng ca [`press_ack_from_screen`] không gắn nút.
+/// Chỗ gọi dùng để ĐỌC LẠI màn vài nhịp trước khi chịu mù: bản đọc 500 ms sau cú
+/// bấm có thể bắt khung TUI đang vẽ dở (Quang 13/11 12:06).
+pub fn press_screen_blind(screen: &str, questions: &[String]) -> bool {
+    crate::keys::ask_table(screen).is_some_and(|t| t.left() > 0)
+        && !crate::keys::parse_choices(screen).is_empty()
+        && crate::keys::cursor_on(screen, questions).is_none()
+}
+
 /// Sau một cú bấm số: MÀN đang vẽ gì, và tin phải nói gì về nó.
 ///
 /// Trả `(câu xác nhận, nút lựa chọn, có dòng Submit không)` — đúng ba thứ chỗ
@@ -13456,12 +13466,25 @@ pub fn press_ack_from_screen(
             // 🔴 Bảng nhiều câu mà KHÔNG đọc ra đang đứng ở câu nào: nói thẳng,
             // và nói luôn vì sao không có nút. Im ở đây thì chủ máy đọc một danh
             // sách lựa chọn không bấm được rồi tưởng huba hỏng.
-            (Some(t), None) => format!(
-                "⚠ đã bấm '{typed}' — nhưng KHÔNG đọc ra đang đứng ở câu nào (bảng {} câu) · {name}\n\
-                 Nên tôi KHÔNG gắn nút: một nút đoán sai câu sẽ ghi đè lên câu đã chốt. \
-                 /shot để nhìn, rồi bấm bằng /pick <câu>.<lựa chọn>.",
-                t.answered.len()
-            ),
+            // 🔴 Quang 13/11: *"bấm lần nào xong cũng phải hiện lại luôn danh sách
+            // mới bấm được chứ"*. Không đoán câu (vẫn không gắn nút lựa chọn),
+            // nhưng ĐƯA THANH TAB vào tin: `SessionData::tabs` đọc nó ra và mỗi
+            // câu mọc một neo ↪ (`tab_<sid>_<n>`) — một chạm là sang đúng câu ấy
+            // và route `/tab` dựng lại danh sách CÓ nút. Trước: bắt /shot rồi gõ
+            // tay `/pick`.
+            (Some(t), None) => {
+                let thanh = screen
+                    .lines()
+                    .rfind(|l| l.contains('←') && l.contains('→'))
+                    .map(|l| format!("\n{}", l.trim()))
+                    .unwrap_or_default();
+                format!(
+                    "⚠ đã bấm '{typed}' — nhưng KHÔNG đọc ra đang đứng ở câu nào (bảng {} câu) · {name}\n\
+                     Chưa gắn nút lựa chọn (đoán sai câu là ghi đè câu đã chốt). \
+                     Bấm ↪ ở câu muốn trả lời — tôi chuyển sang câu ấy rồi hiện lại danh sách có nút:{thanh}",
+                    t.answered.len()
+                )
+            }
             (None, _) if review => {
                 let n = full.as_ref().map_or(0, |t| t.answered.len());
                 format!("✓ đã bấm '{typed}' — đủ {n}/{n} câu, đang ở bước GỬI · {name}")
@@ -17834,9 +17857,32 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                                                                 .collect()
                                                             })
                                                             .unwrap_or_default();
+                                                        // Mù câu ⟹ đọc lại tối đa 3 nhịp: khung TUI có thể
+                                                        // đang vẽ dở lúc đọc lần đầu (Quang 13/11 12:06).
+                                                        let mut man = screen.to_string();
+                                                        let mut doc_lai = 0u32;
+                                                        while doc_lai < 3
+                                                            && press_screen_blind(&man, &cau_hoi)
+                                                        {
+                                                            std::thread::sleep(
+                                                                std::time::Duration::from_millis(600),
+                                                            );
+                                                            doc_lai += 1;
+                                                            if let Some((b, _)) = seen(&s.tty) {
+                                                                man = b;
+                                                            }
+                                                        }
+                                                        if doc_lai > 0 {
+                                                            logging::info(
+                                                                "press_screen_reread",
+                                                                json!({ "session": s.session_id,
+                                                                        "lan": doc_lai,
+                                                                        "con_mu": press_screen_blind(&man, &cau_hoi) }),
+                                                            );
+                                                        }
                                                         let (ack, ch, sub) =
                                                             press_ack_from_screen(
-                                                                screen,
+                                                                &man,
                                                                 typed.trim(),
                                                                 &name,
                                                                 &cau_hoi,

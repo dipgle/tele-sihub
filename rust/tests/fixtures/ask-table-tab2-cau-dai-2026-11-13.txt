@@ -1,0 +1,40 @@
+      1481 +        .await;                                                                                                                                                                            
+      1482 +    assert_eq!(                                                                                                                                                                            
+      1483 +        r["data"]["items"][0]["text"], "sealed before the rotation",                                                                                                                       
+      1484 +        "/msg/msg/list on the new-key-only cell: {r:?}"                                                                                                                                    
+      1485 +    );                                                                                                                                                                                     
+     … 3 more lines 
+  ⎿  Allowed by auto mode classifier
+⏺ Bash(cargo fmt --all && git add crates/routes/tests/uc_master_key_rotation.rs && git commit -q -m "uc_master_key_rotation: điều tra xoay khoá phủ cả msg_messages.bod…)
+  ⎿  d61a086 uc_master_key_rotation: điều tra xoay khoá phủ cả msg_messages.body_enc (gửi tin trên cell khoá cũ ⇒ khẳng định có trước xoay ⇒ cell chỉ khoá mới đọc đúng chữ)
+     b3b6a47 tin nhắn P1 máy chủ: DM + nhóm cá nhân — /msg/* (18 cửa) · /ws/msg · bảng 0135 · thân tin sealed + SEALED_COLUMNS
+     b133a02 docs: hợp đồng tin nhắn P1 — nhận 5 điểm soát của vỏ (4401 token hết hạn · Origin vắng = vỏ native · con trỏ mờ (updated_at,tid) · liên kết /m/<username> · bao thư data là ngoại lệ có chủ
+     … +3 lines
+  ⎿  Updated crates/routes/tests/uc_master_key_rotation.rs (+5 -1)
+      1391          .register("mkrpeer", "peer@example.com", "Peer")
+      1392          .await;
+      1393      let r = old_cell
+      1394 -        .post_cookie("mkrall", "/msg/conv/open_dm", json!({"username": "mkrpeer"}))                                                                                                        
+      1394 +        .post_cookie(                                                                                                                                                                      
+      1395 +            "mkrall",                                                                                                                                                                      
+      1396 +            "/msg/conv/open_dm",                                                                                                                                                           
+      1397 +            json!({"username": "mkrpeer"}),                                                                                                                                                
+      1398 +        )                                                                                                                                                                                  
+      1399          .await;
+      1400      assert_eq!(r["result"], true, "/msg/conv/open_dm: {r:?}");
+      1401      let conv = r["data"]["tid"].as_str().expect("conv tid").to_string();
+  ⎿  Allowed by auto mode classifier
+⏺ Trong lúc chờ, tôi hỏi Quang hai việc cần chốt: tin nhắn của người bị xoá tài khoản (C8 trong docs/dich-vu-tin-nhan.md vẫn là cách hiểu tạm) và việc deploy PDPD khi bản build xanh (dòng 11 của bản giao
+  việc).
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Xoá TK – tin  ☐ Deploy PDPD  ✔ Submit  →
+│ PDPD danh tính (fix/erasure-identity-1113: xoá facet/grant/nhật ký khi xoá TK + grant theo username): khi kiểm hoangha cd9eb59 xanh và đã lên main, deploy prod luôn không?
+❯ 1. Xanh thì deploy luôn (Khuyến nghị)
+     huba upgrade.sh từ wt-deploy-1112 như các lần trước; đo lại /platform/version trên app.dipgle.com + cpanel. Nghiệm thu bằng một lượt xoá tài khoản thử thật sau đó.
+  2. Chỉ đẩy main, chưa deploy
+     Gom vào main, đợi gộp chung với đợt sau (vd tin nhắn P1).
+  3. Type something.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+› Message from @projects-1e: [tfl5 mobile kế nhiệm (phiên 7a543494, thay 60d52ccb — đã đóng)] Hợp đồng P1 @b133a02: còn hai chỗ hở mà vỏ cần, nhờ ch… (ctrl+o to expand)
