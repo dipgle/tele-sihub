@@ -4970,6 +4970,10 @@ pub enum Listed {
 pub fn listed_in_books(cfg: &Config, want: &str) -> Listed {
     let mut blind = Vec::new();
     for account in &cfg.claude_accounts_or_ambient() {
+        // acc opencode không có sổ Claude — sổ của nó là `listed_in_opencode`.
+        if account.is_opencode() {
+            continue;
+        }
         match list_account(account, &cfg.claude_cli) {
             Ok(rows) => {
                 let co = rows.iter().any(|r| {
@@ -5872,6 +5876,12 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
     // nhật ký từng phiên.
     let mut ms_ask = 0u128;
     for account in &cfg.claude_accounts_or_ambient() {
+        // 🔴 acc opencode đi khối «opencode: nguồn phiên THỨ HAI» bên dưới. Đo
+        // Ubuntu 13/11: thiếu phép rẽ này thì mỗi vòng spawn `claude agents
+        // --json` với thư mục của acc8 (957/2721 dòng log `claude_books_missing`).
+        if account.is_opencode() {
+            continue;
+        }
         let ask_started = std::time::Instant::now();
         let listed = list_account(account, &cfg.claude_cli);
         ms_ask += ask_started.elapsed().as_millis();
