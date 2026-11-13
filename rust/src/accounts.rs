@@ -170,6 +170,31 @@ pub fn opencode_security_plugin() -> String {
         })
 }
 
+/// Tệp «lời nhắc khởi đầu» mà mọi phiên huba mở phải nạp ĐẦU TIÊN.
+///
+/// Quang 13/11: *"bản đóng gói cần một file prompt sạch khi cài đặt để chạy là
+/// luôn đọc file đó đầu tiên"*. Trình cài Linux chép bản sạch ra
+/// `~/huba/prompt-khoi-dau.md` (chỉ khi chưa có) và khai `HUBA_PROMPT_KHOI_DAU`
+/// trong unit systemd. Không khai (máy Mac đang dùng `~/projects/CLAUDE.md`) ⟹
+/// `None`, không đổi gì. Khai mà tệp KHÔNG có ⟹ `None` + log lỗi: phiên vẫn mở
+/// (chặn `/new` vì một tệp chữ là cắt đường làm việc), nhưng không im.
+pub fn prompt_khoi_dau() -> Option<std::path::PathBuf> {
+    let p = std::env::var("HUBA_PROMPT_KHOI_DAU")
+        .ok()
+        .filter(|s| !s.trim().is_empty())?;
+    let path = crate::config::expand_home(std::path::Path::new(p.trim()));
+    if path.is_file() {
+        Some(path)
+    } else {
+        crate::logging::error(
+            "prompt_khoi_dau_missing",
+            json!({ "path": path.display().to_string(),
+                    "effect": "phiên mở KHÔNG có lời nhắc khởi đầu — cài lại huba hoặc chép kem/prompt-khoi-dau.md" }),
+        );
+        None
+    }
+}
+
 /// Mở rộng `~/…` trong MỌI chuỗi của `opencode_config`, đệ quy.
 ///
 /// 🔴 VÌ SAO: `huba.config.json` được COMMIT và kho origin là CÔNG KHAI, nên
@@ -330,7 +355,30 @@ pub fn opencode_config_content(acc: &ClaudeAccountCfg) -> Value {
             .unwrap_or_default();
         chen_mcp_codetrail(&mut root, &mcp_bin, &ws);
     }
+    if let Some(p) = prompt_khoi_dau() {
+        chen_prompt_khoi_dau(&mut root, &p.to_string_lossy());
+    }
     root
+}
+
+/// Đưa tệp lời nhắc khởi đầu lên ĐẦU `instructions` của opencode (giữ mọi mục
+/// tài khoản đã khai, không lặp). Đo 13/11: opencode 2.2.7 nhận khoá này trong
+/// `OPENCODE_CONFIG_CONTENT` (`opencode debug config` hiện đúng đường tệp). Thuần.
+pub fn chen_prompt_khoi_dau(root: &mut Value, path: &str) {
+    let Some(obj) = root.as_object_mut() else {
+        return;
+    };
+    let cu: Vec<Value> = obj
+        .get("instructions")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|v| v.as_str() != Some(path))
+        .collect();
+    let mut moi = vec![json!(path)];
+    moi.extend(cu);
+    obj.insert("instructions".to_string(), Value::Array(moi));
 }
 
 /// Variant (effort) mặc định của opencode khi hàng acc không khai `effort`.

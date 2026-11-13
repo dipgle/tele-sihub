@@ -57,6 +57,7 @@ cp "$KEM_SRC/cong-bao-mat-plugin/index.js" "$KEM_SRC/cong-bao-mat-plugin/package
 # Phần cấu hình của trình cài + mẫu tài khoản (CHỈ các hàng `claude_accounts` của kho — không
 # có bí mật nào trong đó: khoá nằm ở env_file/huba.env của từng máy). Trình cài chỉ THÊM hàng thiếu.
 cp "$H/scripts/huba_cai_linux.py" "$D/kem/huba_cai_linux.py"
+cp "$H/scripts/prompt-khoi-dau.md" "$D/kem/prompt-khoi-dau.md"
 python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); json.dump(d.get("claude_accounts",[]),open(sys.argv[2],"w"),ensure_ascii=False,indent=2)' \
   "$H/huba.config.json" "$D/kem/tai-khoan.mau.json" || { echo "❌ không trích được mẫu tài khoản"; exit 1; }
 python3 "$D/kem/huba_cai_linux.py" tu-kiem >/dev/null || { echo "❌ huba_cai_linux.py tu-kiem đỏ"; exit 1; }

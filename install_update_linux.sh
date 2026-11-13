@@ -47,7 +47,7 @@ fi
 # Gói mang `kem/` (cổng bảo mật + MCP codetrail cho Linux + mẫu tài khoản + phần cấu hình). Thiếu
 # ⟹ opencode chạy KHÔNG có tường bảo mật và báo «1 plugin failed / 1 MCP failed» — dừng.
 for f in kem/scripts/cong_bao_mat.py kem/scripts/bao-mat-policy.json kem/scripts/cong-bao-mat-plugin/index.js \
-         kem/bin/project-agent kem/huba_cai_linux.py; do
+         kem/bin/project-agent kem/huba_cai_linux.py kem/prompt-khoi-dau.md; do
   [ -f "$SRC/$f" ] || { echo "❌ gói thiếu $f — dựng lại bằng scripts/dong-goi-linux.sh"; exit 2; }
 done
 command -v python3 >/dev/null || { echo "KHÔNG ĐO ĐƯỢC: thiếu python3 (sudo apt install -y python3)"; exit 2; }
@@ -95,6 +95,17 @@ if [ ! -f "$CFG" ]; then
   (cd "$DIR" && ./huba init) || { echo "❌ huba init hỏng"; exit 1; }
 fi
 python3 "$PY" cau-hinh "$CFG" "$DIR/kem/tai-khoan.mau.json" || exit 1
+# Lời nhắc khởi đầu: MỌI phiên huba mở nạp tệp này ĐẦU TIÊN (claude --append-system-prompt-file,
+# opencode instructions). Chưa có ⟹ chép bản SẠCH của gói; đã có ⟹ GIỮ (chủ máy có thể đã sửa).
+PROMPT="$DIR/prompt-khoi-dau.md"
+if [ ! -f "$PROMPT" ]; then
+  cp "$DIR/kem/prompt-khoi-dau.md" "$PROMPT" || exit 1
+  echo "  ✓ tạo $PROMPT (bản sạch của gói)"
+elif cmp -s "$DIR/kem/prompt-khoi-dau.md" "$PROMPT"; then
+  echo "  ✓ $PROMPT = bản sạch của gói"
+else
+  echo "  ✓ giữ $PROMPT (đã sửa tay) · bản sạch của gói: $DIR/kem/prompt-khoi-dau.md"
+fi
 
 # ④ Thư mục tài khoản + liên kết projects (sổ phiên chung — /session thấy phiên của mọi acc).
 buoc "④ thư mục tài khoản"
@@ -139,6 +150,7 @@ Environment=HUB_LOG_LEVEL=info
 Environment=HUBA_OPENCODE_PLUGIN=$DIR/kem/scripts/cong-bao-mat-plugin
 Environment=BAO_MAT_POLICY=$DIR/kem/scripts/bao-mat-policy.json
 Environment=HUBA_MCP_PROJECT_AGENT=$DIR/kem/bin/project-agent
+Environment=HUBA_PROMPT_KHOI_DAU=$PROMPT
 Environment=PATH=$HOME/.local/bin:$HOME/.opencode/bin:$HOME/.npm-global/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 Restart=always
 RestartSec=30
