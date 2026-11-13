@@ -277,6 +277,7 @@ pub fn opencode_config_content(acc: &ClaudeAccountCfg) -> Value {
         if let Some(obj) = root.as_object_mut() {
             obj.insert("model".to_string(), json!(m));
         }
+        dat_variant_mac_dinh(&mut root, &acc.name, m, some(&acc.effort));
     }
     // Plugin bảo mật là MẶC ĐỊNH của mọi tài khoản opencode — không phụ thuộc
     // việc chủ máy nhớ khai nó trong `opencode_config`. Một cổng, mọi acc.
@@ -330,6 +331,42 @@ pub fn opencode_config_content(acc: &ClaudeAccountCfg) -> Value {
         chen_mcp_codetrail(&mut root, &mcp_bin, &ws);
     }
     root
+}
+
+/// Variant (effort) mặc định của opencode khi hàng acc không khai `effort`.
+pub const OPENCODE_VARIANT_MAC_DINH: &str = "high";
+
+/// Effort mặc định cho phiên opencode mở từ huba (Quang 13/11: *"/new effort vẫn
+/// đang nhận default nên không biết đang ở mức nào lẽ ra phải mặc định là high"*).
+///
+/// TUI opencode không có cờ effort; cửa duy nhất là `agent.<tên>.variant` — và nó
+/// CHỈ áp khi agent dùng đúng model đã khai (`agent.<tên>.model`), nên đặt cả hai cho
+/// `build` + `plan`. Mức = `effort` của hàng acc, không khai ⟹ [`OPENCODE_VARIANT_MAC_DINH`].
+/// Chủ máy đã khai `variant` cho agent ấy trong `opencode_config` ⟹ giữ, kèm log. Thuần + log.
+pub fn dat_variant_mac_dinh(root: &mut Value, account: &str, model: &str, effort: Option<&str>) {
+    let muc = effort.unwrap_or(OPENCODE_VARIANT_MAC_DINH);
+    let Some(obj) = root.as_object_mut() else {
+        return;
+    };
+    let agents = obj.entry("agent").or_insert_with(|| json!({}));
+    let Some(agents) = agents.as_object_mut() else {
+        return;
+    };
+    for ten in ["build", "plan"] {
+        let a = agents.entry(ten).or_insert_with(|| json!({}));
+        let Some(a) = a.as_object_mut() else {
+            continue;
+        };
+        if let Some(cu) = a.get("variant").and_then(Value::as_str) {
+            crate::logging::info(
+                "opencode_variant_chu_may_khai",
+                json!({ "account": account, "agent": ten, "variant": cu, "bo_qua": muc }),
+            );
+            continue;
+        }
+        a.entry("model").or_insert_with(|| json!(model));
+        a.insert("variant".to_string(), json!(muc));
+    }
 }
 
 /// MCP codetrail (`project-agent`) đi KÈM huba (Quang 13/11: *"huba luôn đi kèm mcp

@@ -468,6 +468,29 @@ pub fn lookup(verb: &str) -> Option<&'static Route> {
         .find(|r| r.name == verb || r.aliases.contains(&verb) || r.legacy.contains(&verb))
 }
 
+/// Câu trả lời khi một LỆNH CÓ THẬT bị gõ thiếu tham số bắt buộc — `None` nếu
+/// không phải ca ấy. Thuần.
+///
+/// Quang 13/11 gõ trần `/type` trên bot Ubuntu ⟹ huba đáp *"Chưa hiểu lệnh này"*:
+/// sai nghĩa — lệnh có, chỉ thiếu chữ. Câu đúng chỉ ra THỨ THIẾU, lấy cú pháp từ bảng.
+pub fn thieu_tham_so(text: &str) -> Option<String> {
+    let t = text.trim();
+    let dau = t.strip_prefix('/')?;
+    let (verb, rest) = dau
+        .split_once(char::is_whitespace)
+        .map(|(v, r)| (v, r.trim()))
+        .unwrap_or((dau, ""));
+    let verb = verb.split('@').next().unwrap_or(verb).to_lowercase();
+    let r = lookup(&verb)?;
+    if !matches!(r.arg, Arg::RestRequired) || !rest.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "/{} cần kèm {} — ví dụ: /{} {}\n({})",
+        r.name, r.usage, r.name, r.usage, r.help
+    ))
+}
+
 /// Chữ cho `/help`, sinh TỪ BẢNG — nên một lệnh mới không thể ra đời mà thiếu
 /// dòng của nó, và không dòng nào tả một lệnh đã chết.
 pub fn help_text() -> String {

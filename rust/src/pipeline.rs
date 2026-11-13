@@ -13184,6 +13184,54 @@ pub fn pick_keys(from: usize, to: usize, opt: usize) -> Vec<String> {
 /// Trống mức ⟹ trả danh sách mức thay vì im lặng (menu ☰ chỉ gửi `/effort`).
 fn effort_reply(s: &crate::sessions::LiveSession, w: i64, typed: &str) -> String {
     let who = crate::sessions::shown(s);
+    // opencode: effort là variant đổi bằng Ctrl+T — gõ `/effort …` vào ô của nó là
+    // gửi một tin cho model (Quang 13/11, xem `effort::set_opencode`).
+    let la_opencode = crate::keys::tab_runs(w, "opencode").unwrap_or_else(|e| {
+        logging::warn(
+            "effort_cli_unknown",
+            json!({ "session": s.session_id, "err": e.to_string(),
+                    "effect": "không hỏi được cửa sổ chạy CLI nào — đi đường claude" }),
+        );
+        false
+    });
+    if la_opencode {
+        if typed.trim().is_empty() {
+            return format!(
+                "⚙️ /effort <mức> — đổi variant của {who} (opencode, Ctrl+T). Mức: {}.",
+                crate::effort::OPENCODE_LEVELS.join(" · ")
+            );
+        }
+        let level = match crate::effort::parse_opencode_level(typed) {
+            Ok(l) => l,
+            Err(e) => return format!("⚠ {e}"),
+        };
+        return match crate::effort::set_opencode(w, level) {
+            Ok(out) => {
+                logging::info(
+                    "effort_route_done",
+                    json!({ "session": s.session_id, "level": level, "cli": "opencode",
+                            "exit": out.exit_code() }),
+                );
+                match out {
+                    crate::effort::Outcome::Applied { .. } => {
+                        format!("⚙️ {who}: variant → {level} (opencode, đã đọc lại trên màn).")
+                    }
+                    other => other.say(&who, level),
+                }
+            }
+            Err(e) => {
+                logging::error(
+                    "effort_route_failed",
+                    json!({ "session": s.session_id, "level": level, "cli": "opencode",
+                            "err": e.to_string() }),
+                );
+                format!(
+                    "⚠ {who}: không đổi được variant — {}",
+                    crate::exec::truncate(&e.to_string(), 200)
+                )
+            }
+        };
+    }
     if typed.trim().is_empty() {
         return format!(
             "⚙️ /effort <mức> — đổi mức effort của {who}, có hiệu lực từ lần gọi model kế. \
@@ -19488,6 +19536,13 @@ fn execute_telegram_commands(db: &Db, cfg: &Config) {
                     // việc đúng cho CẢ HAI.
                     if item.text.trim() == "/start" {
                         on_bare_start(db, cfg, inbox);
+                        continue;
+                    }
+                    if let Some(cau) = crate::commands::thieu_tham_so(&item.text) {
+                        logging::info("telegram_command_missing_arg", json!({ "head": head }));
+                        if let Err(e) = inbox.send_text(&cau) {
+                            logging::error("telegram_ack_failed", json!({ "err": e }));
+                        }
                         continue;
                     }
                     logging::info("telegram_not_a_command", json!({ "head": head }));

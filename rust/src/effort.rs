@@ -209,6 +209,117 @@ impl Outcome {
     }
 }
 
+// ── opencode: effort = VARIANT của model, đổi vòng bằng Ctrl+T ──────────────
+//
+// Quang 13/11: *"effort của opencode chỉ có 3 mức: low high max"*. Đo trên TUI
+// opencode 2.2.7 (Ubuntu, acc8, DeepSeek V4.1 Flash): phím `variant.cycle` =
+// `ctrl+t`; vòng Default → low → high → max → Default; mức đang dùng là HẬU TỐ
+// của dòng trạng thái trong ô nhập (`┃  Build · DeepSeek V4.1 Flash 1017 OpenCode
+// Go · high`), Default thì không hậu tố. Gõ `/effort high` kiểu claude vào ô
+// opencode là gửi một TIN cho model — đã xảy ra đúng một lần lúc đo ("High there…").
+// Một lần trong lượt đo, Ctrl+T mở hộp "Select variant" thay vì đổi vòng (phiên
+// chưa có tin nhắn) — chưa rõ luật ⟹ thấy hộp thì Esc và TỪ CHỐI, không gõ chữ vào.
+
+/// Mức effort opencode chủ máy gõ được. `default` = không hậu tố.
+pub const OPENCODE_LEVELS: [&str; 4] = ["default", "low", "high", "max"];
+
+/// Đọc một mức cho phiên opencode. Thuần.
+pub fn parse_opencode_level(raw: &str) -> Result<&'static str, String> {
+    let t = raw.trim().to_ascii_lowercase();
+    OPENCODE_LEVELS
+        .iter()
+        .copied()
+        .find(|l| *l == t)
+        .ok_or_else(|| {
+            format!(
+                "opencode không có mức '{}' — chọn một trong: {}",
+                crate::exec::truncate(raw.trim(), 20),
+                OPENCODE_LEVELS.join(" · ")
+            )
+        })
+}
+
+/// Mức variant đang hiện trên màn opencode — `None` khi không thấy dòng trạng
+/// thái của ô nhập (đừng đoán "default" từ một màn không đọc ra). Thuần.
+pub fn opencode_variant(screen: &str) -> Option<String> {
+    let dong = screen
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| l.starts_with('┃') && l.contains(" · "))?;
+    let cuoi = dong.rsplit(" · ").next().unwrap_or("").trim();
+    const BIET: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+    Some(if BIET.contains(&cuoi) {
+        cuoi.to_string()
+    } else {
+        "default".to_string()
+    })
+}
+
+/// Đổi variant của phiên opencode trong cửa sổ `window`: Ctrl+T từng cú, đọc lại
+/// sau MỖI cú, dừng khi màn hiện đúng mức. Không bao giờ gõ chữ.
+pub fn set_opencode(window: i64, level: &str) -> anyhow::Result<Outcome> {
+    // macOS: phím đi bằng `do script` ⟹ kèm một CR không tắt được; ô opencode còn
+    // chữ thì CR ấy GỬI chữ cho model. Chưa đo trên Mac ⟹ không bấm liều.
+    if cfg!(target_os = "macos") {
+        return Ok(Outcome::Refused(
+            "macOS chưa hỗ trợ đổi variant opencode từ xa (Ctrl+T đi kèm một Enter) — \
+             đổi tay bằng Ctrl+T trong cửa sổ"
+                .into(),
+        ));
+    }
+    use std::thread::sleep;
+    use std::time::Duration;
+    let doc = || -> anyhow::Result<(String, Option<String>)> {
+        let s = crate::keys::screen_text(window)?;
+        let v = opencode_variant(&s);
+        Ok((s, v))
+    };
+    let (_, dau) = doc()?;
+    let Some(dau) = dau else {
+        return Ok(Outcome::Refused(
+            "không đọc ra dòng trạng thái của ô nhập opencode — không bấm gì".into(),
+        ));
+    };
+    if dau == level {
+        return Ok(Outcome::Applied { confirmed: false });
+    }
+    // Vòng có tối đa 4–5 mức tuỳ model; 6 cú mà chưa tới là model không có mức ấy.
+    for cu in 1..=6 {
+        crate::keys::press(window, "ctrl-t")?;
+        sleep(Duration::from_millis(1200));
+        let (s, v) = doc()?;
+        if s.contains("Select variant") {
+            crate::keys::press(window, "esc")?;
+            logging::warn(
+                "effort_opencode_hop_chon",
+                json!({ "window": window, "level": level, "cu": cu }),
+            );
+            return Ok(Outcome::Refused(
+                "opencode mở hộp «Select variant» thay vì đổi vòng — đã Esc, chưa đổi. \
+                 Chọn tay bằng /shot rồi bấm, hoặc thử lại sau tin nhắn đầu."
+                    .into(),
+            ));
+        }
+        logging::info(
+            "effort_opencode_cu",
+            json!({ "window": window, "cu": cu, "thay": v, "can": level }),
+        );
+        match v {
+            Some(v) if v == level => return Ok(Outcome::Applied { confirmed: false }),
+            Some(v) if v == dau => {
+                return Ok(Outcome::Refused(format!(
+                "đã đi hết vòng variant của model mà không có mức '{level}' — giữ nguyên '{dau}'"
+            )))
+            }
+            Some(_) => {}
+            None => return Ok(Outcome::NotSeen(box_preview(&s))),
+        }
+    }
+    let (s, _) = doc()?;
+    Ok(Outcome::NotSeen(box_preview(&s)))
+}
+
 /// Phím xoá đi trước lệnh ở nhánh ô trống — đủ nuốt vài dòng trống vô hình.
 const CLEAN_DELS: usize = 32;
 

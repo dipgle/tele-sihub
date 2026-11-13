@@ -180,6 +180,8 @@ pub fn ten_phim(name: &str) -> Result<(&'static str, Option<String>)> {
         "space" => "Space",
         "backspace" => "BSpace",
         "ctrl-c" | "ctrlc" | "^c" => "C-c",
+        // opencode `variant.cycle` (effort) — `effort::set_opencode`.
+        "ctrl-t" => "C-t",
         d if d.len() == 1 && d.chars().all(|c| c.is_ascii_digit()) => {
             return Ok(("", Some(d.to_string())));
         }
@@ -929,6 +931,7 @@ mod tests {
     fn ten_phim_tmux() {
         assert_eq!(ten_phim("enter").unwrap().0, "Enter");
         assert_eq!(ten_phim("ctrl-c").unwrap().0, "C-c");
+        assert_eq!(ten_phim("ctrl-t").unwrap().0, "C-t");
         assert_eq!(ten_phim("backspace").unwrap().0, "BSpace");
         assert_eq!(ten_phim("2").unwrap().1.as_deref(), Some("2"));
         assert!(ten_phim("f13").is_err());

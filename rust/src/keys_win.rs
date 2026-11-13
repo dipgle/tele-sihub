@@ -367,6 +367,7 @@ fn key_records(name: &str) -> Result<Vec<INPUT_RECORD>> {
         // Ctrl+C = ký tự ETX kèm trạng thái Ctrl giữ — ở chế độ đọc thô (Node),
         // chương trình nhận đúng byte 3 như tty macOS.
         "ctrl-c" | "ctrlc" | "^c" => press(0x43, 3, LEFT_CTRL_PRESSED),
+        "ctrl-t" => press(0x54, 20, LEFT_CTRL_PRESSED),
         d if d.len() == 1 && d.chars().all(|c| c.is_ascii_digit()) => {
             return Ok(text_records(d));
         }
