@@ -241,6 +241,8 @@ pub fn route(req: &Req, st: &mut PageState) -> Resp {
     match (req.method.as_str(), segs.as_slice()) {
         ("GET", [""]) | ("GET", ["index.html"]) => index(&cfg, st),
         ("GET", ["new"]) => new_form(None, None),
+        ("GET", ["telegram"]) => telegram_form(&cfg, None),
+        ("POST", ["telegram"]) => telegram_save(&cfg, &form),
         ("GET", ["acc", name]) => {
             let name = percent_decode(name);
             detail(&cfg, &name, st, None)
@@ -270,6 +272,140 @@ pub fn route(req: &Req, st: &mut PageState) -> Resp {
             Resp::not_found(&format!("không có đường `{m} {path}`")).with_status("404 Not Found")
         }
     }
+}
+
+// ── Bot Telegram ───────────────────────────────────────────────────────────
+//
+// Quang 13/11: *"thêm giao diện quản lý acc"* · *"thêm để cài đặt bot tele luôn"*.
+// MỘT trang quản lý: tài khoản + bot. Lõi dùng lại của `setup.rs` (ô nhập, tự dò
+// chat id, ghi `huba.env` 600 rồi đổi tên) — không chép luật bí mật ra chỗ thứ hai.
+
+/// `✓ đã có token · chat` / `✗ chưa có token` — chỉ TÊN khoá, không bao giờ giá trị.
+fn telegram_trang_thai(cfg: &Config) -> String {
+    let have = crate::setup::existing_keys(&cfg.hub_home.join("huba.env"));
+    let co = |k: &str| have.iter().any(|h| h == k);
+    match (co("HUB_TELEGRAM_BOT_TOKEN"), co("HUB_TELEGRAM_CHAT_ID")) {
+        (true, true) => "<span class=\"ok\">✓ bot đã cài</span>".to_string(),
+        (true, false) => "<span class=\"bad\">⚠ có token, thiếu chat id</span>".to_string(),
+        _ => {
+            "<span class=\"bad\">✗ chưa cài bot — huba chưa nghe được điện thoại</span>".to_string()
+        }
+    }
+}
+
+fn telegram_form(cfg: &Config, ket_qua: Option<String>) -> Resp {
+    let have = crate::setup::existing_keys(&cfg.hub_home.join("huba.env"));
+    let body = format!(
+        "{}{}<form method=\"POST\" action=\"/telegram\">{}\
+         <button>Lưu &amp; khởi động lại huba</button></form>\
+         <p><a href=\"/\">← Các tài khoản</a></p>",
+        ket_qua.unwrap_or_default(),
+        crate::setup::BOT_RIENG_NOTE,
+        crate::setup::telegram_inputs(&have)
+    );
+    Resp::html(page_shell("Bot Telegram của máy này", None, &body))
+}
+
+fn telegram_save(cfg: &Config, form: &BTreeMap<String, String>) -> Resp {
+    let env_path = cfg.hub_home.join("huba.env");
+    let mut form = form.clone();
+    form.remove("t");
+    // Form trống ⟹ không đụng tệp (save_env viết lại cả tệp, kể cả khi không đổi gì).
+    if form.values().all(|v| v.trim().is_empty()) {
+        return telegram_form(
+            cfg,
+            Some("<p>Không ô nào được điền — huba.env giữ nguyên, không khởi động lại.</p>".into()),
+        );
+    }
+    let do_chat = crate::setup::auto_chat_id(&mut form);
+    let written = match crate::setup::save_env(&env_path, &form) {
+        Ok(w) => w,
+        Err(e) => {
+            crate::logging::error(
+                "accounts_telegram_save_failed",
+                json!({ "err": crate::logging::err_chain(&e) }),
+            );
+            return telegram_form(
+                cfg,
+                Some(format!(
+                    "<div class=\"err\">Không ghi được huba.env: {}</div>",
+                    esc(&crate::logging::err_chain(&e))
+                )),
+            );
+        }
+    };
+    crate::logging::info("accounts_telegram_saved", json!({ "keys": written }));
+    let khoi_dong = if written.is_empty() {
+        "<p>Không ô nào được điền — huba.env giữ nguyên, không khởi động lại.</p>".to_string()
+    } else {
+        match khoi_dong_lai_hubd() {
+            Ok(cau) => format!("<p>✅ {}</p>", esc(&cau)),
+            Err(cau) => format!("<div class=\"err\">⚠ {}</div>", esc(&cau)),
+        }
+    };
+    let ghi = if written.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<p>Đã ghi: {}</p>",
+            written
+                .iter()
+                .map(|k| format!("<code>{}</code>", esc(k)))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        )
+    };
+    telegram_form(cfg, Some(format!("{ghi}{do_chat}{khoi_dong}")))
+}
+
+/// huba.env chỉ được đọc lúc hubd khởi động ⟹ lưu khoá xong phải khởi động lại,
+/// nếu không "đã lưu" mà bot vẫn câm. Đo lại sau khi gọi, không tin mã thoát.
+fn khoi_dong_lai_hubd() -> Result<String, String> {
+    let chay = |prog: &str, args: &[&str]| {
+        crate::exec::run(prog, args, crate::exec::RunOpts::default())
+            .map_err(|e| format!("{prog}: {e}"))
+    };
+    let kq = if cfg!(target_os = "linux") {
+        chay("systemctl", &["--user", "restart", "huba-hubd"])
+            .and_then(|_| {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                chay("systemctl", &["--user", "is-active", "huba-hubd"])
+            })
+            .and_then(|r| {
+                if r.stdout.trim() == "active" {
+                    Ok("đã khởi động lại huba-hubd (systemd) — bot dùng khoá mới".to_string())
+                } else {
+                    Err(format!(
+                        "huba-hubd không lên sau khi khởi động lại: {}",
+                        r.stdout.trim()
+                    ))
+                }
+            })
+    } else if cfg!(target_os = "macos") {
+        let uid = chay("id", &["-u"]).map(|r| r.stdout.trim().to_string())?;
+        chay(
+            "launchctl",
+            &["kickstart", "-k", &format!("gui/{uid}/com.dipgle.hubd")],
+        )
+        .and_then(|r| {
+            if r.code == Some(0) {
+                Ok("đã khởi động lại com.dipgle.hubd (launchd) — bot dùng khoá mới".to_string())
+            } else {
+                Err(format!(
+                    "launchctl kickstart thoát {:?}: {}",
+                    r.code,
+                    r.stderr.trim()
+                ))
+            }
+        })
+    } else {
+        Err("máy này không tự khởi động lại được hubd — khởi động lại tay để nạp khoá".into())
+    };
+    match &kq {
+        Ok(c) => crate::logging::info("accounts_hubd_restarted", json!({ "say": c })),
+        Err(c) => crate::logging::warn("accounts_hubd_restart_failed", json!({ "err": c })),
+    }
+    kq.map_err(|e| format!("đã lưu khoá nhưng {e}"))
 }
 
 // ── Các handler ────────────────────────────────────────────────────────────
@@ -302,8 +438,10 @@ fn index(cfg: &Config, st: &mut PageState) -> Resp {
         ));
         let _ = in_config;
     }
+    let tg = telegram_trang_thai(cfg);
     let body = format!(
-        "<p><a class=\"btn\" href=\"/new\">+ Thêm tài khoản</a></p>\
+        "<p><a class=\"btn\" href=\"/new\">+ Thêm tài khoản</a> \
+         <a class=\"btn\" href=\"/telegram\">🤖 Bot Telegram</a> {tg}</p>\
          <table><thead><tr><th>Tài khoản</th><th>Thư mục cấu hình</th><th>Chẩn đoán</th>\
          <th>Việc cần làm</th></tr></thead><tbody>{rows}</tbody></table>\
          <div class=\"note\"><b>Không có nút xoá — cố ý.</b> huba không bao giờ bỏ một hàng \

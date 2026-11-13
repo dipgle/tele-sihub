@@ -158,6 +158,24 @@ pub fn open_window(url: &str, tag: &str) {
         }
         return;
     }
+    // Linux: không có `open` của macOS ⟹ `xdg-open` (trình duyệt mặc định của
+    // phiên đồ hoạ). Đo 13/11 trên Ubuntu: trang chạy (HTTP 200) mà không tự mở.
+    if cfg!(target_os = "linux") {
+        match std::process::Command::new("xdg-open")
+            .arg(url)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+        {
+            Ok(s) if s.success() => logging::info(&opened, json!({ "as": "xdg-open" })),
+            other => logging::warn(
+                &failed,
+                json!({ "detail": format!("{other:?}"), "url_printed": true }),
+            ),
+        }
+        return;
+    }
     const APP_BROWSERS: &[&str] = &[
         "Google Chrome",
         "Microsoft Edge",

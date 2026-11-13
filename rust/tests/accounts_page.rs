@@ -533,3 +533,69 @@ fn trang_opencode_an_dang_nhap_va_giu_o_json() {
     assert!(r2.body.contains("không có OAuth Claude"), "{}", r2.body);
     assert!(login.started.is_empty(), "không được gọi login.start");
 }
+
+// ── Bot Telegram (Quang 13/11: «thêm để cài đặt bot tele luôn») ───────────
+
+#[test]
+fn trang_chinh_noi_bot_chua_cai_va_co_loi_vao() {
+    let dir = tempfile::tempdir().unwrap();
+    let accdir = tempfile::tempdir().unwrap();
+    let cfg = config_with(dir.path(), vec![acc_at("acc9", accdir.path())]);
+    let mut login = FakeLogin::default();
+    let mut st = page(&cfg, &mut login);
+    let r = route(&req("GET", "/", &[COOKIE], ""), &mut st);
+    assert!(r.body.contains("href=\"/telegram\""), "{}", r.body);
+    assert!(r.body.contains("chưa cài bot"), "{}", r.body);
+}
+
+/// Đã có khoá ⟹ nói "đã có", KHÔNG bao giờ in lại giá trị.
+#[test]
+fn trang_bot_khong_hien_lai_gia_tri_da_luu() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("huba.env"),
+        "HUB_TELEGRAM_BOT_TOKEN=123:BI-MAT-KHONG-DUOC-HIEN\nHUB_TELEGRAM_CHAT_ID=987654\n",
+    )
+    .unwrap();
+    let cfg = config_with(dir.path(), vec![]);
+    let mut login = FakeLogin::default();
+    let mut st = page(&cfg, &mut login);
+    let r = route(&req("GET", "/telegram", &[COOKIE], ""), &mut st);
+    assert_eq!(r.status, "200 OK");
+    assert!(r.body.contains("HUB_TELEGRAM_BOT_TOKEN"), "{}", r.body);
+    assert!(r.body.contains("đã có"), "{}", r.body);
+    assert!(!r.body.contains("BI-MAT-KHONG-DUOC-HIEN"), "lộ token");
+    assert!(!r.body.contains("987654"), "lộ chat id");
+    let r = route(&req("GET", "/", &[COOKIE], ""), &mut st);
+    assert!(r.body.contains("bot đã cài"), "{}", r.body);
+}
+
+/// Lưu form trống ⟹ không đụng tệp, không khởi động lại daemon nào.
+#[test]
+fn luu_trong_khong_ghi_khong_khoi_dong_lai() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("huba.env"), "HUB_TELEGRAM_BOT_TOKEN=giu\n").unwrap();
+    let cfg = config_with(dir.path(), vec![]);
+    let mut login = FakeLogin::default();
+    let mut st = page(&cfg, &mut login);
+    let r = route(
+        &req(
+            "POST",
+            "/telegram",
+            &[COOKIE, ORIGIN],
+            "HUB_TELEGRAM_BOT_TOKEN=&HUB_TELEGRAM_CHAT_ID=",
+        ),
+        &mut st,
+    );
+    assert!(r.body.contains("không khởi động lại"), "{}", r.body);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("huba.env")).unwrap(),
+        "HUB_TELEGRAM_BOT_TOKEN=giu\n"
+    );
+    // POST lạ nguồn vẫn bị chặn như mọi POST khác.
+    let r = route(
+        &req("POST", "/telegram", &[COOKIE], "HUB_TELEGRAM_CHAT_ID=1"),
+        &mut st,
+    );
+    assert!(r.status.starts_with("403"), "{}", r.status);
+}

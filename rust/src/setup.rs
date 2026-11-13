@@ -199,7 +199,7 @@ fn read_env(env_path: &Path) -> BTreeMap<String, String> {
 ///
 /// Ô để trống ⟹ **không đụng** tới giá trị đang có (đó cũng là lý do trang
 /// không cần đọc giá trị cũ ra để hiện lại).
-fn save_env(env_path: &Path, form: &BTreeMap<String, String>) -> Result<Vec<String>> {
+pub fn save_env(env_path: &Path, form: &BTreeMap<String, String>) -> Result<Vec<String>> {
     let mut merged = read_env(env_path);
     let mut written = Vec::new();
     for f in FIELDS {
@@ -269,6 +269,30 @@ code{background:#eee;padding:.1rem .3rem;border-radius:4px;font-size:.9em}\
 border-radius:0 8px 8px 0}";
 
 fn form_page(ticket: &str, have: &[String]) -> String {
+    let inputs = telegram_inputs(have);
+    format!(
+        "<!doctype html><html lang=\"vi\"><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+         <title>Cấu hình huba</title><style>{STYLE}</style></head><body>\
+         <h1>Cấu hình huba</h1>\
+         <p class=\"lead\">Trang này chỉ chạy trên máy của bạn. Bấm Lưu là nó ghi thẳng vào \
+         <code>huba.env</code> (chmod 600) rồi tự đóng — không có gì đi ra ngoài.</p>\
+         {}\
+         <form method=\"POST\" action=\"/save?t={ticket}\">{inputs}<button>Lưu</button></form>\
+         </body></html>",
+        BOT_RIENG_NOTE
+    )
+}
+
+/// Lời nhắc "một bot cho riêng bạn" — dùng chung cho `huba setup` và trang tài khoản.
+pub const BOT_RIENG_NOTE: &str = "<div class=\"note\"><b>Một bot Telegram cho riêng máy này.</b> \
+     Đừng dùng chung bot với người khác hay với máy khác: hai hubd cùng một bot giành nhau \
+     đường đọc tin (409). Tin huba gửi đi mang <i>chữ đang hiện trên màn</i> phiên của bạn, và \
+     <code>chat_id</code> là cổng DUY NHẤT ngăn người lạ chạy lệnh bằng shell của bạn.</div>";
+
+/// Các ô nhập khoá Telegram (không bao giờ điền lại giá trị đã lưu). Dùng chung
+/// cho `huba setup` và mục "Bot Telegram" của `huba accounts`.
+pub fn telegram_inputs(have: &[String]) -> String {
     let mut inputs = String::new();
     for f in FIELDS {
         let filled = have.iter().any(|k| k == f.key);
@@ -289,20 +313,7 @@ fn form_page(ticket: &str, have: &[String]) -> String {
             f.key
         ));
     }
-    format!(
-        "<!doctype html><html lang=\"vi\"><head><meta charset=\"utf-8\">\
-         <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-         <title>Cấu hình huba</title><style>{STYLE}</style></head><body>\
-         <h1>Cấu hình huba</h1>\
-         <p class=\"lead\">Trang này chỉ chạy trên máy của bạn. Bấm Lưu là nó ghi thẳng vào \
-         <code>huba.env</code> (chmod 600) rồi tự đóng — không có gì đi ra ngoài.</p>\
-         <div class=\"note\"><b>Một bot Telegram cho riêng bạn.</b> Đừng dùng chung bot với người \
-         khác: tin huba gửi đi mang <i>chữ đang hiện trên màn</i> phiên của bạn, và <code>chat_id</code> \
-         dưới đây là cổng DUY NHẤT — đúng một phép so ấy là thứ ngăn người lạ chạy lệnh bằng shell \
-         của bạn.</div>\
-         <form method=\"POST\" action=\"/save?t={ticket}\">{inputs}<button>Lưu</button></form>\
-         </body></html>"
-    )
+    inputs
 }
 
 /// Điền hộ `HUB_TELEGRAM_CHAT_ID` khi chủ máy để trống — trả câu để in ra trang.
@@ -318,7 +329,7 @@ fn form_page(ticket: &str, have: &[String]) -> String {
 ///
 /// KHÔNG đè lên giá trị chủ máy tự gõ: gõ tay nghĩa là cố ý chỉ định một buồng
 /// khác, và huba đoán đè lên một lựa chọn có chủ ý là sai.
-fn auto_chat_id(form: &mut std::collections::BTreeMap<String, String>) -> String {
+pub fn auto_chat_id(form: &mut std::collections::BTreeMap<String, String>) -> String {
     let token = form
         .get("HUB_TELEGRAM_BOT_TOKEN")
         .map(|s| s.trim().to_string())
