@@ -169,10 +169,70 @@ fn nap_luat_goc_hai_chieu() {
     assert_eq!(ngoai["hookSpecificOutput"]["hookEventName"], "SessionStart");
     let trong = chay(&goc);
     assert!(
-        trong["hookSpecificOutput"]
-            .get("additionalContext")
-            .is_none(),
-        "đứng đúng kho gốc ⟹ không nạp lần hai: {trong}"
+        !trong["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap_or("")
+            .contains("LUAT-THU-0714"),
+        "đứng đúng kho gốc ⟹ không nạp luật lần hai: {trong}"
+    );
+}
+
+/// Quang 14/11: *«mở phiên mới bằng acc10 vẫn chưa có nội dung đầu giống các tài
+/// khoản khác»*. Phiên Claude mở ra luôn có khối KHỞI ĐỘNG PHIÊN — hook SessionStart
+/// của workspace `bash ~/projects/scripts/phien.sh main` (`.claude/settings.json`).
+/// codex chạy ĐÚNG lệnh ấy (cạnh `CLAUDE.md`), ở `cwd` của phiên, kể cả ở gốc; hỏng
+/// thì nói ĐÚNG câu phiên Claude nói, không im.
+#[test]
+fn khoi_dong_phien_nhu_claude() {
+    let d = tempfile::tempdir().unwrap();
+    let goc = d.path().join("ws");
+    std::fs::create_dir_all(goc.join("scripts")).unwrap();
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&goc)
+        .status()
+        .unwrap();
+    let luat = goc.join("CLAUDE.md");
+    std::fs::write(&luat, "LUAT\n").unwrap();
+    let khoi = goc.join("scripts").join("phien.sh");
+    let script = d.path().join("nap.py");
+    std::fs::write(&script, huba::accounts::CODEX_NAP_LUAT_PY).unwrap();
+    let chay = || -> String {
+        use std::io::Write;
+        let mut c = std::process::Command::new("python3")
+            .arg(&script)
+            .arg(&luat)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        c.stdin
+            .take()
+            .unwrap()
+            .write_all(serde_json::json!({ "cwd": goc }).to_string().as_bytes())
+            .unwrap();
+        let o = c.wait_with_output().unwrap();
+        assert!(o.status.success());
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        v["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap_or("")
+            .to_string()
+    };
+    std::fs::write(&khoi, "echo \"KHOI-DONG-THU $1 $(pwd)\"\n").unwrap();
+    let ctx = chay();
+    assert!(
+        ctx.contains(&format!("KHOI-DONG-THU main {}", goc.display())),
+        "{ctx}"
+    );
+    std::fs::write(&khoi, "echo nua-chung; exit 3\n").unwrap();
+    let ctx = chay();
+    assert!(ctx.contains("HOOK SessionStart HỎNG (mã 3)"), "{ctx}");
+    assert!(ctx.contains("nua-chung"), "giữ phần đã in: {ctx}");
+    std::fs::remove_file(&khoi).unwrap();
+    assert!(
+        chay().contains("HOOK SessionStart HỎNG"),
+        "thiếu script ⟹ nói ra"
     );
 }
 

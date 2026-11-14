@@ -335,6 +335,14 @@ pub fn codex_hooks_json(gate: &Path, nap_luat: Option<(&Path, &Path)>) -> Value 
 /// gốc; hook `SessionStart` với `additionalContext` thì tới được model (mã thử
 /// CAM-0714 trả về đúng). Gốc git của phiên CHÍNH là thư mục luật ⟹ codex đã tự
 /// đọc ⟹ không nạp lần hai. Đọc hỏng ⟹ vẫn nói vào ngữ cảnh, không im.
+///
+/// 🔴 Quang 14/11 (sau `a17b03a`): *"mở phiên mới bằng acc10 vẫn chưa có nội dung
+/// đầu giống các tài khoản khác"*. Đo: phiên 01a1d965 có đủ `CLAUDE.md` (AGENTS.md
+/// 29 435 ký tự) nhưng THIẾU khối KHỞI ĐỘNG PHIÊN — thứ phiên Claude nào cũng có, vì
+/// `.claude/settings.json` của workspace chạy hook SessionStart
+/// `bash ~/projects/scripts/phien.sh main`. Nên hook này chạy ĐÚNG lệnh ấy (cạnh
+/// tệp luật: `<gốc>/scripts/phien.sh`), ở `cwd` của phiên, và đặt kết quả LÊN ĐẦU
+/// (codex cắt đuôi ra hook dài). Hỏng ⟹ đúng câu phiên Claude in.
 pub const CODEX_NAP_LUAT_PY: &str = r##"import json, os, subprocess, sys
 luat = sys.argv[1]
 try:
@@ -343,24 +351,52 @@ except Exception:
     p = {}
 cwd = p.get("cwd") or os.getcwd()
 goc = os.path.dirname(os.path.realpath(luat))
+phan = []
+khoi = os.path.join(goc, "scripts", "phien.sh")
+hong = ("⛔ HOOK SessionStart HỎNG (mã {}) — luật khởi động KHÔNG chạy. "
+        "Chạy tay: bash ~/projects/scripts/phien.sh main <dự-án>")
+if os.path.isfile(khoi):
+    try:
+        r = subprocess.run(["bash", khoi, "main"], cwd=cwd, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           text=True, errors="replace", timeout=120)
+        phan.append(r.stdout)
+        if r.returncode != 0:
+            phan.append(hong.format(r.returncode))
+    except subprocess.TimeoutExpired as e:
+        da = e.stdout or ""
+        if isinstance(da, bytes):
+            da = da.decode("utf-8", "replace")
+        phan.append(da)
+        phan.append(hong.format("124 — quá 120 s"))
+    except OSError as e:
+        phan.append(hong.format("không chạy được: " + str(e)))
+else:
+    phan.append(hong.format("không có " + khoi))
 try:
     top = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
                          capture_output=True, text=True, timeout=5).stdout.strip()
 except Exception:
     top = ""
-out = {"hookEventName": "SessionStart"}
 if not (top and os.path.realpath(top) == goc):
     try:
         with open(luat, encoding="utf-8") as fh:
-            # Dòng DẪN đứng ĐẦU: codex cắt đầu ra hook dài (đo 14/11: luật 34 KB tới
-            # model «bị cắt bớt») — phần đầu luôn còn, nên lệnh đọc trọn nằm ở đó.
-            out["additionalContext"] = (
+            # Dòng DẪN đứng ĐẦU khối luật: codex cắt ra hook dài (đo 14/11: luật 34 KB
+            # tới model «bị cắt bớt») — lệnh đọc trọn nằm ở đó.
+            phan.append(
                 "# LUAT CHUNG CUA WORKSPACE: " + luat + "\n"
                 "BUOC DAU TIEN cua phien nay: doc TRON tep tren bang lenh `cat " + luat + "` "
                 "(ban duoi co the bi cat), roi lam theo. Ten du an nguoi dung go = lenh mo du an do theo luat.\n\n"
                 + fh.read())
     except OSError as e:
-        out["additionalContext"] = "CANH BAO: khong doc duoc luat chung " + luat + ": " + str(e)
+        phan.append("CANH BAO: khong doc duoc luat chung " + luat + ": " + str(e))
+    # Dòng DẪN lên ĐẦU TIÊN: khối khởi động đứng trước có thể đẩy câu dẫn của luật
+    # ra quá chỗ codex cắt.
+    phan.insert(0, "BUOC DAU TIEN: doc TRON luat chung bang `cat " + luat + "` (ngu canh duoi co the bi cat).")
+out = {"hookEventName": "SessionStart"}
+ctx = "\n".join(x for x in phan if x)
+if ctx:
+    out["additionalContext"] = ctx
 print(json.dumps({"hookSpecificOutput": out}, ensure_ascii=False))
 "##;
 
