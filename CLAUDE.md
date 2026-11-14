@@ -363,6 +363,10 @@ send path must call `forget_ack_live()`, or it edits a line the reader scrolled 
 
 ## When you change something
 
+- **Adding an account or a new model source / CLI?** Walk `docs/kiem-tra-them-tai-khoan-va-nguon-model.md`
+  first — every account takes the SAME input (Quang 14/11); a CLI's write tools must be measured, not assumed
+  (codex `apply_patch` slipped the gate until 14/11).
+
 - Changed the snapshot shape or a chat verb? `install_update.sh` in the same
   pass — it builds, signs, restarts the launchd job. The running binary is the
   consumer, and a stale one silently overwrites the new shape (twice on
