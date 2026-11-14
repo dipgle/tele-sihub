@@ -8,6 +8,8 @@ cây này. Sửa thẳng tệp này để đổi luật cho cả máy; cài lạ
   cờ nào.
 - opencode không đọc `CLAUDE.md` (nó chỉ tự tìm `AGENTS.md`, và chỉ tới gốc git
   của thư mục đang mở) ⇒ huba trỏ opencode tới chính tệp này qua `instructions`.
+- codex đọc `CLAUDE.md` của dự án (huba bật `project_doc_fallback_filenames`), còn
+  tệp này đi vào ngữ cảnh qua hook `SessionStart` mà huba ghi vào `CODEX_HOME`.
 
 ## Cách làm việc
 
@@ -19,3 +21,13 @@ cây này. Sửa thẳng tệp này để đổi luật cho cả máy; cài lạ
 - Không đẩy git, không triển khai lên máy chủ, không xoá hàng loạt — huba đã chặn các
   lệnh ấy; gặp chặn thì báo, đừng tìm đường vòng.
 - Chỉ nói "xong" khi đã chạy thật và thấy kết quả; việc chưa chạy thì nói là chưa chạy.
+- **Tự chốt việc và chuyển phiên khi ngữ cảnh quá 50%.** Không chờ ai nhắc, không hỏi
+  «có chuyển không» — làm trọn trong cùng lượt:
+  1. chốt việc dở thành phần trọn (commit; chưa xong thì ghi rõ đang đỏ/xanh ở đâu),
+     không bắt đầu việc mới;
+  2. ghi sổ của dự án (`memory/active-context.md` hoặc sổ tương đương) — cái đã làm,
+     cái đã đo được, việc kế;
+  3. viết bản giao ≤ 2 KB trong `<dự án>/.tmp/` (trạng thái · việc kế · chờ ai · việc
+     đang chạy nền + lệnh chạy lại);
+  4. báo người ra lệnh: đường dẫn bản giao + một dòng đề bài để mở phiên mới
+     (`/new <acc> -s <dự án> <đọc bản giao …>`).
