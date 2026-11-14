@@ -9301,6 +9301,36 @@ pub fn is_opencode_session_id(id: &str) -> bool {
     }
 }
 
+/// `/new <acc codex> [-s dự án] [đề bài]` — mở codex trong một cửa sổ THẬT, sau
+/// tường đã KIỂM ([`crate::accounts::ensure_codex_wall`]). Trả (cửa sổ, tty, câu
+/// tường). huba chưa đọc nhật ký phiên codex ⟹ cửa sổ đi như một cửa sổ shell
+/// (`win-<tty>`): gõ chữ, `/shot` đều dùng được; `/session` chưa liệt kê nó.
+pub fn open_codex_window(
+    cfg: &Config,
+    acc: &ClaudeAccountCfg,
+    dir: &Path,
+    task: &str,
+) -> Result<(i64, String, String)> {
+    let tuong = crate::accounts::ensure_codex_wall(acc).map_err(|e| anyhow::anyhow!(e))?;
+    let mut cmd = format!(
+        "cd {} && {}",
+        shell_quote(&dir.to_string_lossy()),
+        crate::accounts::launch_line(cfg, Some(acc))
+    );
+    if !task.trim().is_empty() {
+        cmd.push(' ');
+        cmd.push_str(&shell_quote(task.trim()));
+    }
+    let (window, tty) = crate::keys::open_window(&cmd)?;
+    let tty_short = tty.trim_start_matches("/dev/").to_string();
+    logging::info(
+        "codex_window_opened",
+        json!({ "account": acc.name, "window": window, "tty": tty_short,
+                "dir": dir.display().to_string(), "task_len": task.trim().len() }),
+    );
+    Ok((window, tty_short, tuong))
+}
+
 pub fn open_bare_terminal() -> Result<(i64, String)> {
     let (window, tty) = crate::keys::open_window(BARE_TERMINAL_CMD)?;
     let tty_short = tty.trim_start_matches("/dev/").to_string();

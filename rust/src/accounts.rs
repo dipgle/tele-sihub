@@ -121,16 +121,133 @@ pub fn codex_home(acc: &ClaudeAccountCfg) -> PathBuf {
     }
 }
 
-/// Dòng lệnh codex của một hàng: `CODEX_HOME=<thư mục> <codex_cli> <extra_args>`.
+/// Cờ TƯỜNG của mọi phiên codex huba mở — luật 1, bản codex (14/11):
+/// · `-s workspace-write`: chỉ GHI trong thư mục làm việc (+ /tmp), KHÔNG mạng
+///   (đo 14/11: banner `sandbox: workspace-write [workdir, /tmp, $TMPDIR]`);
+/// · `-a never`: không hộp thoại xin quyền — điện thoại không bấm được; lệnh bị
+///   sandbox chặn trả lỗi về model;
+/// · `--dangerously-bypass-hook-trust`: hook DUY NHẤT trong `CODEX_HOME` là hook
+///   cổng bảo mật do chính huba ghi ([`ensure_codex_wall`]) — không có hộp «tin
+///   cậy hook» nào chờ một người không ngồi ở máy.
+pub const CODEX_WALL_FLAGS: [&str; 5] = [
+    "-s",
+    "workspace-write",
+    "-a",
+    "never",
+    "--dangerously-bypass-hook-trust",
+];
+
+/// Dòng lệnh codex của một hàng: `CODEX_HOME=<thư mục> <codex_cli> <tường> <extra_args>`.
 fn codex_launch_line(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
     let mut parts = vec![
         assign_path("CODEX_HOME", &codex_home(acc).to_string_lossy()),
         path_token(&cfg.codex_cli),
     ];
+    parts.extend(CODEX_WALL_FLAGS.iter().map(|s| s.to_string()));
     for a in &acc.extra_args {
         parts.push(value_token(a));
     }
     parts.join(" ")
+}
+
+/// Cổng bảo mật chung (`cong_bao_mat.py`) — nằm CẠNH plugin opencode
+/// ([`opencode_security_plugin`]), tức cùng một bản cài cho cả hai CLI.
+pub fn codex_gate() -> PathBuf {
+    let plugin = PathBuf::from(opencode_security_plugin());
+    plugin
+        .parent()
+        .map(|p| p.join("cong_bao_mat.py"))
+        .unwrap_or_else(|| PathBuf::from("cong_bao_mat.py"))
+}
+
+/// Nội dung `CODEX_HOME/hooks.json`: MỘT hook `PreToolUse` cho MỌI công cụ, gọi
+/// cổng chung. Cổng thoát khác 0 (kể cả 3 = policy hỏng) ⟹ hook thoát 2 = CHẶN
+/// (fail-closed). Khuôn đo 14/11 trên codex-cli 0.169.0 (payload `tool_name`/
+/// `tool_input` như Claude Code). Hàm THUẦN.
+pub fn codex_hooks_json(gate: &Path) -> Value {
+    let lenh = format!(
+        "python3 {} --codex-pretooluse; r=$?; [ \"$r\" -eq 0 ] || exit 2",
+        shell_quote(&gate.to_string_lossy())
+    );
+    json!({
+        "hooks": {
+            "PreToolUse": [
+                { "matcher": "*", "hooks": [ { "type": "command", "command": lenh } ] }
+            ]
+        }
+    })
+}
+
+/// Dựng + KIỂM tường của một hàng codex, trả câu nói được cho người. Gọi trước
+/// MỌI lượt mở phiên codex. `Err` ⟹ KHÔNG được mở.
+///
+/// Kiểm HAI CHIỀU mỗi lượt (luật «cổng phải đỏ được»): cổng xét một lệnh CẤM phải
+/// ra 2, một lệnh thường phải ra 0. Một cổng lúc nào cũng 0 (hỏng im) hay lúc nào
+/// cũng 2 (chặn hết) đều bị bắt ở đây, trước khi có cửa sổ nào.
+pub fn ensure_codex_wall(acc: &ClaudeAccountCfg) -> Result<String, String> {
+    let home = codex_home(acc);
+    std::fs::create_dir_all(&home)
+        .map_err(|e| format!("không tạo được CODEX_HOME {}: {e}", home.display()))?;
+    if !home.join("auth.json").is_file() {
+        return Err(format!(
+            "{} chưa đăng nhập ChatGPT — /accounts {} -l",
+            acc.name, acc.name
+        ));
+    }
+    let gate = codex_gate();
+    if !gate.is_file() {
+        return Err(format!("thiếu cổng bảo mật {}", gate.display()));
+    }
+    let want = serde_json::to_string_pretty(&codex_hooks_json(&gate))
+        .map_err(|e| format!("không dựng được hooks.json: {e}"))?;
+    let p = home.join("hooks.json");
+    let co = std::fs::read_to_string(&p).ok();
+    if co.as_deref() != Some(want.as_str()) {
+        if co.is_some() {
+            crate::logging::warn(
+                "codex_hooks_overwritten",
+                json!({ "account": acc.name, "path": p.display().to_string(),
+                        "why": "hooks.json khác bản tường của huba — ghi đè (CODEX_HOME do huba quản)" }),
+            );
+        }
+        std::fs::write(&p, &want).map_err(|e| format!("không ghi được {}: {e}", p.display()))?;
+    }
+    let thu = |lenh: &str| -> Result<i32, String> {
+        let payload = json!({ "tool_name": "Bash", "tool_input": { "command": lenh },
+                              "session_id": "huba-kiem-tuong" })
+        .to_string();
+        let mut c = std::process::Command::new("python3")
+            .arg(&gate)
+            .arg("--codex-pretooluse")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("không chạy được cổng: {e}"))?;
+        if let Some(mut si) = c.stdin.take() {
+            use std::io::Write;
+            si.write_all(payload.as_bytes())
+                .map_err(|e| format!("không gửi được payload thử cho cổng: {e}"))?;
+        }
+        let st = c.wait().map_err(|e| format!("cổng không trả lời: {e}"))?;
+        Ok(st.code().unwrap_or(-1))
+    };
+    let cam = thu("sudo true")?;
+    let thuong = thu("echo huba-kiem-tuong")?;
+    if cam != 2 || thuong != 0 {
+        crate::logging::error(
+            "codex_wall_check_failed",
+            json!({ "account": acc.name, "gate": gate.display().to_string(),
+                    "lenh_cam": cam, "lenh_thuong": thuong }),
+        );
+        return Err(format!(
+            "cổng bảo mật trả sai khi kiểm (lệnh cấm ⟹ {cam}, cần 2 · lệnh thường ⟹ {thuong}, cần 0) — KHÔNG mở phiên"
+        ));
+    }
+    Ok(format!(
+        "tường: sandbox workspace-write (không mạng) + hook cổng {} (đã kiểm: cấm ⟹ chặn, thường ⟹ qua)",
+        gate.display()
+    ))
 }
 
 /// Dòng lệnh ĐĂNG NHẬP ChatGPT cho một hàng codex — luồng mã thiết bị
