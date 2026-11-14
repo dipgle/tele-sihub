@@ -23,8 +23,9 @@ BIN_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hub/bin"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 APP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 UNIT=huba-hubd.service
-OPENCODE_VER=2.2.7
-CODEX_VER=0.169.0
+# Bản CLI ghim: MỘT nguồn với bộ cài Mac (`cli-ghim.env`, gói mang theo).
+[ -f "$SRC/cli-ghim.env" ] || { echo "❌ gói thiếu cli-ghim.env — dựng lại bằng scripts/dong-goi-linux.sh"; exit 2; }
+. "$SRC/cli-ghim.env"
 CO_TTY=0; [ -t 0 ] && [ -t 1 ] && CO_TTY=1
 buoc() { echo; echo "── $*"; }
 
@@ -48,6 +49,7 @@ fi
 # Gói mang `kem/` (cổng bảo mật + MCP codetrail cho Linux + mẫu tài khoản + phần cấu hình). Thiếu
 # ⟹ opencode chạy KHÔNG có tường bảo mật và báo «1 plugin failed / 1 MCP failed» — dừng.
 for f in kem/scripts/cong_bao_mat.py kem/scripts/bao-mat-policy.json kem/scripts/cong-bao-mat-plugin/index.js \
+         kem/scripts/mo-dau-phien.py kem/scripts/nhac-chuyen-phien.py \
          kem/bin/project-agent kem/huba_cai_linux.py kem/CLAUDE.md; do
   [ -f "$SRC/$f" ] || { echo "❌ gói thiếu $f — dựng lại bằng scripts/dong-goi-linux.sh"; exit 2; }
 done
@@ -140,10 +142,12 @@ for cli in $(python3 "$PY" can-cli "$CFG"); do
     codex)
       # OpenAI Codex CLI (acc ChatGPT). Gói npm `@openai/codex` vào ~/.npm-global (có trong PATH
       # của unit bên dưới) — cùng chỗ `codex_cli` mặc định của huba. Ghim bản đã đo (14/11).
-      if [ ! -x "$HOME/.npm-global/bin/codex" ]; then
+      # Có mà LỆCH bản ghim ⟹ cài lại đúng bản (tường + đoạn mở đầu đo trên bản ghim).
+      CX_CO="$("$HOME/.npm-global/bin/codex" --version 2>/dev/null | awk '{print $NF}')"
+      if [ "$CX_CO" != "$CODEX_VER" ]; then
         if [ "${HUBA_KHONG_CAI_CLI:-0}" = 1 ]; then echo "  ⚠ thiếu codex (HUBA_KHONG_CAI_CLI=1 — không tự cài)"
         elif ! command -v npm >/dev/null; then echo "  ❌ thiếu npm — không cài được codex (sudo apt install -y nodejs npm)"
-        else echo "  cài codex ${CODEX_VER}…"; NODE_OPTIONS=--dns-result-order=ipv4first npm install -g --prefix "$HOME/.npm-global" "@openai/codex@${CODEX_VER}" || echo "  ❌ cài codex hỏng"; fi
+        else echo "  cài codex ${CODEX_VER} (đang có: ${CX_CO:-chưa có})…"; NODE_OPTIONS=--dns-result-order=ipv4first npm install -g --prefix "$HOME/.npm-global" "@openai/codex@${CODEX_VER}" || echo "  ❌ cài codex hỏng"; fi
       fi
       [ -x "$HOME/.npm-global/bin/codex" ] && echo "  ✓ codex $("$HOME/.npm-global/bin/codex" --version 2>/dev/null | head -1)" ;;
   esac
@@ -153,6 +157,8 @@ done
 buoc "⑥ dịch vụ $UNIT"
 python3 "$DIR/kem/scripts/cong_bao_mat.py" --tu-kiem >/dev/null 2>&1 \
   || echo "  ⚠ cong_bao_mat.py --tu-kiem KHÔNG xanh trên máy này — xem: python3 $DIR/kem/scripts/cong_bao_mat.py --tu-kiem"
+python3 -B "$DIR/kem/scripts/mo-dau-phien.py" --tu-kiem >/dev/null 2>&1 \
+  || echo "  ⚠ mo-dau-phien.py --tu-kiem KHÔNG xanh trên máy này — xem: python3 $DIR/kem/scripts/mo-dau-phien.py --tu-kiem"
 mkdir -p "$BIN_DIR" "$UNIT_DIR" "$DIR/logs" || exit 1
 cp "$DIR/hubad" "$BIN_DIR/hubd.new" && chmod 755 "$BIN_DIR/hubd.new" && mv -f "$BIN_DIR/hubd.new" "$BIN_DIR/hubd" || exit 1
 cat > "$UNIT_DIR/$UNIT" <<EOF
