@@ -235,7 +235,9 @@ fn dong_lenh_codex_tat_web_va_apps_sau_extra_args() {
     let tat_web = line
         .rfind("-c 'web_search=\"disabled\"'")
         .unwrap_or_else(|| panic!("thiếu tắt web: {line}"));
-    let mo_web = line.find("web_search=\"live\"").expect("extra_args phải còn");
+    let mo_web = line
+        .find("web_search=\"live\"")
+        .expect("extra_args phải còn");
     assert!(tat_web > mo_web, "tường phải đứng SAU extra_args: {line}");
     let tat_apps = line
         .rfind("-c 'features.apps=false'")
