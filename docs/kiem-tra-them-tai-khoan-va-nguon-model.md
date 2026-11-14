@@ -76,6 +76,7 @@ riêng, không phải xanh.
 | MCP mặc định | — | — | `codex_apps` tắt bằng `features.apps=false` · `codex_tui` (quản luồng) KHÔNG tắt được |
 | MCP codetrail gọi được | ✅ | ✅ | ✅ `default_tools_approval_mode="approve"` (`3e5aca5`; đo hai chiều: không khoá ⟹ «requires approval, but approval policy is never») |
 | B3 `/session` liệt kê | ✅ | ✅ | ✅ `huba sessions --json` máy thật (`06cbaa6`) · ⚠ hubd CHƯA cài lại · Telegram chưa đo |
+| Nhắc chuyển phiên ≥ 50 % | ✅ hook Stop/UserPromptSubmit | chưa đo | ✅ cùng `nhac-chuyen-phien.py` (huba `b89db79` · workspace `ba629d8`; cửa sổ = `model_context_window` codex tự khai) |
 | B3 bảng hỏi → nút `/pick` | ✅ | ✅ (dịch khuôn) | ❌ chưa (`request_user_input` trong rollout) |
 | `/new` + `/close` trên Telegram | ✅ | ✅ | chưa đo sau `a17b03a` |
 
