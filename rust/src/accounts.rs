@@ -137,6 +137,40 @@ pub const CODEX_WALL_FLAGS: [&str; 5] = [
     "--dangerously-bypass-hook-trust",
 ];
 
+/// Các giá trị `-c` gắn MCP codetrail cho codex; rỗng khi gói không khai
+/// `HUBA_MCP_PROJECT_AGENT`. Binary khai mà không có ⟹ vẫn gắn (codex tự báo MCP
+/// hỏng trên màn) nhưng GHI LOG trước, như nhánh opencode.
+pub fn codex_mcp_codetrail_args(account: &str) -> Vec<String> {
+    let bin = std::env::var("HUBA_MCP_PROJECT_AGENT").unwrap_or_default();
+    codex_mcp_codetrail_args_cho(account, &bin)
+}
+
+/// Phần THUẦN (trừ một lượt hỏi đĩa để ghi log) của [`codex_mcp_codetrail_args`].
+pub fn codex_mcp_codetrail_args_cho(account: &str, bin: &str) -> Vec<String> {
+    let bin = bin.trim();
+    if bin.is_empty() {
+        return Vec::new();
+    }
+    if !Path::new(bin).is_file() {
+        crate::logging::warn(
+            "codex_mcp_codetrail_missing",
+            json!({ "account": account, "path": bin,
+                    "effect": "codex sẽ báo MCP project-agent hỏng — cài lại gói huba (kem/bin/project-agent)" }),
+        );
+    }
+    let ws = home_dir()
+        .map(|h| h.join("projects").to_string_lossy().to_string())
+        .unwrap_or_default();
+    let toml_str = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
+    vec![
+        format!("mcp_servers.project-agent.command={}", toml_str(bin)),
+        format!(
+            "mcp_servers.project-agent.env={{PROJECTS_ROOT={}}}",
+            toml_str(&ws)
+        ),
+    ]
+}
+
 /// Effort mặc định của phiên codex khi hàng acc không khai `effort`.
 ///
 /// Quang 14/11: *"GPT đang để mặc định là low sửa thành high đi"*. Mặc định
@@ -163,6 +197,13 @@ fn codex_launch_line(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
         "model_reasoning_effort=\"{}\"",
         muc.replace('"', "")
     )));
+    // MCP codetrail (Quang 14/11 «gắn mcp codetrail nữa») — cùng nguồn với opencode:
+    // `HUBA_MCP_PROJECT_AGENT` (gói Linux: `kem/bin/project-agent`). Truyền bằng `-c`
+    // mỗi lượt mở, không ghi config.toml.
+    for c in codex_mcp_codetrail_args(&acc.name) {
+        parts.push("-c".to_string());
+        parts.push(shell_quote(&c));
+    }
     for a in &acc.extra_args {
         parts.push(value_token(a));
     }

@@ -92,6 +92,28 @@ fn tin_cay_thu_muc_ghi_mot_lan_khong_de_quyet_dinh_cu() {
 }
 
 #[test]
+fn mcp_codetrail_cho_codex() {
+    use huba::accounts::codex_mcp_codetrail_args_cho as k;
+    assert!(
+        k("acc10", "").is_empty(),
+        "gói không khai binary ⟹ không gắn"
+    );
+    let d = tempfile::tempdir().unwrap();
+    let bin = d.path().join("project-agent");
+    std::fs::write(&bin, "").unwrap();
+    let a = k("acc10", &bin.to_string_lossy());
+    assert_eq!(a.len(), 2, "{a:?}");
+    assert_eq!(
+        a[0],
+        format!("mcp_servers.project-agent.command=\"{}\"", bin.display())
+    );
+    assert!(
+        a[1].starts_with("mcp_servers.project-agent.env={PROJECTS_ROOT=\""),
+        "{a:?}"
+    );
+}
+
+#[test]
 fn dong_lenh_codex_mang_tuong() {
     let c = huba::config::Config::default();
     let d = tempfile::tempdir().unwrap();
