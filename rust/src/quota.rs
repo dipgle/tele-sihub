@@ -1284,7 +1284,13 @@ pub fn rank_all(cfg: &crate::config::Config, now_ms: i64) -> Vec<Ranked> {
                 .claude_accounts_or_ambient()
                 .iter()
                 .any(|a| a.name == q.account && a.is_opencode() && !is_go_plan(a));
-            let r = if cfg.account_locked(&q.account) {
+            // codex: huba chưa mở phiên trên nó (`sessions::CODEX_CHUA_MO_PHIEN`)
+            // ⟹ xếp như khoá, để không đường chọn nào gợi ý một cửa sẽ bị từ chối.
+            let codex = cfg
+                .claude_accounts_or_ambient()
+                .iter()
+                .any(|a| a.name == q.account && a.is_codex());
+            let r = if cfg.account_locked(&q.account) || codex {
                 Rank::Locked
             } else if opencode || dung_api_key(cfg, &q.account) {
                 // Huba không tự chọn tài khoản opencode: key/plan do chủ máy
@@ -1368,7 +1374,7 @@ pub fn khong_do_duoc(account: &str, why: &str) -> Quota {
 /// thứ năm (`huba doctor`, máy Ubuntu 13/11 — `tests/doctor_opencode_khong_doc_so_claude.rs`)
 /// ⇒ đọc sổ theo tài khoản thì đi qua đây.
 pub fn read_acc(a: &crate::config::ClaudeAccountCfg) -> Option<Quota> {
-    if a.is_opencode() {
+    if !a.is_claude() {
         return None;
     }
     let dir = a

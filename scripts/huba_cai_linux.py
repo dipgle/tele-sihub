@@ -97,6 +97,12 @@ def cmd_cau_hinh(cfg_p, mau_p):
     return 0
 
 
+def cli_cua(a):
+    """CLI của một hàng: `claude` (mặc định) · `opencode` · `codex`. MỘT chỗ đọc, để
+    CLI thứ ba không lọt vào bước chỉ dành cho claude (thư mục + `projects` + MCP). Thuần."""
+    return (a.get("cli") or "claude").strip().lower() or "claude"
+
+
 def thu_muc_acc(cfg, home=HOME):
     """Mỗi acc `claude`: thư mục cấu hình + `projects` → `~/.claude/projects` (sổ phiên
     chung). Không đụng thứ đã có. Trả số mục đã tạo."""
@@ -104,7 +110,7 @@ def thu_muc_acc(cfg, home=HOME):
     os.makedirs(chung, exist_ok=True)
     tao = 0
     for a in cfg.get("claude_accounts", []):
-        if (a.get("cli") or "claude").strip().lower() == "opencode":
+        if cli_cua(a) != "claude":
             continue
         d = mo_rong(a.get("config_dir") or "~/.claude")
         d = d if os.path.isabs(d) else os.path.join(home, d)
@@ -140,7 +146,7 @@ def dat_mcp_claude(cfg, mcp_bin, home=HOME):
     root = os.path.join(home, "projects")
     ghi = []
     for a in cfg.get("claude_accounts", []) or [{}]:
-        if (a.get("cli") or "claude").strip().lower() == "opencode":
+        if cli_cua(a) != "claude":
             continue
         p = tep_cau_hinh_claude(a, home)
         d = doc_json(p) if os.path.isfile(p) else {}
@@ -167,7 +173,7 @@ def dat_mcp_claude(cfg, mcp_bin, home=HOME):
 def can_cli(cfg):
     can = set()
     for a in cfg.get("claude_accounts", []) or [{}]:
-        can.add("opencode" if (a.get("cli") or "").strip().lower() == "opencode" else "claude")
+        can.add(cli_cua(a))
     return sorted(can)
 
 
@@ -306,15 +312,18 @@ def tu_kiem():
         c2 = {"workspace_root": "/khac"}
         ok(dat_goc_du_an(c2, h) is None and c2["workspace_root"] == "/khac", "đã đặt ⟹ giữ")
         cfg = {"claude_accounts": [{"name": "acc1"}, {"name": "acc3", "config_dir": os.path.join(h, ".claude-acc3")},
-                                   {"name": "acc8", "cli": "opencode", "config_dir": os.path.join(h, ".x8")}]}
+                                   {"name": "acc8", "cli": "opencode", "config_dir": os.path.join(h, ".x8")},
+                                   {"name": "acc10", "cli": "codex", "config_dir": os.path.join(h, ".x10")}]}
         ok(thu_muc_acc(cfg, h) == 2, "tạo thư mục + liên kết acc3")
         ok(os.path.islink(os.path.join(h, ".claude-acc3", "projects")), "liên kết projects có thật")
         ok(not os.path.exists(os.path.join(h, ".x8")), "không đụng acc opencode")
+        ok(not os.path.exists(os.path.join(h, ".x10")), "không đụng acc codex (không `projects` của Claude)")
         ok(thu_muc_acc(cfg, h) == 0, "chạy lại ⟹ không tạo gì (bất biến)")
     with tempfile.TemporaryDirectory() as h:
         bin_ = os.path.join(h, "kem", "bin", "project-agent")
         cfg = {"claude_accounts": [{"name": "acc1"}, {"name": "acc3", "config_dir": os.path.join(h, ".claude-acc3")},
-                                   {"name": "acc8", "cli": "opencode", "config_dir": os.path.join(h, ".x8")}]}
+                                   {"name": "acc8", "cli": "opencode", "config_dir": os.path.join(h, ".x8")},
+                                   {"name": "acc10", "cli": "codex", "config_dir": os.path.join(h, ".x10")}]}
         os.makedirs(os.path.join(h, ".claude-acc3"))
         # acc3 đã có tệp, mang hàng project-agent trỏ binary macOS + một máy chủ khác.
         ghi_json(os.path.join(h, ".claude-acc3", ".claude.json"),
@@ -335,6 +344,7 @@ def tu_kiem():
            "chưa có tệp ⟹ tạo hàng mới")
         ok(dat_mcp_claude(cfg, bin_, h) == [], "chạy lại ⟹ không ghi gì (bất biến)")
         ok(not os.path.exists(os.path.join(h, ".x8")), "không đụng acc opencode (mcp)")
+        ok(not os.path.exists(os.path.join(h, ".x10")), "không đụng acc codex (mcp)")
     with tempfile.TemporaryDirectory() as h:
         kem = os.path.join(h, "kem", "claude")
         os.makedirs(os.path.join(kem, "skills", "quality-gate"))
@@ -358,6 +368,8 @@ def tu_kiem():
            "skill chủ máy đã sửa ⟹ GIỮ, không ghi đè")
         ok(dat_skill_goc("", kem)[0][0] == "khong-co-goc", "skill: không gốc ⟹ không đặt")
     ok(can_cli({"claude_accounts": [{"name": "a"}, {"name": "b", "cli": "opencode"}]}) == ["claude", "opencode"], "cần cả hai CLI")
+    ok(can_cli({"claude_accounts": [{"name": "a"}, {"name": "c", "cli": "codex"}]}) == ["claude", "codex"],
+       "acc codex ⟹ cần codex, không đọc thành claude")
     ok(can_cli({}) == ["claude"], "không có acc ⟹ acc mặc định cần claude")
     with tempfile.TemporaryDirectory() as h:
         g = os.path.join(h, "ws")

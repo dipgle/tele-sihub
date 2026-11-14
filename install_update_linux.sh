@@ -24,6 +24,7 @@ UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 APP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 UNIT=huba-hubd.service
 OPENCODE_VER=2.2.7
+CODEX_VER=0.169.0
 CO_TTY=0; [ -t 0 ] && [ -t 1 ] && CO_TTY=1
 buoc() { echo; echo "── $*"; }
 
@@ -136,6 +137,15 @@ for cli in $(python3 "$PY" can-cli "$CFG"); do
         else echo "  cài opencode ${OPENCODE_VER}…"; curl -fsSL https://opencode.ai/v2/install | bash -s -- --version "$OPENCODE_VER" --no-modify-path || echo "  ❌ cài opencode hỏng"; fi
       fi
       [ -x "$HOME/.opencode/bin/opencode" ] && echo "  ✓ opencode $("$HOME/.opencode/bin/opencode" --version 2>/dev/null | head -1)" ;;
+    codex)
+      # OpenAI Codex CLI (acc ChatGPT). Gói npm `@openai/codex` vào ~/.npm-global (có trong PATH
+      # của unit bên dưới) — cùng chỗ `codex_cli` mặc định của huba. Ghim bản đã đo (14/11).
+      if [ ! -x "$HOME/.npm-global/bin/codex" ]; then
+        if [ "${HUBA_KHONG_CAI_CLI:-0}" = 1 ]; then echo "  ⚠ thiếu codex (HUBA_KHONG_CAI_CLI=1 — không tự cài)"
+        elif ! command -v npm >/dev/null; then echo "  ❌ thiếu npm — không cài được codex (sudo apt install -y nodejs npm)"
+        else echo "  cài codex ${CODEX_VER}…"; NODE_OPTIONS=--dns-result-order=ipv4first npm install -g --prefix "$HOME/.npm-global" "@openai/codex@${CODEX_VER}" || echo "  ❌ cài codex hỏng"; fi
+      fi
+      [ -x "$HOME/.npm-global/bin/codex" ] && echo "  ✓ codex $("$HOME/.npm-global/bin/codex" --version 2>/dev/null | head -1)" ;;
   esac
 done
 

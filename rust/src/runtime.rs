@@ -450,6 +450,20 @@ pub fn account_detail_text_voi_probe(
             acc.model.as_deref().unwrap_or("(chưa khai)"),
             crate::accounts::opencode_profile_dir(acc).display()
         ));
+    } else if acc.is_codex() {
+        // Hàm này THUẦN (không chạy tiến trình) — đăng nhập đọc từ đĩa (`auth.json`),
+        // chi tiết đã có trong khối chẩn đoán `probe` bên dưới.
+        let home = crate::accounts::codex_home(acc);
+        out.push_str(&format!(
+            "CLI: codex (ChatGPT) · CODEX_HOME: {}\nđăng nhập: {}\n⛔ {}\n",
+            home.display(),
+            if home.join("auth.json").is_file() {
+                "có auth.json"
+            } else {
+                "CHƯA — /accounts <tên> -l"
+            },
+            crate::sessions::CODEX_CHUA_MO_PHIEN
+        ));
     } else {
         match id {
             Ok(i) => {
@@ -977,9 +991,10 @@ pub fn usage_lam_moi(cfg: &Config, db: &Db, cu_ms: i64) -> Value {
         .collect();
     // opencode không có `claude -p /usage`; dò bằng dòng lệnh của nó là chạy
     // `opencode -p /usage` (trong opencode `-p` là password) — nói không.
+    // codex cũng vậy: không có `/usage` của Claude.
     let oc: Vec<String> = accounts
         .iter()
-        .filter(|a| a.is_opencode())
+        .filter(|a| !a.is_claude())
         .map(|a| a.name.clone())
         .collect();
     let can: Vec<&crate::config::ClaudeAccountCfg> = accounts
@@ -1016,10 +1031,11 @@ pub fn usage_lam_moi_mot(cfg: &Config, db: &Db, ten: &str, cu_ms: i64) -> Value 
     let Some(acc) = accounts.iter().find(|a| a.name == ten) else {
         return usage_cached(cfg, db);
     };
-    if acc.is_opencode() {
+    if !acc.is_claude() {
         crate::logging::info(
             "usage_skip_opencode",
-            json!({ "account": ten, "why": "opencode không có lệnh quota — không dò bằng cú pháp Claude" }),
+            json!({ "account": ten, "cli": acc.cli_name(),
+                    "why": "CLI này không có lệnh quota của Claude — không dò bằng cú pháp Claude" }),
         );
         return usage_cached(cfg, db);
     }
@@ -1194,8 +1210,8 @@ pub fn xep_hang_tai_khoan(cfg: &Config, db: &Db, cu_ms: Option<i64>) -> Vec<crat
 /// khoản có số cũ. (Nhịp 5′ cho mọi tài khoản — Hà 10/08 *"chỉ cần 5p 1 lần là
 /// được"* — đã thay bằng "đo khi sắp chọn" ngày 24/09; xem [`USAGE_CU_MO_PHIEN_MS`].)
 fn usage_one(cfg: &Config, acc: &crate::config::ClaudeAccountCfg) -> Value {
-    if acc.is_opencode() {
-        return json!({ "err": "opencode: không có lệnh quota; không dò bằng cú pháp Claude" });
+    if !acc.is_claude() {
+        return json!({ "err": format!("{}: không có lệnh quota; không dò bằng cú pháp Claude", acc.cli_name()) });
     }
     let env = account_env(acc);
     // Chạy TRONG thư mục mà `sessions::is_hub_own_probe` nhận ra — trên macOS đó
@@ -1419,9 +1435,10 @@ pub fn auth_status_run(
     acc: &crate::config::ClaudeAccountCfg,
     timeout: Duration,
 ) -> anyhow::Result<crate::exec::RunOut> {
-    if acc.is_opencode() {
+    if !acc.is_claude() {
         anyhow::bail!(
-            "opencode không có `auth status` của Claude — kiểm bằng `huba accounts` / trang quản lý"
+            "{} không có `auth status` của Claude — kiểm bằng `huba accounts` / trang quản lý",
+            acc.cli_name()
         );
     }
     let (prog, argv) = crate::sessions::account_call(cfg, Some(&acc.name), &["auth", "status"]);
@@ -1460,6 +1477,14 @@ fn auth_block(cfg: &Config) -> Value {
                 acc.name.clone(),
                 json!({ "opencode": true,
                         "err": "opencode: không có OAuth Claude — kiểm bằng /accounts" }),
+            );
+            continue;
+        }
+        if acc.is_codex() {
+            map.insert(
+                acc.name.clone(),
+                json!({ "codex": true,
+                        "err": "codex: không có OAuth Claude — kiểm bằng /accounts" }),
             );
             continue;
         }

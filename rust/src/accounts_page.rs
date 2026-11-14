@@ -468,7 +468,7 @@ fn detail(cfg: &Config, name: &str, st: &mut PageState, err: Option<String>) -> 
     let (_, _, hong) = check_summary(acc);
     let p = accounts::probe(
         acc,
-        if acc.is_opencode() {
+        if !acc.is_claude() {
             None
         } else {
             Some(crate::quota::read(
@@ -555,6 +555,8 @@ fn detail(cfg: &Config, name: &str, st: &mut PageState, err: Option<String>) -> 
 
     let dir = if acc.is_opencode() {
         accounts::opencode_profile_dir(acc).display().to_string()
+    } else if acc.is_codex() {
+        accounts::codex_home(acc).display().to_string()
     } else {
         acc.config_dir
             .clone()
@@ -787,9 +789,12 @@ fn settings_sync(cfg: &Config, name: &str, st: &mut PageState) -> Resp {
     let Some(acc) = accs.iter().find(|a| a.name == name) else {
         return Resp::not_found(&format!("không có tài khoản '{name}'"));
     };
-    if acc.is_opencode() {
+    if !acc.is_claude() {
         st.flash = Some((
-            "opencode không dùng settings.json — cấu hình nằm trong ô JSON của tài khoản".into(),
+            format!(
+                "{} không dùng settings.json của Claude — cấu hình nằm ở chỗ riêng của CLI ấy",
+                acc.cli_name()
+            ),
             true,
         ));
         return Resp::redirect(&format!("/acc/{}", url_encode(name)));
@@ -821,7 +826,7 @@ fn settings_sync(cfg: &Config, name: &str, st: &mut PageState) -> Resp {
 fn check_summary(acc: &ClaudeAccountCfg) -> (usize, usize, Vec<accounts::Check>) {
     let p = accounts::probe(
         acc,
-        if acc.is_opencode() {
+        if !acc.is_claude() {
             None
         } else {
             Some(crate::quota::read(
@@ -919,14 +924,17 @@ fn edit_fields_values(
         )
     };
     let oc = cli.eq_ignore_ascii_case("opencode");
+    let cx = cli.eq_ignore_ascii_case("codex");
     let cli_select = format!(
-        "<label>CLI</label><small>opencode: phân vùng riêng <code>~/.opencode-&lt;tên&gt;/{{config,data,cache,state}}</code> — nhiều acc, nhiều API/model không trộn nhau</small>\
+        "<label>CLI</label><small>opencode: phân vùng riêng <code>~/.opencode-&lt;tên&gt;/{{config,data,cache,state}}</code> — nhiều acc, nhiều API/model không trộn nhau · codex: <code>CODEX_HOME</code> = thư mục cấu hình (mặc định <code>~/.codex-&lt;tên&gt;</code>), đăng nhập ChatGPT, chưa mở phiên</small>\
          <select name=\"cli\">\
          <option value=\"claude\"{c}>claude</option>\
          <option value=\"opencode\"{o}>opencode</option>\
+         <option value=\"codex\"{x}>codex</option>\
          </select>",
-        c = if oc { "" } else { " selected" },
+        c = if oc || cx { "" } else { " selected" },
         o = if oc { " selected" } else { "" },
+        x = if cx { " selected" } else { "" },
     );
     let launch_note = match launch {
         Some(l) => format!(
@@ -1014,7 +1022,12 @@ fn row_from_form(
     let cli = match cli.as_str() {
         "" | "claude" => None,
         "opencode" => Some("opencode".to_string()),
-        other => return Err(format!("CLI `{other}` không hợp lệ (chỉ claude/opencode)")),
+        "codex" => Some("codex".to_string()),
+        other => {
+            return Err(format!(
+                "CLI `{other}` không hợp lệ (chỉ claude/opencode/codex)"
+            ))
+        }
     };
     let oc_text = form
         .get("opencode_config")
@@ -1261,6 +1274,8 @@ pub fn print_table(cfg: &Config) -> String {
         let (ok, total, hong) = check_summary(acc);
         let dir = if acc.is_opencode() {
             accounts::opencode_profile_dir(acc).display().to_string()
+        } else if acc.is_codex() {
+            accounts::codex_home(acc).display().to_string()
         } else {
             acc.config_dir
                 .as_deref()

@@ -105,6 +105,51 @@ pub fn opencode_profile_dir(acc: &ClaudeAccountCfg) -> PathBuf {
     }
 }
 
+/// `CODEX_HOME` của một hàng codex: `config_dir` nếu khai, không thì
+/// `~/.codex-<tên>`. Một thư mục một tài khoản — `auth.json` (đăng nhập
+/// ChatGPT) nằm trong đó, nên hai acc codex không bao giờ chung một lượt đăng
+/// nhập. Đo 14/11 (codex-cli 0.169.0): `CODEX_HOME` trỏ vào thư mục CHƯA có ⟹
+/// `Error loading configuration … path does not exist`, exit 1 — nên
+/// [`ensure_dirs`] tạo nó trước mọi lượt chạy.
+pub fn codex_home(acc: &ClaudeAccountCfg) -> PathBuf {
+    match some(&acc.config_dir) {
+        Some(d) => expand_home(Path::new(d)),
+        None => match home_dir() {
+            Some(h) => h.join(format!(".codex-{}", acc.name)),
+            None => PathBuf::from(format!(".codex-{}", acc.name)),
+        },
+    }
+}
+
+/// Dòng lệnh codex của một hàng: `CODEX_HOME=<thư mục> <codex_cli> <extra_args>`.
+fn codex_launch_line(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
+    let mut parts = vec![
+        assign_path("CODEX_HOME", &codex_home(acc).to_string_lossy()),
+        path_token(&cfg.codex_cli),
+    ];
+    for a in &acc.extra_args {
+        parts.push(value_token(a));
+    }
+    parts.join(" ")
+}
+
+/// Dòng lệnh ĐĂNG NHẬP ChatGPT cho một hàng codex — luồng mã thiết bị
+/// (`login --device-auth`): CLI in một đường dẫn + một mã dùng một lần, người
+/// mở đường dẫn trên ĐIỆN THOẠI rồi gõ mã; CLI tự hỏi máy chủ tới khi xong.
+/// Không có mã nào phải chép NGƯỢC về máy (khác `claude auth login`).
+pub fn codex_login_line(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
+    format!("{} login --device-auth", codex_base_line(cfg, acc))
+}
+
+/// `CODEX_HOME=<thư mục> <codex_cli>` — gốc cho `login …`; KHÔNG mang `extra_args` của phiên.
+pub fn codex_base_line(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
+    format!(
+        "{} {}",
+        assign_path("CODEX_HOME", &codex_home(acc).to_string_lossy()),
+        path_token(&cfg.codex_cli)
+    )
+}
+
 /// Bộ chặn quyền cho opencode, suy từ CHÍNH `DENIED_TOOLS` của huba.
 ///
 /// Một nguồn duy nhất: danh sách Claude ở `sessions.rs` là thứ `/new` vẫn dùng;
@@ -521,6 +566,9 @@ pub fn launch_line(cfg: &Config, acc: Option<&ClaudeAccountCfg>) -> String {
     if acc.is_opencode() {
         return opencode_launch_line(cfg, acc);
     }
+    if acc.is_codex() {
+        return codex_launch_line(cfg, acc);
+    }
     let dir = some(&acc.config_dir);
     if structured_fields(acc).is_empty() {
         return match dir {
@@ -634,6 +682,13 @@ pub fn launch_line_ps(cfg: &Config, acc: Option<&ClaudeAccountCfg>) -> String {
     if acc.is_opencode() {
         return opencode_launch_line_ps(cfg, acc);
     }
+    if acc.is_codex() {
+        return format!(
+            "$env:CODEX_HOME = {}; & {}",
+            ps_quote(&codex_home(acc).to_string_lossy()),
+            ps_quote(&cfg.codex_cli)
+        );
+    }
     let dir = some(&acc.config_dir);
     if structured_fields(acc).is_empty() {
         return match dir {
@@ -736,6 +791,12 @@ pub fn env_for_child(acc: &ClaudeAccountCfg) -> Vec<(String, Option<String>)> {
     if acc.is_opencode() {
         return opencode_env_for_child(acc);
     }
+    if acc.is_codex() {
+        return vec![(
+            "CODEX_HOME".to_string(),
+            Some(codex_home(acc).display().to_string()),
+        )];
+    }
     let dir = some(&acc.config_dir).map(|d| expand_home(Path::new(d)).display().to_string());
     let mut out = vec![("CLAUDE_CONFIG_DIR".to_string(), dir)];
     if let Some(b) = some(&acc.base_url) {
@@ -836,6 +897,15 @@ pub fn settings_patch(acc: &ClaudeAccountCfg) -> SettingsPatch {
             set: Vec::new(),
             unsupported: vec![
                 "opencode: cấu hình runtime đi qua OPENCODE_CONFIG_CONTENT, không dùng settings.json"
+                    .to_string(),
+            ],
+        };
+    }
+    if acc.is_codex() {
+        return SettingsPatch {
+            set: Vec::new(),
+            unsupported: vec![
+                "codex: cấu hình nằm ở CODEX_HOME/config.toml của codex, không dùng settings.json"
                     .to_string(),
             ],
         };
@@ -968,8 +1038,13 @@ pub enum AccountWrite {
 pub fn upsert_account(cfg: &Config, row: ClaudeAccountCfg) -> Result<AccountWrite, String> {
     validate_row(&row.name)?;
     if let Some(cli) = some(&row.cli) {
-        if !cli.eq_ignore_ascii_case("claude") && !cli.eq_ignore_ascii_case("opencode") {
-            return Err(format!("CLI `{cli}` không hợp lệ (chỉ claude/opencode)"));
+        if !["claude", "opencode", "codex"]
+            .iter()
+            .any(|k| cli.eq_ignore_ascii_case(k))
+        {
+            return Err(format!(
+                "CLI `{cli}` không hợp lệ (chỉ claude/opencode/codex)"
+            ));
         }
     }
     if let Some(v) = &row.opencode_config {
@@ -1091,6 +1166,12 @@ pub fn ensure_dirs(acc: &ClaudeAccountCfg) -> Result<Vec<String>, String> {
             notes.push(format!("phân vùng opencode: {}", p.display()));
         }
         return Ok(notes);
+    }
+    if acc.is_codex() {
+        let p = codex_home(acc);
+        std::fs::create_dir_all(&p)
+            .map_err(|e| format!("không tạo được thư mục {}: {e}", p.display()))?;
+        return Ok(vec![format!("CODEX_HOME: {}", p.display())]);
     }
     if acc.config_dir.as_deref().unwrap_or("").trim().is_empty() {
         return Err(
@@ -1490,6 +1571,8 @@ pub fn probe(acc: &ClaudeAccountCfg, quota: Option<Quota>) -> Probe {
 
     let dir = if acc.is_opencode() {
         opencode_profile_dir(acc)
+    } else if acc.is_codex() {
+        codex_home(acc)
     } else {
         crate::api_key::thu_muc(acc)
     };
@@ -1559,6 +1642,12 @@ pub fn probe(acc: &ClaudeAccountCfg, quota: Option<Quota>) -> Probe {
             Ok(n) => (Some(n), None),
             Err(e) => (None, Some(e)),
         }
+    } else if acc.is_codex() {
+        // KHÔNG ĐO ĐƯỢC ≠ 0 phiên: huba chưa có bộ đọc phiên codex.
+        (
+            None,
+            Some("huba chưa đọc được phiên codex (chưa có bộ liệt kê)".to_string()),
+        )
     } else {
         (None, None)
     };
@@ -1566,7 +1655,7 @@ pub fn probe(acc: &ClaudeAccountCfg, quota: Option<Quota>) -> Probe {
     // đầu bằng khối `if` bị bộ quét bí mật của cổng chung đọc thành "tên khoá
     // rồi tới literal" (ĐỎ oan, QG 12/11). Tách ra thành giá trị có tên thì bộ
     // trung hoà nhận ra ngay.
-    let khoa_tk = if acc.is_opencode() {
+    let khoa_tk = if !acc.is_claude() {
         None
     } else {
         crate::api_key::nhan(&dir)
@@ -1603,6 +1692,9 @@ pub fn checks(acc: &ClaudeAccountCfg, p: &Probe) -> Vec<Check> {
     if acc.is_opencode() {
         return checks_opencode(acc, p);
     }
+    if acc.is_codex() {
+        return checks_codex(acc, p);
+    }
     vec![
         check_dir(p),
         check_projects(p),
@@ -1625,6 +1717,42 @@ fn checks_opencode(acc: &ClaudeAccountCfg, p: &Probe) -> Vec<Check> {
         check_opencode_model(acc),
         check_opencode_config(acc),
         check_launch(acc),
+        check_live(p),
+    ]
+}
+
+/// Chẩn đoán cho một hàng `codex`: thư mục `CODEX_HOME` · đăng nhập (có
+/// `auth.json` — tệp `codex login` ghi, đo 14/11 codex-cli 0.169.0) · phiên.
+/// Đọc đĩa, không chạy tiến trình — `codex login status` là việc của
+/// `/accounts <tên>` ([`crate::runtime::auth_status_run`]).
+fn checks_codex(acc: &ClaudeAccountCfg, p: &Probe) -> Vec<Check> {
+    let auth = Path::new(&p.dir).join("auth.json");
+    let co = auth.is_file();
+    vec![
+        Check {
+            code: "codex_home",
+            state: if p.dir_exists {
+                CheckState::Ok
+            } else {
+                CheckState::Fail
+            },
+            text: if p.dir_exists {
+                format!("CODEX_HOME: {}", p.dir)
+            } else {
+                format!("CODEX_HOME CHƯA có (codex từ chối chạy): {}", p.dir)
+            },
+            path: p.dir.clone(),
+        },
+        Check {
+            code: "login",
+            state: if co { CheckState::Ok } else { CheckState::Fail },
+            text: if co {
+                "có auth.json (đã đăng nhập ChatGPT)".to_string()
+            } else {
+                format!("chưa đăng nhập — /accounts {} -l", acc.name)
+            },
+            path: auth.display().to_string(),
+        },
         check_live(p),
     ]
 }

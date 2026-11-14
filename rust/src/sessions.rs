@@ -4971,7 +4971,8 @@ pub fn listed_in_books(cfg: &Config, want: &str) -> Listed {
     let mut blind = Vec::new();
     for account in &cfg.claude_accounts_or_ambient() {
         // acc opencode không có sổ Claude — sổ của nó là `listed_in_opencode`.
-        if account.is_opencode() {
+        // acc codex: chưa có sổ nào huba đọc.
+        if !account.is_claude() {
             continue;
         }
         match list_account(account, &cfg.claude_cli) {
@@ -5879,7 +5880,8 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
         // 🔴 acc opencode đi khối «opencode: nguồn phiên THỨ HAI» bên dưới. Đo
         // Ubuntu 13/11: thiếu phép rẽ này thì mỗi vòng spawn `claude agents
         // --json` với thư mục của acc8 (957/2721 dòng log `claude_books_missing`).
-        if account.is_opencode() {
+        // acc codex cũng không có sổ Claude.
+        if !account.is_claude() {
             continue;
         }
         let ask_started = std::time::Instant::now();
@@ -7782,7 +7784,7 @@ pub enum DuongHoiBenLe {
 /// bản sao), thay vì bắn chữ lạ vào cửa sổ người khác.
 pub fn duong_hoi_ben_le(acc: Option<&ClaudeAccountCfg>) -> DuongHoiBenLe {
     match acc {
-        Some(a) if !a.is_opencode() => DuongHoiBenLe::Btw,
+        Some(a) if a.is_claude() => DuongHoiBenLe::Btw,
         _ => DuongHoiBenLe::Fork,
     }
 }
@@ -9334,9 +9336,25 @@ pub fn ensure_account_usable(cfg: &Config, account: Option<&str>) -> Result<()> 
             );
             anyhow::bail!(account_locked_text(cfg, &n))
         }
+        Some(n) if account_row(cfg, Some(&n)).is_some_and(|a| a.is_codex()) => {
+            logging::warn(
+                "account_codex_refused",
+                json!({ "account": n, "why": CODEX_CHUA_MO_PHIEN }),
+            );
+            anyhow::bail!("⛔ {n}: {CODEX_CHUA_MO_PHIEN}")
+        }
         _ => Ok(()),
     }
 }
+
+/// Vì sao huba chưa mở phiên trên hàng `codex` — MỘT câu cho mọi cửa từ chối.
+///
+/// Luật 1: mọi phiên huba mở đứng sau `DENIED_TOOLS` (`--disallowedTools` của
+/// claude, plugin cổng bảo mật của opencode). codex không có cờ ấy; chưa nối
+/// cổng bảo mật chung vào codex thì mở phiên là mở một tay KHÔNG có tường.
+/// Đăng nhập (`/accounts <tên> -l`) không chạy công cụ nào ⟹ vẫn cho.
+pub const CODEX_CHUA_MO_PHIEN: &str =
+    "huba chưa mở phiên codex — codex chưa có tường lệnh cấm (luật 1). Đăng nhập được: /accounts <tên> -l";
 
 /// Câu từ chối cho một tài khoản đang khoá — MỘT chỗ dựng, để `/new`,
 /// `/handover`, `huba handover` và cửa [`ensure_account_usable`] nói cùng một
@@ -9345,7 +9363,8 @@ pub fn account_locked_text(cfg: &Config, name: &str) -> String {
     let mo: Vec<&str> = cfg
         .claude_accounts
         .iter()
-        .filter(|a| !a.locked)
+        // codex chưa mở phiên được ⟹ không kể là "còn dùng được".
+        .filter(|a| !a.locked && !a.is_codex())
         .map(|a| a.name.as_str())
         .collect();
     let con = if mo.is_empty() {
