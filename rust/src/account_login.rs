@@ -719,6 +719,14 @@ pub fn danh_tinh_tat_ca(cfg: &Config) -> Vec<(String, Option<String>)> {
     cfg.claude_accounts_or_ambient()
         .iter()
         .map(|a| {
+            // codex: email ChatGPT, mang tiền tố để KHÔNG bị so trùng với email
+            // Claude (cùng hòm thư ở hai nhà cung cấp không chung hạn mức).
+            if a.is_codex() {
+                return (
+                    a.name.clone(),
+                    crate::accounts::codex_email(a).map(|e| format!("ChatGPT {e}")),
+                );
+            }
             if let Some(nhan) = crate::api_key::nhan(&crate::api_key::thu_muc(a)) {
                 return (a.name.clone(), Some(nhan));
             }

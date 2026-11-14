@@ -1395,7 +1395,10 @@ pub fn read_all(cfg: &crate::config::Config) -> Vec<Quota> {
             // opencode: "Không đo được" là trạng thái riêng, không phải "chưa
             // đăng nhập" (luật 13②) — xem [`read_acc`].
             if !is_go_plan(a) {
-                return khong_do_duoc(&a.name, "opencode: không dùng sổ hạn mức Claude");
+                return khong_do_duoc(
+                    &a.name,
+                    &format!("{}: không dùng sổ hạn mức Claude", a.cli_name()),
+                );
             }
             let (doc_luc, r) = crate::opencode::go_limits(a, now_ms());
             go_quota(&a.name, r, doc_luc)

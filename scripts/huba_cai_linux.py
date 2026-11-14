@@ -62,7 +62,8 @@ def gop_tai_khoan(cfg, mau):
         if a.get("name") and a["name"] not in co:
             cfg.setdefault("claude_accounts", []).append(lam_sach_hang(a))
             them.append(a["name"])
-    cfg["claude_accounts"] = sorted(cfg.get("claude_accounts", []), key=lambda a: a.get("name", ""))
+    # Xếp tên TỰ NHIÊN (acc2 < acc10) — xếp theo chữ đặt acc10 ngay sau acc1 (đo 14/11).
+    cfg["claude_accounts"] = sorted(cfg.get("claude_accounts", []), key=lambda a: ten_tu_nhien(a.get("name", "")))
     return them
 
 
@@ -95,6 +96,11 @@ def cmd_cau_hinh(cfg_p, mau_p):
     if goc:
         print(f"  {goc}")
     return 0
+
+
+def ten_tu_nhien(ten):
+    """Khoá xếp tên tự nhiên: khúc số so theo giá trị. Thuần."""
+    return [(0, int(t), "") if t.isdigit() else (1, 0, t) for t in re.split(r"(\d+)", ten) if t != ""]
 
 
 def cli_cua(a):
@@ -371,6 +377,10 @@ def tu_kiem():
     ok(can_cli({"claude_accounts": [{"name": "a"}, {"name": "c", "cli": "codex"}]}) == ["claude", "codex"],
        "acc codex ⟹ cần codex, không đọc thành claude")
     ok(can_cli({}) == ["claude"], "không có acc ⟹ acc mặc định cần claude")
+    c = {"claude_accounts": [{"name": "acc1"}, {"name": "acc2"}, {"name": "acc9"}]}
+    gop_tai_khoan(c, [{"name": "acc10", "cli": "codex"}])
+    ok([a["name"] for a in c["claude_accounts"]] == ["acc1", "acc2", "acc9", "acc10"],
+       "thêm acc10 ⟹ đứng SAU acc9 (xếp tự nhiên, không theo chữ)")
     with tempfile.TemporaryDirectory() as h:
         g = os.path.join(h, "ws")
         os.mkdir(g)

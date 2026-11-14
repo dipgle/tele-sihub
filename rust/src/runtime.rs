@@ -208,6 +208,11 @@ pub fn account_detail_say(
     // đọc ra một câu, không phải hai (luật 11b).
     let lam_probe = |quota: Option<crate::quota::Quota>| {
         let mut p = crate::accounts::probe(&acc, quota);
+        // codex: huba chưa liệt kê phiên codex ⟹ giữ nguyên câu KHÔNG ĐO ĐƯỢC của
+        // `probe`, đừng đè thành "0 phiên".
+        if acc.is_codex() {
+            return p;
+        }
         p.live_sessions = Some(
             live.sessions
                 .iter()
@@ -268,8 +273,11 @@ pub fn account_detail_say(
         .map(|d| crate::config::expand_home(Path::new(d)));
     let (q, id) = match crate::quota::read_acc(&acc) {
         None => (
-            crate::quota::khong_do_duoc(&acc.name, "opencode: không dùng sổ Claude"),
-            Err("opencode: không có danh tính Claude".to_string()),
+            crate::quota::khong_do_duoc(
+                &acc.name,
+                &format!("{}: không dùng sổ Claude", acc.cli_name()),
+            ),
+            Err(format!("{}: không có danh tính Claude", acc.cli_name())),
         ),
         Some(q) => (q, crate::quota::identity(dir.as_deref())),
     };
@@ -585,6 +593,26 @@ pub fn accounts_text(
 /// `ids` = `(tên, email)` từ [`crate::account_login::danh_tinh_tat_ca`] — truyền vào,
 /// không đọc tại chỗ, cùng ranh giới với `quotas`. Rỗng ⟹ không in email (đường cũ).
 /// Có trong `ids` mà sổ không ghi email ⟹ NÓI là chưa đọc được, đừng bỏ trống.
+/// Khoá xếp tên TỰ NHIÊN: `acc2` < `acc10` (khúc số so theo giá trị). THUẦN.
+pub fn ten_tu_nhien(ten: &str) -> Vec<(String, u64)> {
+    let mut out = Vec::new();
+    let mut chu = String::new();
+    let mut so = String::new();
+    for c in ten.chars() {
+        if c.is_ascii_digit() {
+            so.push(c);
+        } else {
+            if !so.is_empty() {
+                out.push((std::mem::take(&mut chu), so.parse().unwrap_or(u64::MAX)));
+                so.clear();
+            }
+            chu.push(c);
+        }
+    }
+    out.push((chu, so.parse().unwrap_or(0)));
+    out
+}
+
 pub fn accounts_text_voi_email(
     cfg: &Config,
     live: &SessionsSnapshot,
@@ -598,13 +626,15 @@ pub fn accounts_text_voi_email(
     let per_acc = usage.get("accounts");
     let accounts = cfg.claude_accounts_or_ambient();
 
+    // Xếp theo tên TỰ NHIÊN (acc2 trước acc10). Đo 14/11: tệp cấu hình xếp theo
+    // chữ (trình cài `sorted()`) ⟹ acc10 đứng ngay sau acc1, người đọc tìm ở
+    // cuối danh sách và báo «chưa thấy tài khoản 10».
+    let mut accounts = accounts;
+    accounts.sort_by_key(|a| ten_tu_nhien(&a.name));
     let so_khoa = accounts.iter().filter(|a| a.locked).count();
     let mut out = match so_khoa {
-        0 => format!("👤 {} tài khoản claude\n", accounts.len()),
-        k => format!(
-            "👤 {} tài khoản claude · 🔒 {k} đang khoá\n",
-            accounts.len()
-        ),
+        0 => format!("👤 {} tài khoản\n", accounts.len()),
+        k => format!("👤 {} tài khoản · 🔒 {k} đang khoá\n", accounts.len()),
     };
     for acc in &accounts {
         let mine: Vec<_> = live
@@ -633,6 +663,8 @@ pub fn accounts_text_voi_email(
             // *"không có phiên nào"* và *"phiên gần nhất … 187 tiếng trước"* cạnh
             // nhau thành mâu thuẫn.
             match mine.len() {
+                // codex: huba chưa có bộ liệt kê ⟹ «0» là phép đo chưa từng chạy.
+                _ if acc.is_codex() => "phiên: huba chưa đọc được".to_string(),
                 0 => "không có phiên nào đang chạy".to_string(),
                 n => format!(
                     "{n} phiên: {}",
@@ -643,6 +675,15 @@ pub fn accounts_text_voi_email(
                 ),
             }
         ));
+        // codex: nói nó LÀ GÌ ngay dưới tên — không có hạn mức Claude, chưa mở phiên.
+        if acc.is_codex() {
+            let co = crate::accounts::codex_home(acc).join("auth.json").is_file();
+            out.push_str(&format!(
+                "    🤖 codex (ChatGPT) · {} · ⛔ huba chưa mở phiên codex · đăng nhập lại: /accounts {} -l\n",
+                if co { "đã đăng nhập" } else { "CHƯA đăng nhập" },
+                acc.name
+            ));
+        }
         // 🔒 Ngay dưới tên, trước mọi con số: tài khoản khoá thì hạn mức bên dưới
         // chỉ còn là thông tin, không còn là lý do để chọn nó.
         if acc.locked {

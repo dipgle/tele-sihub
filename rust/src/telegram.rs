@@ -4254,7 +4254,7 @@ mod tests {
         let i = bare_voi(cfg_voi(&["acc1", "acc2", "acc3", "acc4", "acc5"]));
         let truoc = cau(&i);
         assert!(
-            truoc.starts_with("👤 5 tài khoản claude"),
+            truoc.starts_with("👤 5 tài khoản\n"),
             "nền phải là 5 tài khoản:\n{truoc}"
         );
 
@@ -4262,7 +4262,7 @@ mod tests {
         i.set_cfg(&cfg_voi(&["acc1", "acc2", "acc3", "acc4", "acc5", "acc6"]));
         let sau = cau(&i);
         assert!(
-            sau.starts_with("👤 6 tài khoản claude"),
+            sau.starts_with("👤 6 tài khoản\n"),
             "tài khoản mới KHÔNG tới được đường Telegram — đúng lỗi 19/09:\n{sau}"
         );
         assert!(sau.contains("\nacc6"), "thiếu hẳn dòng acc6:\n{sau}");

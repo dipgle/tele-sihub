@@ -141,6 +141,56 @@ pub fn codex_login_line(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
     format!("{} login --device-auth", codex_base_line(cfg, acc))
 }
 
+/// Email ChatGPT của một hàng codex — claim `email` trong `tokens.id_token`
+/// (JWT) của `CODEX_HOME/auth.json`. Đo 14/11 (codex-cli 0.169.0): có `email`
+/// và `email_verified`. Chỉ đọc PHẦN THÂN của JWT, không kiểm chữ ký — đây là
+/// nhãn để người đọc biết acc nào là ai, không phải một phép xác thực.
+/// `None` = chưa đăng nhập (không có tệp) hoặc đọc hỏng — hỏng thì GHI LOG.
+pub fn codex_email(acc: &ClaudeAccountCfg) -> Option<String> {
+    use base64::Engine;
+    let p = codex_home(acc).join("auth.json");
+    let text = match std::fs::read_to_string(&p) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            crate::logging::warn(
+                "codex_auth_unreadable",
+                json!({ "account": acc.name, "path": p.display().to_string(), "err": e.to_string() }),
+            );
+            return None;
+        }
+    };
+    let email = serde_json::from_str::<Value>(&text)
+        .ok()
+        .and_then(|v| {
+            v.pointer("/tokens/id_token")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .and_then(|jwt| jwt.split('.').nth(1).map(str::to_string))
+        .and_then(|body| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(body.trim_end_matches('='))
+                .ok()
+        })
+        .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
+        .and_then(|claims| {
+            claims
+                .get("email")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .filter(|e| !e.is_empty());
+    if email.is_none() {
+        crate::logging::warn(
+            "codex_email_not_found",
+            json!({ "account": acc.name, "path": p.display().to_string(),
+                    "why": "auth.json có nhưng không đọc ra claim email trong tokens.id_token" }),
+        );
+    }
+    email
+}
+
 /// `CODEX_HOME=<thư mục> <codex_cli>` — gốc cho `login …`; KHÔNG mang `extra_args` của phiên.
 pub fn codex_base_line(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
     format!(

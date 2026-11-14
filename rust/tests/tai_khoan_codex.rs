@@ -137,3 +137,58 @@ fn dong_lenh_codex_dat_codex_home_rieng() {
     assert_eq!(env.len(), 1);
     assert_eq!(env[0].0, "CODEX_HOME");
 }
+
+/// Ca thật 14/11: `/accounts` in acc10 NGAY SAU acc1 (tệp cấu hình xếp theo chữ),
+/// không nói nó là codex, còn ghi «opencode» — người đọc báo «chưa thấy tài khoản 10».
+#[test]
+fn danh_sach_xep_tu_nhien_va_noi_ro_hang_codex() {
+    let mut c = common::cfg_for_tests();
+    // Đúng thứ tự trong tệp cấu hình đang chạy hôm ấy.
+    c.claude_accounts = vec![
+        hang("acc1", None),
+        hang("acc10", Some("codex")),
+        hang("acc2", None),
+        hang("acc9", None),
+    ];
+    let quotas = huba::quota::read_all(&c);
+    let s = huba::runtime::accounts_text(
+        &c,
+        &huba::sessions::SessionsSnapshot::default(),
+        &serde_json::json!({}),
+        &quotas,
+        &Default::default(),
+        0,
+    );
+    let vi = |t: &str| {
+        s.find(&format!("\n{t} "))
+            .unwrap_or_else(|| panic!("thiếu {t}:\n{s}"))
+    };
+    assert!(
+        vi("acc1") < vi("acc2") && vi("acc2") < vi("acc9") && vi("acc9") < vi("acc10"),
+        "{s}"
+    );
+    let khuc = &s[vi("acc10")..];
+    assert!(khuc.contains("codex (ChatGPT)"), "{s}");
+    assert!(
+        !khuc.contains("opencode"),
+        "hàng codex không được mang nhãn opencode:\n{s}"
+    );
+    assert!(
+        !khuc.contains("không có phiên nào đang chạy"),
+        "phiên codex chưa đo ⟹ không khai 0:\n{s}"
+    );
+    // Vế ngược: hàng claude vẫn đi câu cũ.
+    assert!(
+        s[vi("acc2")..vi("acc9")].contains("không có phiên nào đang chạy"),
+        "{s}"
+    );
+}
+
+#[test]
+fn ten_tu_nhien_so_khuc_so_theo_gia_tri() {
+    use huba::runtime::ten_tu_nhien as k;
+    assert!(k("acc2") < k("acc10"));
+    assert!(k("acc1") < k("acc2"));
+    assert!(k("acc") < k("acc1"));
+    assert!(k("acc9") < k("acc10"));
+}
