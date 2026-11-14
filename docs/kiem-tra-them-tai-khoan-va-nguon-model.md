@@ -49,6 +49,11 @@ riêng, không phải xanh.
 - Luật chung nạp lúc mở phiên (hook SessionStart).
 - MCP codetrail gắn được (`HUBA_MCP_PROJECT_AGENT`); thiếu binary ⇒ log, không im.
 - Effort mặc định `high`; ô `effort` của hàng acc thắng.
+- 🔴 **Cửa sổ ngữ cảnh**: CLI tự khai số nào (codex `model_context_window`) thì mang vào
+  `LiveSession.context_window` — bảng đoán `sessions::cua_so` chỉ là chỗ rơi. Đo: `huba sessions --json` có
+  `context_window` + `%` trên `/session` khớp `/status` của CLI. Thiếu ⇒ `auto_handover` bàn giao oan.
+- Mọi lời gọi chạy CLI trên phiên (`fork_call`: `/ask` · `/handover` · `auto_handover`) phải có nhánh cho CLI
+  này — không có thì TỪ CHỐI RÕ, đừng rơi xuống nhánh `claude`.
 
 ### B3. Nhìn và điều khiển từ điện thoại (bài kiểm cầu nối)
 | Mục | Đo |
@@ -75,7 +80,8 @@ riêng, không phải xanh.
 | B1 tắt tìm web | ✅ `--disallowedTools` | ✅ cổng | ✅ `web_search="disabled"` (`bd6ee9e`, đo hai chiều: mặc định codex TỰ tìm web) |
 | MCP mặc định | — | — | `codex_apps` tắt bằng `features.apps=false` · `codex_tui` (quản luồng) KHÔNG tắt được |
 | MCP codetrail gọi được | ✅ | ✅ | ✅ `default_tools_approval_mode="approve"` (`3e5aca5`; đo hai chiều: không khoá ⟹ «requires approval, but approval policy is never») |
-| B3 `/session` liệt kê | ✅ | ✅ | ✅ `huba sessions --json` máy thật (`06cbaa6`) · ⚠ hubd CHƯA cài lại · Telegram chưa đo |
+| B3 `/session` liệt kê | ✅ | ✅ | ✅ bản cài 15/11: 4 root/4 link trong tin Telegram1451; source=cli, không lấy child mới hơn. Mốc lượt toàn rollout giữ đúng chạy/dừng ở lượt dài; đếm direct child busy. Chưa nghiệm thu bấm UI hoặc bộ đếm khi có child thật đang chạy |
+| `%` ngữ cảnh trên điện thoại + `auto_handover` | ✅ bảng `cua_so` | ✅ bảng (1M) | ✅ số codex TỰ KHAI (`LiveSession.context_window`, 14/11) — trước đó đoán 200k ⇒ in 73–79% khi thật 33%, `auto_handover` bắn oan 3 lần (`codex --resume` mã 2, vô hại). Codex KHÔNG đi `auto_handover`/`/ask`/`/handover` (fork chỉ-đọc chưa đo) — tự chuyển khi hook nhắc |
 | Nhắc chuyển phiên ≥ 50 % | ✅ hook Stop/UserPromptSubmit | chưa đo | ✅ cùng `nhac-chuyen-phien.py` (huba `b89db79` · workspace `ba629d8`; cửa sổ = `model_context_window` codex tự khai) |
 | B3 bảng hỏi → nút `/pick` | ✅ | ✅ (dịch khuôn) | ❌ chưa (`request_user_input` trong rollout) |
 | `/new` + `/close` trên Telegram | ✅ | ✅ | chưa đo sau `a17b03a` |

@@ -716,6 +716,70 @@ pub fn co_man_hinh(env: impl Fn(&str) -> Option<String>) -> bool {
         .any(|k| env(k).is_some_and(|v| !v.trim().is_empty()))
 }
 
+/// Môi trường chỉ dành cho tiến trình mở terminal; không sửa env toàn daemon.
+/// systemd được GNOME cập nhật SAU login, còn hubd có thể đã chạy từ lúc boot.
+/// JSON giữ nguyên giá trị có khoảng trắng; không eval output của systemctl.
+pub fn moi_truong_cua_so(
+    env: impl Fn(&str) -> Option<String>,
+    manager_json: &str,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let moi: std::collections::BTreeMap<String, String> = serde_json::from_str(manager_json)?;
+    Ok(BIEN_DESKTOP
+        .iter()
+        .filter_map(|k| {
+            moi.get(*k)
+                .cloned()
+                .or_else(|| env(k))
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| ((*k).to_string(), v))
+        })
+        .collect())
+}
+
+const BIEN_DESKTOP: &[&str] = &[
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+];
+
+fn doc_moi_truong_cua_so() -> std::collections::BTreeMap<String, String> {
+    let ket = (|| -> Result<_> {
+        let r = run(
+            "systemctl",
+            &["--user", "show-environment", "--output=json"],
+            RunOpts {
+                timeout: Some(Duration::from_secs(3)),
+                ..Default::default()
+            },
+        )?;
+        if !r.ok() || r.cut_bytes != 0 {
+            return Err(anyhow!(
+                "systemctl show-environment: code={:?}, timeout={}, cut={}",
+                r.code,
+                r.timed_out,
+                r.cut_bytes
+            ));
+        }
+        moi_truong_cua_so(|k| std::env::var(k).ok(), &r.stdout)
+    })();
+    match ket {
+        Ok(moi) => moi,
+        Err(e) => {
+            crate::logging::warn(
+                "tmux_desktop_env_khong_do_duoc",
+                serde_json::json!({ "err": e.to_string(), "effect": "thử env của hubd; chưa xác định được desktop hiện tại" }),
+            );
+            // Không biến lỗi đọc systemd thành kết luận máy không có màn hình.
+            BIEN_DESKTOP
+                .iter()
+                .filter_map(|k| std::env::var(k).ok().map(|v| ((*k).to_string(), v)))
+                .collect()
+        }
+    }
+}
+
 /// Trình terminal dùng được: `HUBA_TERMINAL` (tên trong [`TERMINALS`]) thắng,
 /// không thì cái đầu tiên có trên PATH.
 fn chon_terminal() -> Option<String> {
@@ -743,11 +807,11 @@ fn chon_terminal() -> Option<String> {
 /// Mở cửa sổ xem cho pane `%w`. Không mở được KHÔNG làm hỏng `/new` (pane đã có,
 /// gõ/đọc vẫn chạy) — nhưng mọi đường bỏ qua đều GHI LOG kèm lý do.
 fn mo_cua_so_xem(phien: &str, w: i64) {
-    let doc_env = |k: &str| std::env::var(k).ok();
-    if !co_man_hinh(doc_env) {
+    let desktop_env = doc_moi_truong_cua_so();
+    if !co_man_hinh(|k| desktop_env.get(k).cloned()) {
         crate::logging::info(
             "tmux_xem_bo_qua",
-            serde_json::json!({ "pane": w, "why": "không có WAYLAND_DISPLAY/DISPLAY — máy không có màn hình đồ hoạ",
+            serde_json::json!({ "pane": w, "why": "chưa có WAYLAND_DISPLAY/DISPLAY trong môi trường desktop hiện tại",
                                 "effect": "phiên vẫn chạy trong tmux: tmux attach -t huba" }),
         );
         return;
@@ -782,6 +846,7 @@ fn mo_cua_so_xem(phien: &str, w: i64) {
     use std::os::unix::process::CommandExt;
     let spawn = std::process::Command::new(&argv[0])
         .args(&argv[1..])
+        .envs(&desktop_env)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

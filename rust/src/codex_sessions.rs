@@ -53,11 +53,22 @@ pub fn is_codex_tui(command: &str) -> bool {
     )
 }
 
-/// Trong các đích fd của một tiến trình, tệp rollout nằm dưới `sessions_dir`
-/// (`CODEX_HOME/sessions`). Nhiều tệp (hiếm — chưa thấy) ⟹ lấy tên lớn nhất: tên
-/// mang mốc mở phiên, nên đó là phiên mới nhất của tiến trình.
-pub fn rollout_among(targets: &[PathBuf], sessions_dir: &Path) -> Option<PathBuf> {
-    targets
+/// Phiên CHÍNH đang mở trong TUI. TUI giữ cả fd của các agent con; thứ tự tên
+/// tệp không nói được ai sở hữu cửa sổ. Chỉ `session_meta.source = "cli"` là
+/// phiên chính. Metadata hỏng/mơ hồ phải trả lỗi để người gọi giữ sổ (`blind`).
+pub fn rollout_among(targets: &[PathBuf], sessions_dir: &Path) -> Result<Option<PathBuf>, String> {
+    select_root_rollout(targets, sessions_dir, |p| {
+        first_line(p, 1 << 20).map_err(|e| format!("{}: {e}", p.display()))
+    })
+}
+
+/// Cùng bộ chọn với fd thật; tách nguồn đọc để kiểm cả lỗi I/O và đối chứng.
+pub fn select_root_rollout(
+    targets: &[PathBuf],
+    sessions_dir: &Path,
+    mut read_head: impl FnMut(&Path) -> Result<String, String>,
+) -> Result<Option<PathBuf>, String> {
+    let paths: std::collections::BTreeSet<&PathBuf> = targets
         .iter()
         .filter(|p| p.starts_with(sessions_dir))
         .filter(|p| {
@@ -65,8 +76,212 @@ pub fn rollout_among(targets: &[PathBuf], sessions_dir: &Path) -> Option<PathBuf
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| n.starts_with("rollout-") && n.ends_with(".jsonl"))
         })
-        .max()
-        .cloned()
+        .collect();
+    if paths.is_empty() {
+        return Ok(None);
+    }
+    let mut roots = Vec::new();
+    for path in paths {
+        let raw = read_head(path)?;
+        let v: Value = serde_json::from_str(raw.trim())
+            .map_err(|e| format!("{}: session_meta không đọc được: {e}", path.display()))?;
+        if v["type"] != "session_meta" || v["payload"]["id"].as_str().is_none_or(str::is_empty) {
+            return Err(format!("{}: thiếu session_meta/id", path.display()));
+        }
+        let source = &v["payload"]["source"];
+        if source.as_str() == Some("cli") {
+            roots.push(path.clone());
+        } else if source.get("subagent").is_some() || source.as_str() == Some("exec") {
+            // Đây là công việc bên trong phiên, không phải một cửa sổ khác.
+        } else {
+            return Err(format!("{}: nguồn phiên chưa nhận diện", path.display()));
+        }
+    }
+    match roots.len() {
+        1 => Ok(roots.pop()),
+        n => Err(format!(
+            "có {n} rollout cli trong cùng TUI — chưa xác định được phiên chính"
+        )),
+    }
+}
+
+/// Chỉ lời assistant thật, không lấy item_completed (bản sao của cùng lời nói),
+/// tool result hay user trích tên dự án vào phép đếm lời tự khai.
+pub fn assistant_text(record: &Value) -> Option<String> {
+    let p = &record["payload"];
+    if record["type"] != "response_item" || p["type"] != "message" || p["role"] != "assistant" {
+        return None;
+    }
+    let texts: Vec<&str> = p["content"]
+        .as_array()?
+        .iter()
+        .filter_map(|c| c["text"].as_str())
+        .collect();
+    (!texts.is_empty()).then(|| texts.join("\n"))
+}
+
+/// Đề bài đầu tiên của CHỦ MÁY, đọc từ đầu rollout khi chưa có thread_name.
+/// Các khối luật/môi trường được CLI chèn cũng có role=user nhưng không phải
+/// tên việc. Giữ tên này ổn định, không lấy lời assistant đang đổi mỗi vòng.
+pub fn user_task(prefix: &str) -> Option<String> {
+    for line in prefix.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let p = &v["payload"];
+        let text = match (v["type"].as_str(), p["type"].as_str()) {
+            (Some("response_item"), Some("message")) if p["role"] == "user" => {
+                p["content"].as_array().map(|a| {
+                    a.iter()
+                        .filter_map(|c| c["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+            }
+            (Some("event_msg"), Some("user_message")) => p["message"].as_str().map(str::to_string),
+            (Some("event_msg"), Some("item_completed")) if p["item"]["type"] == "UserMessage" => {
+                p["item"]["content"].as_array().map(|a| {
+                    a.iter()
+                        .filter_map(|c| c["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+            }
+            _ => None,
+        };
+        let Some(text) = text else { continue };
+        let text = text.trim();
+        if text.is_empty()
+            || [
+                "# AGENTS.md instructions",
+                "<environment_context>",
+                "<INSTRUCTIONS>",
+                "<turn_aborted>",
+            ]
+            .iter()
+            .any(|s| text.starts_with(s))
+        {
+            continue;
+        }
+        return text
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .map(|s| crate::exec::truncate(s.trim(), 160));
+    }
+    None
+}
+
+/// Bỏ phần tên dự án đã có trên nhãn; chỉ bỏ khi khớp dự án/làn đã đo được.
+pub fn task_caption(name: &str, folder: &str, lane: &str) -> String {
+    if let Some((project, task)) = name.split_once(':') {
+        let declared = if lane.is_empty() {
+            folder.to_string()
+        } else {
+            format!("{folder}/{lane}")
+        };
+        if !folder.is_empty()
+            && (project.trim() == folder || project.trim() == declared)
+            && !task.trim().is_empty()
+        {
+            return task.trim().to_string();
+        }
+    }
+    name.to_string()
+}
+
+/// Đọc đầu rollout có giới hạn, bỏ dòng bị cắt giữa UTF-8/JSON ở mép cuối.
+pub fn read_prefix(path: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(256 * 1024)
+        .read_to_end(&mut bytes)?;
+    if let Some(end) = bytes.iter().rposition(|b| *b == b'\n') {
+        bytes.truncate(end + 1);
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Đọc mốc lượt trên TOÀN nhật ký. Đuôi 256KB không chứa task_started của một
+/// lượt dài; mtime đứng im khi chạy lệnh không có nghĩa là lượt đã kết thúc.
+/// Quét dòng và chỉ parse các mốc, không parse những khối tool output lớn.
+pub fn turn_busy(path: &Path) -> Result<Option<bool>, String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut line = String::new();
+    let mut busy = None;
+    loop {
+        line.clear();
+        if reader
+            .read_line(&mut line)
+            .map_err(|e| format!("{}: {e}", path.display()))?
+            == 0
+        {
+            break;
+        }
+        // Dòng cuối còn đang ghi chưa phải bản ghi hoàn chỉnh.
+        if !line.ends_with('\n') {
+            break;
+        }
+        if !["task_started", "task_complete", "turn_aborted"]
+            .iter()
+            .any(|s| line.contains(s))
+        {
+            continue;
+        }
+        let v: Value = serde_json::from_str(&line)
+            .map_err(|e| format!("{}: mốc lượt hỏng: {e}", path.display()))?;
+        if v["type"] != "event_msg" {
+            continue;
+        }
+        match v["payload"]["type"].as_str() {
+            Some("task_started") => busy = Some(true),
+            Some("task_complete" | "turn_aborted") => busy = Some(false),
+            _ => {}
+        }
+    }
+    Ok(busy)
+}
+
+/// Số agent con TRỰC TIẾP còn lượt đang chạy, cùng nghĩa pending_subagents của
+/// Claude. fd mở / thread_spawn_edges=open chỉ nói "còn giữ", không nói "bận".
+pub fn pending_children(
+    targets: &[PathBuf],
+    sessions_dir: &Path,
+    root_id: &str,
+) -> Result<usize, String> {
+    let paths: std::collections::BTreeSet<&PathBuf> = targets
+        .iter()
+        .filter(|p| p.starts_with(sessions_dir))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|n| n.starts_with("rollout-") && n.ends_with(".jsonl"))
+        })
+        .collect();
+    let mut count = 0;
+    for path in paths {
+        let raw = first_line(path, 1 << 20).map_err(|e| format!("{}: {e}", path.display()))?;
+        let v: Value =
+            serde_json::from_str(&raw).map_err(|e| format!("{}: {e}", path.display()))?;
+        if v["payload"]["source"]["subagent"]["thread_spawn"]["parent_thread_id"].as_str()
+            != Some(root_id)
+        {
+            continue;
+        }
+        match turn_busy(path)? {
+            Some(true) => count += 1,
+            Some(false) => {}
+            None => {
+                return Err(format!(
+                    "{}: chưa đọc được mốc lượt agent con",
+                    path.display()
+                ))
+            }
+        }
+    }
+    Ok(count)
 }
 
 /// Những gì đọc được từ một tệp rollout.
@@ -86,6 +301,9 @@ pub struct Rollout {
     /// RFC 3339 của dòng cuối có mốc.
     pub last_ts: Option<String>,
     pub context_tokens: u64,
+    /// `token_count.info.model_context_window` — cửa sổ codex TỰ KHAI (đo 14/11:
+    /// 475 000). `None` = đuôi chưa có `token_count` nào khai số ấy.
+    pub context_window: Option<u64>,
 }
 
 /// Đọc dòng ĐẦU (`session_meta`) + ĐUÔI của một rollout. Hàm THUẦN.
@@ -139,6 +357,12 @@ pub fn parse_rollout(head_line: &str, tail: &str) -> Rollout {
             (Some("event_msg"), Some("token_count")) => {
                 if let Some(n) = p["info"]["last_token_usage"]["input_tokens"].as_u64() {
                     r.context_tokens = n;
+                }
+                if let Some(w) = p["info"]["model_context_window"]
+                    .as_u64()
+                    .filter(|w| *w > 0)
+                {
+                    r.context_window = Some(w);
                 }
             }
             (Some("event_msg"), Some("item_completed")) => {

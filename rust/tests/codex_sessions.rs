@@ -4,7 +4,7 @@
 //! pts/11 · pts/14 hiện trên `/session` thành «cửa sổ pts/11» trơn (loại `shell`,
 //! không tên, không dự án) — bản cài a17b03a có 0 hàng codex.
 
-use huba::codex_sessions::{is_codex_tui, parse_rollout, rollout_among, thread_name};
+use huba::codex_sessions::{is_codex_tui, parse_rollout, select_root_rollout, thread_name};
 use std::path::{Path, PathBuf};
 
 const TUI: &str = "/home/user1/.npm-global/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex -s workspace-write -a never --dangerously-bypass-hook-trust";
@@ -34,10 +34,13 @@ fn chon_dung_tep_rollout_dang_mo() {
         "/home/u/.codex-acc11/sessions/2026/11/14/rollout-2026-11-14T15-00-00-ffffffff-0000-0000-0000-000000000000.jsonl".into(),
     ];
     assert_eq!(
-        rollout_among(&targets, s).unwrap(),
+        select_root_rollout(&targets, s, |_| Ok(HEAD.to_string())).unwrap().unwrap(),
         PathBuf::from("/home/u/.codex-acc10/sessions/2026/11/14/rollout-2026-11-14T14-35-11-01a1d8fb-5244-7a80-8a50-7442ef0e760d.jsonl")
     );
-    assert_eq!(rollout_among(&targets[..2], s), None);
+    assert_eq!(
+        select_root_rollout(&targets[..2], s, |_| panic!("không có rollout")),
+        Ok(None)
+    );
 }
 
 const HEAD: &str = r#"{"timestamp":"2026-11-14T07:55:35.610Z","type":"session_meta","payload":{"id":"01a1d90d-fea8-7140-8278-dea70be41e0e","timestamp":"2026-11-14T07:55:35.475Z","cwd":"/mnt/data/projects","originator":"codex-tui","source":"cli"}}"#;
@@ -54,7 +57,7 @@ fn doc_rollout_luot_dang_chay_roi_xong() {
         dong("2026-11-14T07:55:35.613Z", "event_msg", r#"{"type":"task_started","turn_id":"t1"}"#),
         dong("2026-11-14T07:55:37.233Z", "turn_context", r#"{"model":"gpt-6.1-sol","effort":"high","cwd":"/mnt/data/projects"}"#),
         dong("2026-11-14T07:55:37.248Z", "event_msg", r#"{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"aihub"}]}}"#),
-        dong("2026-11-14T07:55:42.803Z", "event_msg", r#"{"type":"token_count","info":{"last_token_usage":{"input_tokens":14387}}}"#),
+        dong("2026-11-14T07:55:42.803Z", "event_msg", r#"{"type":"token_count","info":{"last_token_usage":{"input_tokens":14387},"model_context_window":475000}}"#),
     ]
     .join("\n");
     let r = parse_rollout(HEAD, &chay);
@@ -68,6 +71,11 @@ fn doc_rollout_luot_dang_chay_roi_xong() {
     );
     assert_eq!(r.model.as_deref(), Some("gpt-6.1-sol"));
     assert_eq!(r.context_tokens, 14387);
+    assert_eq!(
+        r.context_window,
+        Some(475_000),
+        "codex TỰ KHAI cửa sổ trong token_count — huba phải mang số ấy, không đoán"
+    );
     assert_eq!(r.last_role.as_deref(), Some("user"));
     assert_eq!(r.last_ts.as_deref(), Some("2026-11-14T07:55:42.803Z"));
 

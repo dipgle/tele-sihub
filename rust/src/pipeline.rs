@@ -2318,8 +2318,23 @@ fn auto_handover(db: &Db, cfg: &Config, live: &crate::sessions::SessionsSnapshot
         // Cửa sổ ngữ cảnh: MỘT nguồn duy nhất, và đó là số CLI dùng
         // (`sessions::context_window` — đo 07/11: model lạ với CLI là 180k, không
         // phải 1M; đoán 1M làm huba bàn giao muộn trong khi CLI đã nén xong).
-        let window: u64 = crate::sessions::context_window(s.model.as_deref());
+        let window: u64 = crate::sessions::session_context_window(s);
         let pct = ((s.context_tokens * 100) / window).min(100) as u8;
+        // 🔴 Phiên codex KHÔNG đi đường này (14/11): bàn giao ở đây là
+        // `sessions::handover` → `fork_call`, mà fork chỉ-đọc của codex CHƯA đo
+        // ⇒ `fork_call` từ chối. Chuyển phiên codex do chính phiên làm khi hook
+        // `nhac-chuyen-phien.py` nhắc ở 50% (cùng luật §A22 với Claude). Log chỉ
+        // khi đã qua ngưỡng — thứ duy nhất đáng nói.
+        if s.kind == "codex" {
+            if pct >= cfg.auto_handover.at_percent {
+                crate::logging::info(
+                    "auto_handover_skipped",
+                    json!({ "session": s.session_id, "pct": pct, "kind": s.kind,
+                            "why": "codex: chưa có fork chỉ-đọc — phiên tự chuyển khi hook nhắc" }),
+                );
+            }
+            continue;
+        }
         // Chỉ đọc màn khi phiên ĐÃ đủ đầy. Mỗi lần đọc là một lần gọi
         // AppleScript vào Terminal, và đọc cho mọi phiên mỗi vòng đã kéo một
         // vòng từ ~18 giây lên **90 giây** (đo 2026-08-10) — đủ chậm để một
@@ -2638,7 +2653,7 @@ fn auto_handover(db: &Db, cfg: &Config, live: &crate::sessions::SessionsSnapshot
                 // quyết định đã nổ.
                 let pct_hien_thi = crate::sessions::context_pct(
                     s.context_tokens,
-                    crate::sessions::display_window(s.model.as_deref()),
+                    crate::sessions::session_display_window(s),
                 );
                 let msg = auto_handover_notice(
                     &crate::sessions::shown(s),
@@ -14275,7 +14290,7 @@ fn session_meta(
     // của chính nó ghi `effectiveWindow=180000`. Chủ máy đối chiếu điện thoại
     // với `/context` — hai số lệch nhau ở đó đọc lên như huba tính sai. Bảng
     // vẫn MỘT chỗ (`sessions::cua_so`), chỉ khác vế.
-    let win: u64 = crate::sessions::display_window(s.model.as_deref());
+    let win: u64 = crate::sessions::session_display_window(s);
     // 🔴 Công thức ở MỘT chỗ (`sessions::context_pct`), và nó KẸP 100%.
     //
     // Trước 07/11 chỗ này không cần kẹp vì cửa sổ đoán là 1M cho mọi model, nên

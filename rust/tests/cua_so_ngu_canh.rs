@@ -166,3 +166,42 @@ fn doi_chung_nguoc_bo_dem_do_duoc() {
         0
     );
 }
+
+/// 🔴 Ca thật 14/11 (Quang: *"có phiên 73% rồi sao vẫn chưa chuyển phiên vậy"*):
+/// phiên codex `01a1d9c0` (acc10) mang **158 049** token, codex khai
+/// `model_context_window = 475 000` ⇒ **33%**. huba đoán bằng bảng (model `None`
+/// ⇒ 180k/200k) ⇒ điện thoại in 79%, `auto_handover` đọc 87% và chờ phiên rảnh
+/// để bàn giao oan. Số CLI tự khai phải THẮNG bảng đoán.
+#[test]
+fn so_cli_tu_khai_thang_bang_doan() {
+    use huba::sessions::{session_context_window, session_display_window, LiveSession};
+    let mut s = LiveSession {
+        kind: "codex".into(),
+        context_tokens: 158_049,
+        model: None,
+        context_window: Some(475_000),
+        ..Default::default()
+    };
+    assert_eq!(session_context_window(&s), 475_000);
+    assert_eq!(
+        context_pct(s.context_tokens, session_display_window(&s)),
+        33
+    );
+    // ĐỐI CHỨNG NGƯỢC: bỏ số tự khai ⇒ rơi về bảng đoán, ra đúng con số SAI đã
+    // thấy trên điện thoại — bài này đỏ được nếu ai nối lại `display_window(model)`.
+    s.context_window = None;
+    assert_eq!(
+        context_pct(s.context_tokens, session_display_window(&s)),
+        79
+    );
+    assert_eq!(session_context_window(&s), context_window(None));
+    // Số 0 không phải cửa sổ — đừng chia cho nó.
+    s.context_window = Some(0);
+    assert_eq!(session_context_window(&s), 180_000);
+    // Claude: không khai ⇒ bảng như cũ (1M).
+    let c = LiveSession {
+        model: Some("claude-opus-5-5".into()),
+        ..Default::default()
+    };
+    assert_eq!(session_display_window(&c), 1_000_000);
+}

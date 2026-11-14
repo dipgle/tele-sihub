@@ -364,6 +364,10 @@ pub struct LiveSession {
     pub context_tokens: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Cửa sổ ngữ cảnh do CHÍNH CLI khai (codex: `token_count.info.model_context_window`).
+    /// Có ⇒ thắng bảng đoán `cua_so` — xem [`session_context_window`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
     /// The listed session whose process tree this one hangs off, if any.
     ///
     /// A background session has no window, so "where did this come from?" has
@@ -2282,6 +2286,14 @@ fn remember_lane(session_id: &str, lane: &str) {
 /// [`declared_in_tail_counted`].
 const KHAI_QUET_LUOT: usize = 12;
 
+fn assistant_label_text(record: &Value) -> Option<String> {
+    if record.get("type").and_then(Value::as_str) == Some("assistant") {
+        text_of(record)
+    } else {
+        crate::codex_sessions::assistant_text(record)
+    }
+}
+
 /// Lời tự khai mới nhất **kèm SỐ LƯỢT đồng ý với nó** trong `KHAI_QUET_LUOT`
 /// lượt nói gần nhất.
 ///
@@ -2321,10 +2333,7 @@ fn declared_in_tail_counted(tail: &str, workspace_root: &str) -> Option<(String,
         let Ok(record) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if record.get("type").and_then(Value::as_str) != Some("assistant") {
-            continue;
-        }
-        let Some(text) = text_of(&record) else {
+        let Some(text) = assistant_label_text(&record) else {
             continue;
         };
         da_soi += 1;
@@ -2353,10 +2362,7 @@ fn declared_in_tail(tail: &str, workspace_root: &str) -> Option<(String, String)
             // Dòng đầu cụt là bình thường: đuôi bắt đầu giữa tệp.
             continue;
         };
-        if record.get("type").and_then(Value::as_str) != Some("assistant") {
-            continue;
-        }
-        let Some(text) = text_of(&record) else {
+        let Some(text) = assistant_label_text(&record) else {
             continue;
         };
         if let Some(parts) = declared_parts(&text, workspace_root) {
@@ -2552,6 +2558,32 @@ pub fn context_window(model: Option<&str>) -> u64 {
 /// Cửa sổ dùng để HIỂN THỊ — đúng mẫu số `/context` của CLI in ra.
 pub fn display_window(model: Option<&str>) -> u64 {
     cua_so(model).1
+}
+
+/// Cửa sổ của MỘT PHIÊN: số CLI tự khai thắng bảng đoán.
+///
+/// 🔴 Quang 14/11: *"có phiên 73% rồi sao vẫn chưa chuyển phiên vậy"* — phiên
+/// codex `01a1d9c0` (acc10) mang 158 049 token, codex khai
+/// `model_context_window = 475 000` (33%), còn huba rơi về bảng đoán 180k/200k
+/// (model `None`, hoặc `gpt-6.1-sol` không có trong bảng) ⇒ điện thoại in 73–79%
+/// và `auto_handover` đã tới `pct = 87` (`auto_handover_held … why: Busy`), chỉ
+/// chờ phiên rảnh là bàn giao oan. Một số CLI tự khai thì không đoán nữa.
+/// `(quyết định, hiển thị)` — codex chỉ khai MỘT số nên hai vế bằng nhau.
+pub fn session_windows(s: &LiveSession) -> (u64, u64) {
+    match s.context_window.filter(|n| *n > 0) {
+        Some(n) => (n, n),
+        None => cua_so(s.model.as_deref()),
+    }
+}
+
+/// Vế QUYẾT ĐỊNH của [`session_windows`].
+pub fn session_context_window(s: &LiveSession) -> u64 {
+    session_windows(s).0
+}
+
+/// Vế HIỂN THỊ của [`session_windows`].
+pub fn session_display_window(s: &LiveSession) -> u64 {
+    session_windows(s).1
 }
 
 /// `%` ngữ cảnh — MỘT công thức cho mọi mặt hiển thị.
@@ -2981,6 +3013,8 @@ pub fn shell_verdict(shell: bool, screen_busy: Option<bool>) -> bool {
 pub const ST_RUN: &str = "⚡";
 /// Đứng ở dấu nhắc, không còn gì chạy.
 pub const ST_WAIT: &str = "💤";
+/// Nguồn chưa có mốc lượt nào: không được gộp với phiên đã đo là đứng chờ.
+pub const ST_UNKNOWN: &str = "❔";
 /// Đứng chờ người gõ, nhưng còn một lệnh chạy NỀN.
 pub const ST_BG: &str = "🌀";
 /// Dừng lại HỎI — việc không tự đi tiếp được.
@@ -3281,6 +3315,9 @@ pub fn state_of(s: &LiveSession) -> (&'static str, &'static str) {
     }
     if s.bg_shell {
         return (ST_BG, "chờ bạn · lệnh nền còn chạy");
+    }
+    if s.kind == "codex" && s.status.as_deref() == Some("unknown") {
+        return (ST_UNKNOWN, "chưa đo được trạng thái");
     }
     (ST_WAIT, "đứng chờ")
 }
@@ -5985,6 +6022,7 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
                 pending_subagents: 0,
                 context_tokens: 0,
                 model: None,
+                context_window: None,
                 // Điền sau khi đã có đủ mọi hàng: quan hệ cha-con chỉ tra được
                 // khi biết pid của TẤT CẢ các phiên.
                 // Cả bốn trường quan hệ cha–con điền ở `link_parents`, sau khi
@@ -6659,13 +6697,51 @@ fn codex_rows(cfg: &Config, procs: &Procs, out: &mut SessionsSnapshot) {
             ));
             out.blind.push(account.name.clone());
         }
-        let index = std::fs::read_to_string(home.join("session_index.jsonl")).unwrap_or_default();
+        let index = match std::fs::read_to_string(home.join("session_index.jsonl")) {
+            Ok(s) => s,
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    logging::warn(
+                        "codex_index_unreadable",
+                        json!({"account":account.name,"err":e.to_string()}),
+                    );
+                }
+                String::new()
+            }
+        };
         let mut count = 0usize;
         for (pid, tty, targets) in &fds {
-            let Some(path) = cx::rollout_among(targets, &sessions_dir) else {
-                continue;
+            let path = match cx::rollout_among(targets, &sessions_dir) {
+                Ok(Some(p)) => p,
+                Ok(None) => continue,
+                Err(e) => {
+                    logging::warn(
+                        "codex_root_unreadable",
+                        json!({"account":account.name,"pid":pid,"err":e}),
+                    );
+                    if !out.blind.contains(&account.name) {
+                        out.blind.push(account.name.clone());
+                    }
+                    out.notes.push(format!(
+                        "{} (codex): pid {pid}, chưa xác định được phiên chính",
+                        account.name
+                    ));
+                    continue;
+                }
             };
-            let head = cx::first_line(&path, 1 << 20).unwrap_or_default();
+            let head = match cx::first_line(&path, 1 << 20) {
+                Ok(h) => h,
+                Err(e) => {
+                    logging::warn(
+                        "codex_rollout_head_unreadable",
+                        json!({"account":account.name,"pid":pid,"err":e.to_string()}),
+                    );
+                    if !out.blind.contains(&account.name) {
+                        out.blind.push(account.name.clone());
+                    }
+                    continue;
+                }
+            };
             let tail = match read_tail(&path) {
                 Ok(t) => t,
                 Err(e) => {
@@ -6673,7 +6749,10 @@ fn codex_rows(cfg: &Config, procs: &Procs, out: &mut SessionsSnapshot) {
                         "codex_rollout_read_failed",
                         json!({ "account": account.name, "path": path.display().to_string(), "err": e.to_string() }),
                     );
-                    String::new()
+                    if !out.blind.contains(&account.name) {
+                        out.blind.push(account.name.clone());
+                    }
+                    continue;
                 }
             };
             let r = cx::parse_rollout(&head, &tail);
@@ -6696,20 +6775,66 @@ fn codex_rows(cfg: &Config, procs: &Procs, out: &mut SessionsSnapshot) {
                 r.id.clone()
             };
             let last_activity = r.last_ts.clone().or_else(|| mtime_rfc3339(&path));
-            let working = r.busy.unwrap_or_else(|| {
-                idle_seconds(last_activity.as_deref()).is_some_and(|s| s < IDLE_AFTER_SEC)
-            });
-            let folder = folder_for_session(&id, &tail, &ws, || None)
+            let busy = match cx::turn_busy(&path) {
+                Ok(b) => b,
+                Err(e) => {
+                    logging::warn(
+                        "codex_turn_unreadable",
+                        json!({"account":account.name,"session":id,"err":e}),
+                    );
+                    if !out.blind.contains(&account.name) {
+                        out.blind.push(account.name.clone());
+                    }
+                    continue;
+                }
+            };
+            let (pending_subagents, activity) =
+                match cx::pending_children(targets, &sessions_dir, &id) {
+                    Ok(n) => (n, None),
+                    Err(e) => {
+                        logging::warn(
+                            "codex_children_unreadable",
+                            json!({"account":account.name,"session":id,"err":e}),
+                        );
+                        if !out.blind.contains(&account.name) {
+                            out.blind.push(account.name.clone());
+                        }
+                        (0, Some("subagent: chưa đo được".to_string()))
+                    }
+                };
+            let working = busy == Some(true) || pending_subagents > 0;
+            let prefix = match cx::read_prefix(&path) {
+                Ok(p) => p,
+                Err(e) => {
+                    logging::warn(
+                        "codex_prefix_unreadable",
+                        json!({"account":account.name,"session":id,"err":e.to_string()}),
+                    );
+                    String::new()
+                }
+            };
+            let task = cx::user_task(&prefix);
+            let folder = folder_for_session(&id, &tail, &ws, || folder_declared(&prefix, &ws))
                 .filter(|f| !f.is_empty())
-                .unwrap_or_else(|| opencode_project_label(&cfg.workspace_root, &r.cwd));
-            let name = cx::thread_name(&index, &id).unwrap_or_else(|| "(không tên)".to_string());
+                .unwrap_or_else(|| folder_from_dir(&cfg.workspace_root, &r.cwd));
+            let lane = lane_for_session(&id, &tail, &ws, || Some(prefix));
+            let name = cx::thread_name(&index, &id)
+                .or(task)
+                .unwrap_or_else(|| "(không tên)".to_string());
+            let doing = if name == "(không tên)" {
+                String::new()
+            } else {
+                cx::task_caption(&name, &folder, &lane)
+            };
             if let Some(t) = &r.last_text {
                 note_preview_risk("codex_last_text", t);
             }
             out.sessions.push(LiveSession {
                 account: account.name.clone(),
                 session_id: id,
+                doing,
                 name,
+                lane,
                 cwd: r.cwd.clone(),
                 folder,
                 kind: "codex".to_string(),
@@ -6718,9 +6843,19 @@ fn codex_rows(cfg: &Config, procs: &Procs, out: &mut SessionsSnapshot) {
                 started_at_ms: r.started_ms,
                 last_activity,
                 working,
-                status: r.busy.map(|b| if b { "busy" } else { "idle" }.to_string()),
+                status: Some(
+                    match busy {
+                        Some(true) => "busy",
+                        Some(false) => "idle",
+                        None => "unknown",
+                    }
+                    .to_string(),
+                ),
+                pending_subagents,
+                activity,
                 context_tokens: r.context_tokens,
                 model: r.model.clone().or_else(|| account.model.clone()),
+                context_window: r.context_window,
                 tty: tty.clone(),
                 last_text: r.last_text.clone(),
                 last_role: r.last_role.clone(),
@@ -7177,6 +7312,21 @@ fn claude_failed(session_id: &str, out: &crate::exec::RunOut) -> anyhow::Error {
 }
 
 fn fork_call(cfg: &Config, session: &LiveSession, prompt: &str) -> Result<ForkReply> {
+    // 🔴 Phiên codex: chưa có đường fork CHỈ-ĐỌC đã đo (luật 2). Trước 14/11 nó rơi
+    // xuống nhánh Claude bên dưới ⇒ `claude --resume <id codex>` dưới
+    // `CLAUDE_CONFIG_DIR` của acc codex — một lời gọi không bao giờ đúng.
+    // Từ chối RÕ (chỗ gọi log + trả câu), không đoán một lệnh codex chưa đo.
+    if session.kind == "codex" {
+        logging::warn(
+            "fork_call_refused",
+            json!({ "session": session.session_id, "account": session.account,
+                    "why": "codex: chưa có fork chỉ-đọc đã đo" }),
+        );
+        anyhow::bail!(
+            "phiên codex chưa hỗ trợ /ask · /handover (chưa có fork chỉ-đọc đã đo) — \
+             hỏi thẳng trong phiên bằng /tell"
+        );
+    }
     if let Some(acc) = cfg
         .claude_accounts_or_ambient()
         .into_iter()
