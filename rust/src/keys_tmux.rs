@@ -254,6 +254,70 @@ pub fn screen_text_noi(window: i64) -> Result<String> {
     tmux(&so.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
+/// Ô nhập (`❯` cuối màn) đang là GỢI Ý MỜ của TUI hay chữ THẬT.
+///
+/// 🔴 Quang 14/11 (ảnh 14:20, `❯ ⏎ làm đi`): *"sao gợi ý ở ô chat chờ bấm mấy lần
+/// mới nhận"*. `capture-pane -p` trả chữ TRƠN — gợi ý mờ và chữ đã nhận đọc ra y
+/// hệt nhau, nên sau cú `→` phép so «màn có đổi» luôn ra KHÔNG ⟹ huba tưởng `→`
+/// không ăn, không bấm Enter thứ hai, chủ máy phải bấm lại. Đo cùng ngày trên các
+/// pane thật (`capture-pane -e`): gợi ý đứng sau `❯` trong `ESC[2m` (mờ) … `ESC[0m`;
+/// đếm trên nhật ký máy này: 9/11 lượt `keys_ghost_accepted` ra `false`.
+/// `Ok(None)` = không thấy dòng `❯` hoặc ô rỗng — không phải "không mờ".
+pub fn o_nhap_mo(window: i64) -> Result<Option<bool>> {
+    let man = tmux(&["capture-pane", "-p", "-e", "-t", &dich(window)])?;
+    Ok(o_nhap_mo_tu_man(&man))
+}
+
+/// Phần THUẦN của [`o_nhap_mo`]: dòng `❯` CUỐI, ký tự hiện được đầu tiên sau nó
+/// đang ở trạng thái SGR mờ (`2`) hay không. `0`/rỗng/`22` tắt mờ.
+pub fn o_nhap_mo_tu_man(man: &str) -> Option<bool> {
+    let dong = man.lines().rev().find(|l| l.contains('❯'))?;
+    let (_, sau) = dong.split_once('❯')?;
+    let mut mo = false;
+    let mut it = sau.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '\u{1b}' {
+            if it.peek() == Some(&'[') {
+                it.next();
+                let mut tham = String::new();
+                for d in it.by_ref() {
+                    if d.is_ascii_alphabetic() {
+                        if d == 'm' {
+                            let ps: Vec<&str> = tham.split(';').collect();
+                            let mut i = 0;
+                            while i < ps.len() {
+                                match ps[i] {
+                                    "" | "0" | "22" => mo = false,
+                                    "2" => mo = true,
+                                    // Màu mở rộng `38;5;n` / `38;2;r;g;b`: số bên trong
+                                    // KHÔNG phải thuộc tính (`38;5;2` không phải mờ).
+                                    "38" | "48" | "58" => {
+                                        i += match ps.get(i + 1) {
+                                            Some(&"5") => 2,
+                                            Some(&"2") => 4,
+                                            _ => 0,
+                                        };
+                                    }
+                                    _ => {}
+                                }
+                                i += 1;
+                            }
+                        }
+                        break;
+                    }
+                    tham.push(d);
+                }
+            }
+            continue;
+        }
+        if c.is_whitespace() || c == '\u{a0}' {
+            continue;
+        }
+        return Some(mo);
+    }
+    None
+}
+
 /// Khung nhìn + `steps` khung cuộn ngược. `du` không cần: tmux trả một lượt.
 pub fn screen_scrollback(window: i64, steps: usize, _du: impl Fn(&str) -> bool) -> Result<String> {
     let (hang, _) = window_size(window)?;
@@ -1108,6 +1172,24 @@ mod tests {
     fn shell_ranh_va_ban() {
         assert!(la_shell("bash") && la_shell("-zsh"));
         assert!(!la_shell("claude") && !la_shell("node") && !la_shell("cat"));
+    }
+
+    #[test]
+    fn o_nhap_mo_doc_dung_man_that() {
+        // Nguyên văn `capture-pane -e` pane %7 lúc 14:2x 14/11 (gợi ý «đóng phiên đi»).
+        let goi_y = "\u{1b}[39m❯\u{a0}\u{1b}[2mđóng phiên đi\u{1b}[0m";
+        assert_eq!(o_nhap_mo_tu_man(goi_y), Some(true));
+        // ĐỐI CHỨNG: cùng chữ, đã nhận (không mờ) ⟹ false.
+        let that = "\u{1b}[39m❯\u{a0}đóng phiên đi";
+        assert_eq!(o_nhap_mo_tu_man(that), Some(false));
+        // Ô rỗng (pane %2) ⟹ None, không phải "không mờ".
+        assert_eq!(o_nhap_mo_tu_man("\u{1b}[38;5;246m❯\u{a0}\u{1b}[39m"), None);
+        // Màu mở rộng chứa số 2 không bị đọc thành mờ.
+        assert_eq!(o_nhap_mo_tu_man("❯ \u{1b}[38;5;2mchữ xanh"), Some(false));
+        // Lấy dòng `❯` CUỐI: câu cũ trong hội thoại phía trên không quyết.
+        let hai = "❯ \u{1b}[2mcũ\u{1b}[0m\n…\n❯ \u{1b}[0mmới";
+        assert_eq!(o_nhap_mo_tu_man(hai), Some(false));
+        assert_eq!(o_nhap_mo_tu_man("không có dấu nhắc"), None);
     }
 
     #[test]

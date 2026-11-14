@@ -85,6 +85,27 @@ pub fn screen_scrollback(window: i64, steps: usize, du: impl Fn(&str) -> bool) -
 pub fn screen_text_noi(window: i64) -> Result<String> {
     nen::screen_text_noi(window)
 }
+/// Ô nhập đang là GỢI Ý MỜ (`Some(true)`), chữ thật (`Some(false)`), hay KHÔNG ĐO
+/// ĐƯỢC (`None`: ô rỗng, nền không có thuộc tính chữ, hoặc đọc hỏng — hỏng thì log).
+/// Chỉ tmux đọc được thuộc tính (`capture-pane -e`, `keys_tmux::o_nhap_mo`); nền
+/// khác trả `None` và chỗ gọi giữ phép so màn cũ.
+#[cfg(target_os = "linux")]
+pub fn box_is_ghost(window: i64) -> Option<bool> {
+    match nen::o_nhap_mo(window) {
+        Ok(v) => v,
+        Err(e) => {
+            logging::warn(
+                "box_ghost_unreadable",
+                serde_json::json!({ "window": window, "err": e.to_string() }),
+            );
+            None
+        }
+    }
+}
+#[cfg(not(target_os = "linux"))]
+pub fn box_is_ghost(_window: i64) -> Option<bool> {
+    None
+}
 /// macOS: `contents of tab` đã trả dòng dài trên MỘT dòng logic (đo 11/10, đầu
 /// `account_login.rs`) — chính là [`screen_text`].
 #[cfg(target_os = "macos")]

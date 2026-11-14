@@ -17559,9 +17559,16 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                                                             // Gợi ý đã được NHẬN
                                                             // vào ô hay chưa — đây
                                                             // mới là thứ `→` hứa.
-                                                            let accepted = match (&before, &after) {
-                                                                (Some(a), Some((b, _))) => a != b,
-                                                                _ => false,
+                                                            // tmux: hỏi THẲNG thuộc tính chữ —
+                                                            // hết mờ ⟹ đã nhận. Chữ trơn không
+                                                            // phân biệt được mờ với tỏ (14/11:
+                                                            // 9/11 lượt ra `false` oan).
+                                                            let accepted = match crate::keys::box_is_ghost(w) {
+                                                                Some(mo) => !mo,
+                                                                None => match (&before, &after) {
+                                                                    (Some(a), Some((b, _))) => a != b,
+                                                                    _ => false,
+                                                                },
                                                             };
                                                             ghost_accepted = accepted;
                                                             // …rồi ENTER RỜI, đúng
