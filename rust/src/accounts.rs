@@ -137,17 +137,85 @@ pub const CODEX_WALL_FLAGS: [&str; 5] = [
     "--dangerously-bypass-hook-trust",
 ];
 
-/// Dòng lệnh codex của một hàng: `CODEX_HOME=<thư mục> <codex_cli> <tường> <extra_args>`.
+/// Effort mặc định của phiên codex khi hàng acc không khai `effort`.
+///
+/// Quang 14/11: *"GPT đang để mặc định là low sửa thành high đi"*. Mặc định
+/// TRONG MÃ chỉ là sàn an toàn; mức thật là ô `effort` của hàng tài khoản (trang
+/// quản lý sửa được) — cùng khuôn với [`OPENCODE_VARIANT_MAC_DINH`].
+pub const CODEX_EFFORT_MAC_DINH: &str = "high";
+
+/// Dòng lệnh codex của một hàng:
+/// `CODEX_HOME=<thư mục> <codex_cli> <tường> [-m <model>] -c model_reasoning_effort=<mức> <extra_args>`.
 fn codex_launch_line(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
     let mut parts = vec![
         assign_path("CODEX_HOME", &codex_home(acc).to_string_lossy()),
         path_token(&cfg.codex_cli),
     ];
     parts.extend(CODEX_WALL_FLAGS.iter().map(|s| s.to_string()));
+    if let Some(m) = some(&acc.model) {
+        parts.push("-m".to_string());
+        parts.push(value_token(m));
+    }
+    let muc = some(&acc.effort).unwrap_or(CODEX_EFFORT_MAC_DINH);
+    parts.push("-c".to_string());
+    // Giá trị `-c` là TOML: chuỗi phải có nháy kép, cả cụm bọc nháy đơn cho shell.
+    parts.push(shell_quote(&format!(
+        "model_reasoning_effort=\"{}\"",
+        muc.replace('"', "")
+    )));
     for a in &acc.extra_args {
         parts.push(value_token(a));
     }
     parts.join(" ")
+}
+
+/// Khối TOML khai thư mục `dir` là tin cậy — `None` khi `config.toml` đã có bảng
+/// của thư mục ấy (KHÔNG đè quyết định đã lưu, kể cả «untrusted»). Hàm THUẦN.
+///
+/// 🔴 Quang 14/11 (ảnh «Folder access — Trust this folder?»): *"model nào lần đầu
+/// cũng báo như này"*. Hộp ấy chờ một phím trên màn không ai nhìn. Đo cùng ngày
+/// (codex-cli 0.169.0, hai kho git mới): `-c 'projects."<dir>".trust_level="trusted"'`
+/// KHÔNG tắt được hộp — codex chỉ tin quyết định đã LƯU trong `config.toml`, đúng
+/// chỗ nó tự ghi khi người bấm «Trust» (`[projects."/mnt/data/projects"]`).
+pub fn codex_trust_block(existing: &str, dir: &str) -> Option<String> {
+    let khoa = dir.replace('\\', "\\\\").replace('"', "\\\"");
+    let dau = format!("[projects.\"{khoa}\"]");
+    if existing.lines().any(|l| l.trim() == dau) {
+        return None;
+    }
+    let mut out = String::new();
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&format!("\n{dau}\ntrust_level = \"trusted\"\n"));
+    Some(out)
+}
+
+/// Ghi sẵn «tin cậy» cho thư mục mở phiên vào `CODEX_HOME/config.toml` — việc
+/// chủ máy sẽ bấm ở hộp «Folder access», làm trước cho một màn không ai ngồi.
+/// Chỉ cho thư mục huba MỞ PHIÊN (đã qua bộ phân giải dự án của `/new`).
+pub fn codex_trust_dir(acc: &ClaudeAccountCfg, dir: &Path) -> Result<bool, String> {
+    let p = codex_home(acc).join("config.toml");
+    let co = match std::fs::read_to_string(&p) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("không đọc được {}: {e}", p.display())),
+    };
+    let Some(them) = codex_trust_block(&co, &dir.to_string_lossy()) else {
+        return Ok(false);
+    };
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+        .and_then(|mut f| f.write_all(them.as_bytes()))
+        .map_err(|e| format!("không ghi được {}: {e}", p.display()))?;
+    crate::logging::info(
+        "codex_dir_trusted",
+        json!({ "account": acc.name, "dir": dir.display().to_string() }),
+    );
+    Ok(true)
 }
 
 /// Cổng bảo mật chung (`cong_bao_mat.py`) — nằm CẠNH plugin opencode

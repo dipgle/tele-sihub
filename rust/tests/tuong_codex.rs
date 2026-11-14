@@ -71,6 +71,27 @@ fn tuong_codex_hai_chieu() {
 }
 
 #[test]
+fn tin_cay_thu_muc_ghi_mot_lan_khong_de_quyet_dinh_cu() {
+    use huba::accounts::codex_trust_block as k;
+    // Nguyên văn config.toml của acc10 lúc 14:4x 14/11.
+    let that = "[tui]\nscreen_reader_detection_done = true\n\n[projects.\"/mnt/data/projects\"]\ntrust_level = \"trusted\"\n";
+    let them = k(that, "/mnt/data/projects/bts").expect("thư mục mới ⟹ thêm");
+    assert!(
+        them.contains("[projects.\"/mnt/data/projects/bts\"]"),
+        "{them}"
+    );
+    assert!(them.contains("trust_level = \"trusted\""), "{them}");
+    // Đã có bảng của thư mục ⟹ KHÔNG ghi (kể cả khi chủ máy chọn untrusted).
+    assert_eq!(k(that, "/mnt/data/projects"), None);
+    let tu_choi = "[projects.\"/x\"]\ntrust_level = \"untrusted\"\n";
+    assert_eq!(k(tu_choi, "/x"), None);
+    // Tệp không kết thúc bằng xuống dòng ⟹ không dính khối vào dòng cuối.
+    assert!(k("a = 1", "/y").unwrap().starts_with('\n'));
+    // Dấu nháy trong đường dẫn được thoát.
+    assert!(k("", "/a\"b").unwrap().contains("[projects.\"/a\\\"b\"]"));
+}
+
+#[test]
 fn dong_lenh_codex_mang_tuong() {
     let c = huba::config::Config::default();
     let d = tempfile::tempdir().unwrap();
@@ -79,6 +100,13 @@ fn dong_lenh_codex_mang_tuong() {
         assert!(line.contains(f), "thiếu cờ tường `{f}`: {line}");
     }
     assert!(!line.contains("danger-full-access"), "{line}");
+    // Effort mặc định high (Quang 14/11), ô `effort` của hàng thắng.
+    assert!(line.contains("model_reasoning_effort=\"high\""), "{line}");
+    let mut a = hang(d.path());
+    a.effort = Some("medium".into());
+    let l2 = huba::accounts::launch_line(&c, Some(&a));
+    assert!(l2.contains("model_reasoning_effort=\"medium\""), "{l2}");
+    assert!(!l2.contains("\"high\""), "{l2}");
     assert!(
         !line.contains("--dangerously-bypass-approvals-and-sandbox"),
         "{line}"
