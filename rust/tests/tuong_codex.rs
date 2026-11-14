@@ -247,7 +247,16 @@ fn mcp_codetrail_cho_codex() {
     let bin = d.path().join("project-agent");
     std::fs::write(&bin, "").unwrap();
     let a = k("acc10", &bin.to_string_lossy());
-    assert_eq!(a.len(), 2, "{a:?}");
+    // Đo 14/11 (codex-cli 0.169.0) hai chiều: `-a never` + không khoá ⟹ «MCP tool call
+    // requires approval, but approval policy is never» (ảnh Quang, phiên aihub);
+    // `default_tools_approval_mode="approve"` ⟹ get_context_brief chạy (MCP_OK).
+    assert!(
+        a.contains(
+            &"mcp_servers.project-agent.default_tools_approval_mode=\"approve\"".to_string()
+        ),
+        "MCP codetrail phải gọi được như phiên Claude: {a:?}"
+    );
+    assert_eq!(a.len(), 3, "{a:?}");
     assert_eq!(
         a[0],
         format!("mcp_servers.project-agent.command=\"{}\"", bin.display())

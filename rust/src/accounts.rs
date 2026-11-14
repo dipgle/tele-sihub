@@ -179,6 +179,12 @@ pub fn codex_mcp_codetrail_args_cho(account: &str, bin: &str) -> Vec<String> {
             "mcp_servers.project-agent.env={{PROJECTS_ROOT={}}}",
             toml_str(&ws)
         ),
+        // 🔴 Quang 14/11 (ảnh phiên aihub): *"tài khoản 10 không nhận được thông tin
+        // mcp tool?"*. Công cụ CÓ tới model, nhưng `-a never` (tường) + không khoá này
+        // ⟹ mọi lời gọi «MCP tool call requires approval, but approval policy is
+        // never». Đo hai chiều 14/11: có khoá ⟹ get_context_brief chạy. Ngang phiên
+        // Claude (MCP gọi không hỏi); hook PreToolUse vẫn soi từng lời gọi.
+        "mcp_servers.project-agent.default_tools_approval_mode=\"approve\"".to_string(),
     ]
 }
 
