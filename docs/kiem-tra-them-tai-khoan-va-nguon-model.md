@@ -68,5 +68,12 @@ riêng, không phải xanh.
 | Mục | claude | opencode (acc8) | codex (acc10) |
 |---|---|---|---|
 | B1 cổng ghi gắn dự án | ✅ guard-write-path | ✅ plugin | ✅ cổng nguồn 14/11 (tự kiểm 30/30 + lượt codex thật qua/chặn) · ⚠ bản chép `~/huba/kem` CHƯA cài lại |
-| B3 `/session` liệt kê | ✅ | ✅ | ❌ chưa (`CODEX_HOME/sessions/**/rollout-*.jsonl`) |
+| B1 tắt tìm web | ✅ `--disallowedTools` | ✅ cổng | ✅ `web_search="disabled"` (`bd6ee9e`, đo hai chiều: mặc định codex TỰ tìm web) |
+| MCP mặc định | — | — | `codex_apps` tắt bằng `features.apps=false` · `codex_tui` (quản luồng) KHÔNG tắt được |
+| MCP codetrail gọi được | ✅ | ✅ | ❌ `-a never` ⟹ «MCP tool call requires approval» (thấy trên pts/14) |
+| B3 `/session` liệt kê | ✅ | ✅ | ✅ `huba sessions --json` máy thật (`06cbaa6`) · ⚠ hubd CHƯA cài lại · Telegram chưa đo |
+| B3 bảng hỏi → nút `/pick` | ✅ | ✅ (dịch khuôn) | ❌ chưa (`request_user_input` trong rollout) |
 | `/new` + `/close` trên Telegram | ✅ | ✅ | chưa đo sau `a17b03a` |
+
+### B4 bổ sung (14/11)
+- Chạy hết bộ kiểm trên Ubuntu: `tests/watch.rs` ×2 dựng đường hubd kiểu macOS ⟹ đỏ trên Linux (không phải lỗi mã).
