@@ -42,7 +42,17 @@ fn tuong_codex_hai_chieu() {
 
     // Tệp đánh dấu đăng nhập (RỖNG — không phải một khoá thật).
     std::fs::write(home.join("auth.json"), "").unwrap();
+    let luat = d.path().join("CLAUDE.md");
+    std::fs::write(&luat, "# luật thử\n").unwrap();
+    std::env::set_var("HUBA_LUAT_GOC", &luat);
     let ok = huba::accounts::ensure_codex_wall(&acc).expect("cổng thật phải dựng được tường");
+    let h = std::fs::read_to_string(home.join("hooks.json")).unwrap();
+    assert!(
+        h.contains("SessionStart") && h.contains("huba-nap-luat.py"),
+        "{h}"
+    );
+    assert!(home.join("huba-nap-luat.py").is_file());
+    std::env::remove_var("HUBA_LUAT_GOC");
     assert!(ok.contains("workspace-write"), "{ok}");
     let hooks = std::fs::read_to_string(home.join("hooks.json")).unwrap();
     assert!(hooks.contains("--codex-pretooluse"), "{hooks}");
@@ -89,6 +99,81 @@ fn tin_cay_thu_muc_ghi_mot_lan_khong_de_quyet_dinh_cu() {
     assert!(k("a = 1", "/y").unwrap().starts_with('\n'));
     // Dấu nháy trong đường dẫn được thoát.
     assert!(k("", "/a\"b").unwrap().contains("[projects.\"/a\\\"b\"]"));
+}
+
+/// Dựng tường THẬT cho `~/.codex-acc10` bằng đúng cổng + luật của bản cài — chạy tay:
+/// `cargo test --test tuong_codex dung_that -- --ignored --nocapture`
+#[test]
+#[ignore = "ghi hooks.json của tài khoản thật — chạy tay"]
+fn dung_that_acc10() {
+    let home = huba::config::home_dir().unwrap();
+    std::env::set_var(
+        "HUBA_OPENCODE_PLUGIN",
+        home.join("huba/kem/scripts/cong-bao-mat-plugin"),
+    );
+    std::env::set_var("HUBA_LUAT_GOC", "/mnt/data/projects/CLAUDE.md");
+    let acc = ClaudeAccountCfg {
+        name: "acc10".into(),
+        config_dir: Some(home.join(".codex-acc10").display().to_string()),
+        cli: Some("codex".into()),
+        ..Default::default()
+    };
+    println!("{}", huba::accounts::ensure_codex_wall(&acc).unwrap());
+}
+
+/// Script `SessionStart`: đứng NGOÀI kho gốc ⟹ đưa luật vào ngữ cảnh; đứng ĐÚNG kho
+/// gốc (codex đã tự đọc `CLAUDE.md`) ⟹ không nạp lần hai.
+#[test]
+fn nap_luat_goc_hai_chieu() {
+    let d = tempfile::tempdir().unwrap();
+    let goc = d.path().join("ws");
+    let khac = d.path().join("khac");
+    std::fs::create_dir_all(&goc).unwrap();
+    std::fs::create_dir_all(&khac).unwrap();
+    let git = |dir: &std::path::Path| {
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+    };
+    git(&goc);
+    git(&khac);
+    let luat = goc.join("CLAUDE.md");
+    std::fs::write(&luat, "LUAT-THU-0714\n").unwrap();
+    let script = d.path().join("nap.py");
+    std::fs::write(&script, huba::accounts::CODEX_NAP_LUAT_PY).unwrap();
+    let chay = |cwd: &std::path::Path| -> serde_json::Value {
+        use std::io::Write;
+        let mut c = std::process::Command::new("python3")
+            .arg(&script)
+            .arg(&luat)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        c.stdin
+            .take()
+            .unwrap()
+            .write_all(serde_json::json!({ "cwd": cwd }).to_string().as_bytes())
+            .unwrap();
+        let o = c.wait_with_output().unwrap();
+        assert!(o.status.success());
+        serde_json::from_slice(&o.stdout).unwrap()
+    };
+    let ngoai = chay(&khac);
+    let ctx = ngoai["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or("");
+    assert!(ctx.contains("LUAT-THU-0714"), "{ngoai}");
+    assert_eq!(ngoai["hookSpecificOutput"]["hookEventName"], "SessionStart");
+    let trong = chay(&goc);
+    assert!(
+        trong["hookSpecificOutput"]
+            .get("additionalContext")
+            .is_none(),
+        "đứng đúng kho gốc ⟹ không nạp lần hai: {trong}"
+    );
 }
 
 #[test]

@@ -2876,6 +2876,15 @@ pub fn send_exit(window: i64) -> Result<()> {
     // chính opencode 2.2.7 (bảng phím trong binary): `"app.exit":
     // "ctrl+c,ctrl+d,<leader>q"`. Hai cú Ctrl+C: ô còn chữ ⟹ cú đầu xoá, cú sau
     // thoát; ô trống ⟹ cú đầu thoát, cú sau rơi vào shell (vô hại).
+    // codex: `/quit` + Enter (đo 14/11, codex-cli 0.169.0 — thoát về shell).
+    if tab_runs(window, "codex").unwrap_or(false) {
+        let how = type_and_send(window, "/quit")?;
+        crate::logging::info(
+            "keys_exit_sent",
+            serde_json::json!({ "window": window, "cli": "codex", "landed": format!("{how:?}") }),
+        );
+        return Ok(());
+    }
     match tab_runs(window, "opencode") {
         Ok(true) => return send_exit_opencode(window),
         Ok(false) => {}
@@ -3310,6 +3319,32 @@ end tell"#
 pub fn exit_and_close_shell(window: i64, cho: std::time::Duration) -> Result<Closed> {
     // Tab đã chết thì không có gì để thoát — gõ `exit` vào `[Process completed]`
     // là gõ vào chỗ không ai đọc.
+    // 🔴 codex đứng trước shell: `exit` trần là một câu CHAT gửi model (Quang 14/11,
+    // ảnh 14:52: «› exit» ⟹ «Goodbye.», codex vẫn chạy). Đo cùng ngày: `/quit` +
+    // Enter ⟹ codex thoát về shell. Thoát codex trước, rồi mới `exit` shell.
+    match tab_runs(window, "codex") {
+        Ok(true) => {
+            type_into(window, "/quit")?;
+            let han = std::time::Instant::now();
+            while han.elapsed() < cho {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                if !tab_runs(window, "codex").unwrap_or(false) {
+                    break;
+                }
+            }
+            crate::logging::info(
+                "keys_codex_quit_sent",
+                serde_json::json!({ "window": window,
+                                    "con_chay": tab_runs(window, "codex").unwrap_or(false) }),
+            );
+        }
+        Ok(false) => {}
+        Err(e) => crate::logging::warn(
+            "keys_exit_cli_unknown",
+            serde_json::json!({ "window": window, "err": e.to_string(),
+                                "effect": "không hỏi được tab chạy gì — gõ thẳng `exit` của shell" }),
+        ),
+    }
     if tab_proc_count(window).unwrap_or(1) > 0 {
         type_into(window, "exit")?;
         let han = std::time::Instant::now();
