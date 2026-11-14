@@ -15698,13 +15698,31 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                             } else {
                                 ""
                             };
-                            let tu_choi = khoa.as_deref().and_then(|a| {
-                                hoi_mo_tai_khoan_khoa(
-                                    cfg,
-                                    a,
-                                    &format!("mở phiên bằng {a}{vi_sao}"),
-                                    |what| ask_owner(db, cfg, adapter, cmd, what, "mở phiên nào"),
-                                )
+                            // ⛔ codex: từ chối NGAY, trước câu «Đang mở…» và trước câu
+                            // hỏi mở khoá. Ca thật 14/11 14:08: `/new acc10` nhận HAI tin
+                            // ngược nhau — «không mở được phiên» (từ luồng mở) rồi «Đang
+                            // mở cửa sổ Terminal bằng acc10…» (ack của route).
+                            let codex_tu_choi = account
+                                .as_deref()
+                                .filter(|a| {
+                                    cfg.claude_accounts
+                                        .iter()
+                                        .any(|r| r.name == *a && r.is_codex())
+                                })
+                                .map(|a| {
+                                    format!("⛔ {a}: {}", crate::sessions::CODEX_CHUA_MO_PHIEN)
+                                });
+                            let tu_choi = codex_tu_choi.or_else(|| {
+                                khoa.as_deref().and_then(|a| {
+                                    hoi_mo_tai_khoan_khoa(
+                                        cfg,
+                                        a,
+                                        &format!("mở phiên bằng {a}{vi_sao}"),
+                                        |what| {
+                                            ask_owner(db, cfg, adapter, cmd, what, "mở phiên nào")
+                                        },
+                                    )
+                                })
                             });
                             if let Some(t) = tu_choi {
                                 t
