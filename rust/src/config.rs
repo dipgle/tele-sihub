@@ -896,10 +896,10 @@ impl ClaudeAccountCfg {
     /// Hàng này là OpenAI Codex CLI (`codex`, đăng nhập ChatGPT).
     ///
     /// 🔴 Quang 14/11: *"cài cli của chatgpt đi để thêm acc10"* · *"Phải đăng nhập
-    /// lệnh giống claude"*. huba nay ĐĂNG NHẬP được hàng codex (`/accounts <tên> -l`,
-    /// `account_login`) nhưng **chưa mở phiên** trên nó: codex không nhận
-    /// `--disallowedTools`, nên chưa có tường bảo mật tương đương luật 1 —
-    /// [`crate::sessions::ensure_account_usable`] từ chối, nói rõ vì sao.
+    /// lệnh giống claude"*. Đăng nhập: `/accounts <tên> -l` (`account_login`). Mở
+    /// phiên (từ `9d7b1ce`): tường = `accounts::CODEX_WALL_FLAGS` +
+    /// `CODEX_WALL_CONFIG` + hook PreToolUse gọi cổng chung. Danh sách phiên:
+    /// `codex_sessions`.
     pub fn is_codex(&self) -> bool {
         self.cli
             .as_deref()

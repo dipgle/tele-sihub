@@ -6541,6 +6541,13 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
         }
     }
 
+    // ── codex: nguồn phiên THỨ BA ─────────────────────────────────────────
+    //
+    // Không có sổ "ai đang sống": hàng = TUI `codex` còn chạy, ghép với nhật ký
+    // bằng tệp rollout nó đang giữ mở — xem `codex_sessions`. `Err` = KHÔNG ĐO
+    // ĐƯỢC ⟹ `blind`, không phải "0 phiên" (luật 11b).
+    codex_rows(cfg, &procs, &mut out);
+
     // 🔴 Phép đo CHIA KHÚC. Hà 2026-08-14: *"máy khỏe, chỉ phục vụ 1 kênh
     // chat, vài lệnh không liên tục, vậy tại sao lại nghẽn"* — câu ấy không trả
     // lời được bằng `sessions_snapshot_ms`, thứ chỉ in một con số tổng. Và đo
@@ -6594,6 +6601,143 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
                 "ms_finish": after_rows.saturating_sub(after_loop).as_millis() }),
     );
     out
+}
+
+/// Hàng `/session` cho mọi tài khoản codex — xem `codex_sessions` cho cách ghép.
+fn codex_rows(cfg: &Config, procs: &Procs, out: &mut SessionsSnapshot) {
+    use crate::codex_sessions as cx;
+    let accounts: Vec<ClaudeAccountCfg> = cfg
+        .claude_accounts_or_ambient()
+        .into_iter()
+        .filter(|a| a.is_codex())
+        .collect();
+    if accounts.is_empty() {
+        return;
+    }
+    if !procs.ok {
+        for a in &accounts {
+            logging::warn(
+                "codex_sessions_blind",
+                json!({ "account": a.name, "why": "không đọc được `ps` — không biết TUI codex nào còn sống" }),
+            );
+            out.blind.push(a.name.clone());
+        }
+        return;
+    }
+    let tuis: Vec<(i64, String)> = procs
+        .by_pid
+        .iter()
+        .filter(|(_, p)| cx::is_codex_tui(&p.command))
+        .map(|(pid, p)| (*pid, p.tty.clone()))
+        .collect();
+    // Đích fd của từng TUI, đọc MỘT lần cho mọi tài khoản. Một pid đọc hỏng ⟹
+    // mọi tài khoản codex đều có thể đang thiếu đúng phiên ấy ⟹ cả nhóm vào
+    // `blind` (vẫn liệt kê các hàng đọc được).
+    let mut fds: Vec<(i64, String, Vec<PathBuf>)> = Vec::new();
+    let mut hong: Vec<String> = Vec::new();
+    for (pid, tty) in tuis {
+        match cx::fd_targets(pid) {
+            Ok(t) => fds.push((pid, tty, t)),
+            Err(e) => hong.push(format!("pid {pid}: {e}")),
+        }
+    }
+    let ws = cfg.workspace_root.to_string_lossy().to_string();
+    for account in &accounts {
+        let home = crate::accounts::codex_home(account);
+        let sessions_dir =
+            std::fs::canonicalize(home.join("sessions")).unwrap_or(home.join("sessions"));
+        if !hong.is_empty() {
+            logging::warn(
+                "codex_fd_unreadable",
+                json!({ "account": account.name, "errs": hong,
+                        "effect": "phiên codex của tiến trình ấy có thể thiếu trên danh sách" }),
+            );
+            out.notes.push(format!(
+                "{} (codex): không đọc được tệp mở của {} tiến trình",
+                account.name,
+                hong.len()
+            ));
+            out.blind.push(account.name.clone());
+        }
+        let index = std::fs::read_to_string(home.join("session_index.jsonl")).unwrap_or_default();
+        let mut count = 0usize;
+        for (pid, tty, targets) in &fds {
+            let Some(path) = cx::rollout_among(targets, &sessions_dir) else {
+                continue;
+            };
+            let head = cx::first_line(&path, 1 << 20).unwrap_or_default();
+            let tail = match read_tail(&path) {
+                Ok(t) => t,
+                Err(e) => {
+                    logging::warn(
+                        "codex_rollout_read_failed",
+                        json!({ "account": account.name, "path": path.display().to_string(), "err": e.to_string() }),
+                    );
+                    String::new()
+                }
+            };
+            let r = cx::parse_rollout(&head, &tail);
+            // id: từ `session_meta`; dòng đầu hỏng/tràn trần ⟹ từ tên tệp
+            // (`rollout-<mốc>-<uuid>.jsonl`, uuid = 36 ký tự cuối).
+            let id = if r.id.is_empty() {
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| {
+                        s.chars()
+                            .rev()
+                            .take(36)
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .rev()
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                r.id.clone()
+            };
+            let last_activity = r.last_ts.clone().or_else(|| mtime_rfc3339(&path));
+            let working = r.busy.unwrap_or_else(|| {
+                idle_seconds(last_activity.as_deref()).is_some_and(|s| s < IDLE_AFTER_SEC)
+            });
+            let folder = folder_for_session(&id, &tail, &ws, || None)
+                .filter(|f| !f.is_empty())
+                .unwrap_or_else(|| opencode_project_label(&cfg.workspace_root, &r.cwd));
+            let name = cx::thread_name(&index, &id).unwrap_or_else(|| "(không tên)".to_string());
+            if let Some(t) = &r.last_text {
+                note_preview_risk("codex_last_text", t);
+            }
+            out.sessions.push(LiveSession {
+                account: account.name.clone(),
+                session_id: id,
+                name,
+                cwd: r.cwd.clone(),
+                folder,
+                kind: "codex".to_string(),
+                host: "terminal".to_string(),
+                pid: *pid,
+                started_at_ms: r.started_ms,
+                last_activity,
+                working,
+                status: r.busy.map(|b| if b { "busy" } else { "idle" }.to_string()),
+                context_tokens: r.context_tokens,
+                model: r.model.clone().or_else(|| account.model.clone()),
+                tty: tty.clone(),
+                last_text: r.last_text.clone(),
+                last_role: r.last_role.clone(),
+                note: if r.last_text.is_some() {
+                    None
+                } else {
+                    Some("codex: chưa có lượt assistant nào đọc được trong nhật ký phiên".into())
+                },
+                ..Default::default()
+            });
+            count += 1;
+        }
+        logging::info(
+            "codex_sessions_read",
+            json!({ "account": account.name, "count": count }),
+        );
+    }
 }
 
 /// One thing that happened in a session, in the order it happened.

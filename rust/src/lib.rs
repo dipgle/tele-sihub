@@ -38,6 +38,8 @@ pub mod browser;
 /// một tiến trình KHÔNG NÂNG QUYỀN — xem đầu `keys_win.rs`).
 #[cfg(target_os = "macos")]
 pub mod cgkeys;
+/// Phiên codex đang mở: TUI còn sống ⟷ tệp rollout nó giữ mở (`/proc/<pid>/fd`).
+pub mod codex_sessions;
 pub mod commands;
 pub mod config;
 /// Xác nhận lần hai qua Telegram cho lệnh không lùi lại được.
