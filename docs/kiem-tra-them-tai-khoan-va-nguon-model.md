@@ -41,6 +41,10 @@ riêng, không phải xanh.
 - Bản chép cổng trong gói (`~/huba/kem/scripts/`) phải khớp nguồn (`cmp`) — hook của acc gọi BẢN CHÉP.
 
 ### B2. Ngữ cảnh như phiên Claude
+- 🔴 **Khối KHỞI ĐỘNG PHIÊN** (`bash ~/projects/scripts/phien.sh main` — hook SessionStart của
+  `.claude/settings.json`) phải tới model. Đo: hỏi model chép dòng «KHỞI ĐỘNG PHIÊN». ⚠ `phien.sh`
+  chống lặp 120 s — lượt đo trong 120 s chỉ thấy dòng «⏭ bỏ qua khởi động» (không phải lỗi).
+  Codex: `huba-nap-luat.py` (`44d6bd8`). opencode: CHƯA đo.
 - Đọc `CLAUDE.md` dự án (codex: `project_doc_fallback_filenames`, trần `project_doc_max_bytes` ≥ cỡ luật gốc).
 - Luật chung nạp lúc mở phiên (hook SessionStart).
 - MCP codetrail gắn được (`HUBA_MCP_PROJECT_AGENT`); thiếu binary ⇒ log, không im.
