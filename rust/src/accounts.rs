@@ -137,6 +137,17 @@ pub const CODEX_WALL_FLAGS: [&str; 5] = [
     "--dangerously-bypass-hook-trust",
 ];
 
+/// Phần TƯỜNG đi bằng `-c` (TOML), đứng CUỐI dòng lệnh — sau `extra_args` của
+/// hàng — để ô cấu hình không mở lại được (luật 1: không nới tường cho vừa tính
+/// năng). Đo 14/11 (codex-cli 0.169.0), hai chiều trên lượt thật:
+/// · `web_search="disabled"`: mặc định codex TỰ tìm web (phiên pts/11 «Searched
+///   the web»; `exec` trả «ripgrep 15.2.0») — có cờ ⟹ không còn công cụ web;
+/// · `features.apps=false`: tắt MCP mặc định `codex_apps` (308 công cụ connector
+///   ChatGPT). `codex_tui` (quản luồng của chính codex) KHÔNG tắt được bằng cấu
+///   hình — `mcp_servers.codex_tui.enabled=false` ⟹ «invalid transport», codex
+///   không khởi động.
+pub const CODEX_WALL_CONFIG: [&str; 2] = ["web_search=\"disabled\"", "features.apps=false"];
+
 /// Các giá trị `-c` gắn MCP codetrail cho codex; rỗng khi gói không khai
 /// `HUBA_MCP_PROJECT_AGENT`. Binary khai mà không có ⟹ vẫn gắn (codex tự báo MCP
 /// hỏng trên màn) nhưng GHI LOG trước, như nhánh opencode.
@@ -215,6 +226,10 @@ fn codex_launch_line(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
     }
     for a in &acc.extra_args {
         parts.push(value_token(a));
+    }
+    for c in CODEX_WALL_CONFIG {
+        parts.push("-c".to_string());
+        parts.push(shell_quote(c));
     }
     parts.join(" ")
 }

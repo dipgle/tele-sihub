@@ -219,3 +219,26 @@ fn dong_lenh_codex_mang_tuong() {
         "{line}"
     );
 }
+
+/// Luật 1 bản codex (đo 14/11, codex-cli 0.169.0, hai chiều trên lượt thật):
+/// mặc định codex TỰ tìm web («Searched the web» trên phiên pts/11; `exec` trả
+/// «ripgrep 15.2.0») — `-c web_search="disabled"` ⟹ «KHONG_CO_WEB». MCP mặc định
+/// `codex_apps` (308 công cụ connector ChatGPT) mất khi `-c features.apps=false`.
+/// Hai cờ đứng SAU `extra_args` của hàng — ô cấu hình không mở lại được tường.
+#[test]
+fn dong_lenh_codex_tat_web_va_apps_sau_extra_args() {
+    let c = huba::config::Config::default();
+    let d = tempfile::tempdir().unwrap();
+    let mut a = hang(d.path());
+    a.extra_args = vec!["-c".into(), "web_search=\"live\"".into()];
+    let line = huba::accounts::launch_line(&c, Some(&a));
+    let tat_web = line
+        .rfind("-c 'web_search=\"disabled\"'")
+        .unwrap_or_else(|| panic!("thiếu tắt web: {line}"));
+    let mo_web = line.find("web_search=\"live\"").expect("extra_args phải còn");
+    assert!(tat_web > mo_web, "tường phải đứng SAU extra_args: {line}");
+    let tat_apps = line
+        .rfind("-c 'features.apps=false'")
+        .unwrap_or_else(|| panic!("thiếu tắt codex_apps: {line}"));
+    assert!(tat_apps > mo_web, "{line}");
+}
