@@ -41,10 +41,25 @@ riêng, không phải xanh.
 - Bản chép cổng trong gói (`~/huba/kem/scripts/`) phải khớp nguồn (`cmp`) — hook của acc gọi BẢN CHÉP.
 
 ### B2. Ngữ cảnh như phiên Claude
-- 🔴 **Khối KHỞI ĐỘNG PHIÊN** (`bash ~/projects/scripts/phien.sh main` — hook SessionStart của
-  `.claude/settings.json`) phải tới model. Đo: hỏi model chép dòng «KHỞI ĐỘNG PHIÊN». ⚠ `phien.sh`
-  chống lặp 120 s — lượt đo trong 120 s chỉ thấy dòng «⏭ bỏ qua khởi động» (không phải lỗi).
-  Codex: `huba-nap-luat.py` (`44d6bd8`). opencode: CHƯA đo.
+- 🔴 **Đoạn mở đầu phiên = MỘT khâu chung** `scripts/mo-dau-phien.py` (Quang 14/11 «soạn luật đầu
+  tiên cho phiên + mcp tool là bắt buộc trước khi dán vào ngữ cảnh»): ① xác định tài khoản → ② luật
+  (khối `phien.sh main` + `<gốc>/CLAUDE.md` khi CLI không tự đọc) → ③ MCP codetrail bắt tay THẬT
+  (≥ 1 công cụ). ①②(luật gốc)③ BẮT BUỘC: huba chạy `--kiem` trước khi mở, hỏng ⟹ KHÔNG mở;
+  `phien.sh` không bắt buộc (máy cài bằng gói không có). Script nằm CẠNH cổng bảo mật
+  (`accounts::script_canh_cong` — Mac `~/projects/scripts/`, gói Linux `kem/scripts/`).
+- 🔴 **Đo cả MÀN lẫn NGỮ CẢNH.** Bản `44d6bd8` nghiệm thu bằng «model chép lại khối khởi động» —
+  đúng ngữ cảnh mà màn codex TRỐNG: màn chỉ in hook qua `systemMessage` («↳ Hook · …», đo 14/11
+  cửa sổ Terminal thật). Đo: mở cửa sổ thật, đọc màn thấy dòng `TÀI KHOẢN PHIÊN:` + `MCP …: ✓`.
+  ⚠ `phien.sh` chống lặp 120 s — lượt đo trong 120 s chỉ thấy «⏭ bỏ qua khởi động» (không phải lỗi).
+  Codex: ✅ (Mac 14/11). Claude: hook riêng `.claude/settings.json` (chưa qua khâu chung). opencode: CHƯA.
+
+### B0. Cài MÁY MỚI — không sửa tay gì (Quang 14/11)
+- Không biến môi trường riêng máy nào là BẮT BUỘC: luật + MCP tính từ gốc workspace / `.mcp.json`
+  (env `HUBA_*` của gói Linux chỉ ĐÈ). Bản CLI ghim ở `cli-ghim.env` — cả hai bộ cài đọc, lệch bản ⟹ cài lại.
+- Mac: `bash install_update.sh` tự dựng plist từ mẫu + bootstrap khi chưa có (mẫu trỏ `bin/hubd`).
+- Linux: gói mang `kem/scripts/{mo-dau-phien,nhac-chuyen-phien}.py` + `cli-ghim.env`; thiếu ⟹ trình cài dừng.
+- Còn PHẢI có người: đăng nhập tài khoản (`/accounts <acc> -l`), khoá bí mật Telegram (`huba setup`),
+  chứng chỉ ký Mac lần đầu (`make-signing-cert.sh`).
 - Đọc `CLAUDE.md` dự án (codex: `project_doc_fallback_filenames`, trần `project_doc_max_bytes` ≥ cỡ luật gốc).
 - Luật chung nạp lúc mở phiên (hook SessionStart).
 - MCP codetrail gắn được (`HUBA_MCP_PROJECT_AGENT`); thiếu binary ⇒ log, không im.

@@ -18,7 +18,7 @@ rustup target list --installed 2>/dev/null | grep -qx "$TARGET" \
 command -v cargo-zigbuild >/dev/null \
   || { echo "KHÔNG ĐO ĐƯỢC: thiếu cargo-zigbuild (cargo install cargo-zigbuild; brew install zig)"; exit 2; }
 
-if [ -n "$(git -C "$H" status --porcelain -- rust install_update_linux.sh DOC-TRUOC-LINUX.txt huba.env.example scripts/huba_cai_linux.py scripts/CLAUDE-goc-workspace.md huba.config.json)" ]; then
+if [ -n "$(git -C "$H" status --porcelain -- rust install_update_linux.sh cli-ghim.env DOC-TRUOC-LINUX.txt huba.env.example scripts/huba_cai_linux.py scripts/CLAUDE-goc-workspace.md huba.config.json)" ]; then
   echo "⚠ cây có thay đổi CHƯA commit trong phần đóng gói — tên gói mang sha HEAD nhưng nội dung là cây hiện tại"
 fi
 SHA=$(git -C "$H" rev-parse --short HEAD)
@@ -53,6 +53,10 @@ cp "$H/DOC-TRUOC-LINUX.txt" "$D/DOC-TRUOC.txt"
 mkdir -p "$D/kem/bin" "$D/kem/scripts/cong-bao-mat-plugin"
 cp "$PA_TARGET/$TARGET/release/project-agent" "$D/kem/bin/"
 cp "$KEM_SRC/cong_bao_mat.py" "$KEM_SRC/bao-mat-policy.json" "$D/kem/scripts/"
+# Khâu soạn đoạn mở đầu phiên + nhắc chuyển phiên: huba gọi chúng CẠNH cổng
+# (`accounts::script_canh_cong`) — máy cài bằng gói không có cây workspace.
+cp "$KEM_SRC/mo-dau-phien.py" "$KEM_SRC/nhac-chuyen-phien.py" "$D/kem/scripts/"
+cp "$H/cli-ghim.env" "$D/"
 cp "$KEM_SRC/cong-bao-mat-plugin/index.js" "$KEM_SRC/cong-bao-mat-plugin/package.json" "$D/kem/scripts/cong-bao-mat-plugin/"
 # Phần cấu hình của trình cài + mẫu tài khoản (CHỈ các hàng `claude_accounts` của kho — không
 # có bí mật nào trong đó: khoá nằm ở env_file/huba.env của từng máy). Trình cài chỉ THÊM hàng thiếu.

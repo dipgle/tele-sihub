@@ -9455,7 +9455,8 @@ pub fn open_codex_window(
     dir: &Path,
     task: &str,
 ) -> Result<(i64, String, String)> {
-    let tuong = crate::accounts::ensure_codex_wall(acc).map_err(|e| anyhow::anyhow!(e))?;
+    let tuong = crate::accounts::ensure_codex_wall(acc, &cfg.workspace_root)
+        .map_err(|e| anyhow::anyhow!(e))?;
     // Không ghi được «tin cậy» thì vẫn mở — hộp «Folder access» hiện lên và chủ
     // máy bấm `1` qua /key được; nhưng NÓI ra trong log, không nuốt.
     if let Err(e) = crate::accounts::codex_trust_dir(acc, dir) {

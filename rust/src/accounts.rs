@@ -148,15 +148,9 @@ pub const CODEX_WALL_FLAGS: [&str; 5] = [
 ///   không khởi động.
 pub const CODEX_WALL_CONFIG: [&str; 2] = ["web_search=\"disabled\"", "features.apps=false"];
 
-/// Các giá trị `-c` gắn MCP codetrail cho codex; rỗng khi gói không khai
-/// `HUBA_MCP_PROJECT_AGENT`. Binary khai mà không có ⟹ vẫn gắn (codex tự báo MCP
-/// hỏng trên màn) nhưng GHI LOG trước, như nhánh opencode.
-pub fn codex_mcp_codetrail_args(account: &str) -> Vec<String> {
-    let bin = std::env::var("HUBA_MCP_PROJECT_AGENT").unwrap_or_default();
-    codex_mcp_codetrail_args_cho(account, &bin)
-}
-
-/// Phần THUẦN (trừ một lượt hỏi đĩa để ghi log) của [`codex_mcp_codetrail_args`].
+/// Các giá trị `-c` gắn MCP codetrail cho codex (binary từ [`codex_mcp_bin`]); rỗng khi
+/// không tìm thấy binary — [`ensure_codex_wall`] đã từ chối mở trước đó. THUẦN (trừ
+/// một lượt hỏi đĩa để ghi log).
 pub fn codex_mcp_codetrail_args_cho(account: &str, bin: &str) -> Vec<String> {
     let bin = bin.trim();
     if bin.is_empty() {
@@ -226,7 +220,7 @@ fn codex_launch_line(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
     // MCP codetrail (Quang 14/11 «gắn mcp codetrail nữa») — cùng nguồn với opencode:
     // `HUBA_MCP_PROJECT_AGENT` (gói Linux: `kem/bin/project-agent`). Truyền bằng `-c`
     // mỗi lượt mở, không ghi config.toml.
-    for c in codex_mcp_codetrail_args(&acc.name) {
+    for c in codex_mcp_codetrail_args_cho(&acc.name, &codex_mcp_bin(&cfg.workspace_root)) {
         parts.push("-c".to_string());
         parts.push(shell_quote(&c));
     }
@@ -299,14 +293,61 @@ pub fn codex_gate() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("cong_bao_mat.py"))
 }
 
+/// Script dùng chung nằm CẠNH cổng bảo mật ([`codex_gate`]) — cùng một bản cài:
+/// máy có cây workspace ⟹ `~/projects/scripts/`; máy cài bằng gói Linux ⟹
+/// `kem/scripts/` (gói chép đủ). Không tính từ gốc workspace: máy cài bằng gói
+/// KHÔNG có `<gốc>/scripts/` (14/11 — «cài máy mới không phải sửa lại gì»).
+pub fn script_canh_cong(ten: &str) -> PathBuf {
+    codex_gate().with_file_name(ten)
+}
+
+/// Khâu CHUNG soạn đoạn mở đầu phiên (mọi CLI): `mo-dau-phien.py` cạnh cổng.
+pub fn mo_dau_script() -> PathBuf {
+    script_canh_cong("mo-dau-phien.py")
+}
+
+/// Binary MCP codetrail cho phiên codex: `HUBA_MCP_PROJECT_AGENT` (gói Linux), không
+/// có ⟹ ĐÚNG lệnh `<gốc>/.mcp.json` khai cho phiên Claude (`${HOME}`/`~` mở ra).
+/// Rỗng ⟹ không tìm thấy — [`ensure_codex_wall`] từ chối mở (MCP là bắt buộc).
+///
+/// 🔴 14/11: biến môi trường chỉ bộ cài Linux đặt ⟹ sang Mac phiên codex mất MCP
+/// không ai hay. Nguồn mặc định phải là thứ git mang theo.
+pub fn codex_mcp_bin(goc: &Path) -> String {
+    let env = std::env::var("HUBA_MCP_PROJECT_AGENT").unwrap_or_default();
+    if !env.trim().is_empty() {
+        return env.trim().to_string();
+    }
+    let p = goc.join(".mcp.json");
+    let cmd = std::fs::read_to_string(&p)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| {
+            v["mcpServers"]["project-agent"]["command"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    if cmd.is_empty() {
+        return String::new();
+    }
+    let home = home_dir()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let cmd = cmd.replace("${HOME}", &home).replace("$HOME", &home);
+    crate::config::expand_home(Path::new(&cmd))
+        .to_string_lossy()
+        .to_string()
+}
+
 /// Nội dung `CODEX_HOME/hooks.json`: MỘT hook `PreToolUse` cho MỌI công cụ, gọi
 /// cổng chung. Cổng thoát khác 0 (kể cả 3 = policy hỏng) ⟹ hook thoát 2 = CHẶN
 /// (fail-closed). Khuôn đo 14/11 trên codex-cli 0.169.0 (payload `tool_name`/
 /// `tool_input` như Claude Code). Hàm THUẦN.
 ///
-/// `nap_luat` = `(script, luật gốc)`: thêm hook `SessionStart` đưa luật chung của
-/// workspace vào ngữ cảnh ([`CODEX_NAP_LUAT_PY`]).
-pub fn codex_hooks_json(gate: &Path, nap_luat: Option<(&Path, &Path)>) -> Value {
+/// `goc` = gốc workspace: thêm hook `SessionStart` gọi khâu chung
+/// `mo-dau-phien.py` CẠNH cổng (`--codex-hook`: `systemMessage` HIỆN lên màn như khối khởi
+/// động của phiên Claude, `additionalContext` tới model) + hook nhắc chuyển phiên.
+pub fn codex_hooks_json(gate: &Path, goc: Option<&Path>, mcp: &str) -> Value {
     let lenh = format!(
         "python3 {} --codex-pretooluse; r=$?; [ \"$r\" -eq 0 ] || exit 2",
         shell_quote(&gate.to_string_lossy())
@@ -318,112 +359,40 @@ pub fn codex_hooks_json(gate: &Path, nap_luat: Option<(&Path, &Path)>) -> Value 
             ]
         }
     });
-    if let Some((script, luat)) = nap_luat {
-        let nap = format!(
-            "python3 {} {}",
-            shell_quote(&script.to_string_lossy()),
-            shell_quote(&luat.to_string_lossy())
+    let canh = |ten: &str| gate.with_file_name(ten);
+    if let Some(goc) = goc {
+        let mut mo_dau = format!(
+            "python3 {} --cli codex --goc {} --codex-hook",
+            shell_quote(&canh("mo-dau-phien.py").to_string_lossy()),
+            shell_quote(&goc.to_string_lossy())
         );
+        if !mcp.is_empty() {
+            mo_dau.push_str(&format!(" --mcp {}", shell_quote(mcp)));
+        }
         v["hooks"]["SessionStart"] =
-            json!([ { "hooks": [ { "type": "command", "command": nap } ] } ]);
+            json!([ { "hooks": [ { "type": "command", "command": mo_dau } ] } ]);
         // Nhắc chuyển phiên khi ngữ cảnh ≥ 50 % — CÙNG script phiên Claude dùng
-        // (`.claude/settings.json` Stop + UserPromptSubmit), nằm cạnh tệp luật gốc.
+        // (`.claude/settings.json` Stop + UserPromptSubmit).
         // Đo 14/11 codex-cli 0.169.0: hai sự kiện ấy bắn y khuôn Claude
         // (`transcript_path`, `stop_hook_active`); `decision: block` và
         // `additionalContext` đều tới model. Script đọc `model_context_window` do
         // codex tự khai trong rollout.
-        if let Some(goc) = luat.parent() {
-            let nhac = format!(
-                "python3 {}",
-                shell_quote(
-                    &goc.join("scripts")
-                        .join("nhac-chuyen-phien.py")
-                        .to_string_lossy()
-                )
-            );
-            let h = json!([ { "hooks": [ { "type": "command", "command": nhac } ] } ]);
-            v["hooks"]["Stop"] = h.clone();
-            v["hooks"]["UserPromptSubmit"] = h;
-        }
+        let nhac = format!(
+            "python3 {}",
+            shell_quote(&canh("nhac-chuyen-phien.py").to_string_lossy())
+        );
+        let h = json!([ { "hooks": [ { "type": "command", "command": nhac } ] } ]);
+        v["hooks"]["Stop"] = h.clone();
+        v["hooks"]["UserPromptSubmit"] = h;
     }
     v
 }
 
-/// Script hook `SessionStart` của codex: đưa LUẬT CHUNG (`HUBA_LUAT_GOC` =
-/// `~/projects/CLAUDE.md`) vào ngữ cảnh — cùng tệp acc8 (opencode) nạp qua
-/// `instructions`.
-///
-/// 🔴 Quang 14/11 (ảnh 14:52, gõ «aihub» ⟹ codex hỏi lại «What would you like to
-/// do»): *"chưa chạy được ngữ cảnh giống acc8"*. Đo cùng ngày: codex đọc
-/// `CLAUDE.md` theo `project_doc_fallback_filenames` nhưng chỉ từ GỐC GIT của thư
-/// mục — ở `~/projects/huba` (kho lồng) `/status` khai đúng MỘT tệp, thiếu luật
-/// gốc; hook `SessionStart` với `additionalContext` thì tới được model (mã thử
-/// CAM-0714 trả về đúng). Gốc git của phiên CHÍNH là thư mục luật ⟹ codex đã tự
-/// đọc ⟹ không nạp lần hai. Đọc hỏng ⟹ vẫn nói vào ngữ cảnh, không im.
-///
-/// 🔴 Quang 14/11 (sau `a17b03a`): *"mở phiên mới bằng acc10 vẫn chưa có nội dung
-/// đầu giống các tài khoản khác"*. Đo: phiên 01a1d965 có đủ `CLAUDE.md` (AGENTS.md
-/// 29 435 ký tự) nhưng THIẾU khối KHỞI ĐỘNG PHIÊN — thứ phiên Claude nào cũng có, vì
-/// `.claude/settings.json` của workspace chạy hook SessionStart
-/// `bash ~/projects/scripts/phien.sh main`. Nên hook này chạy ĐÚNG lệnh ấy (cạnh
-/// tệp luật: `<gốc>/scripts/phien.sh`), ở `cwd` của phiên, và đặt kết quả LÊN ĐẦU
-/// (codex cắt đuôi ra hook dài). Hỏng ⟹ đúng câu phiên Claude in.
-pub const CODEX_NAP_LUAT_PY: &str = r##"import json, os, subprocess, sys
-luat = sys.argv[1]
-try:
-    p = json.load(sys.stdin)
-except Exception:
-    p = {}
-cwd = p.get("cwd") or os.getcwd()
-goc = os.path.dirname(os.path.realpath(luat))
-phan = []
-khoi = os.path.join(goc, "scripts", "phien.sh")
-hong = ("⛔ HOOK SessionStart HỎNG (mã {}) — luật khởi động KHÔNG chạy. "
-        "Chạy tay: bash ~/projects/scripts/phien.sh main <dự-án>")
-if os.path.isfile(khoi):
-    try:
-        r = subprocess.run(["bash", khoi, "main"], cwd=cwd, stdin=subprocess.DEVNULL,
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           text=True, errors="replace", timeout=120)
-        phan.append(r.stdout)
-        if r.returncode != 0:
-            phan.append(hong.format(r.returncode))
-    except subprocess.TimeoutExpired as e:
-        da = e.stdout or ""
-        if isinstance(da, bytes):
-            da = da.decode("utf-8", "replace")
-        phan.append(da)
-        phan.append(hong.format("124 — quá 120 s"))
-    except OSError as e:
-        phan.append(hong.format("không chạy được: " + str(e)))
-else:
-    phan.append(hong.format("không có " + khoi))
-try:
-    top = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
-                         capture_output=True, text=True, timeout=5).stdout.strip()
-except Exception:
-    top = ""
-if not (top and os.path.realpath(top) == goc):
-    try:
-        with open(luat, encoding="utf-8") as fh:
-            # Dòng DẪN đứng ĐẦU khối luật: codex cắt ra hook dài (đo 14/11: luật 34 KB
-            # tới model «bị cắt bớt») — lệnh đọc trọn nằm ở đó.
-            phan.append(
-                "# LUAT CHUNG CUA WORKSPACE: " + luat + "\n"
-                "BUOC DAU TIEN cua phien nay: doc TRON tep tren bang lenh `cat " + luat + "` "
-                "(ban duoi co the bi cat), roi lam theo. Ten du an nguoi dung go = lenh mo du an do theo luat.\n\n"
-                + fh.read())
-    except OSError as e:
-        phan.append("CANH BAO: khong doc duoc luat chung " + luat + ": " + str(e))
-    # Dòng DẪN lên ĐẦU TIÊN: khối khởi động đứng trước có thể đẩy câu dẫn của luật
-    # ra quá chỗ codex cắt.
-    phan.insert(0, "BUOC DAU TIEN: doc TRON luat chung bang `cat " + luat + "` (ngu canh duoi co the bi cat).")
-out = {"hookEventName": "SessionStart"}
-ctx = "\n".join(x for x in phan if x)
-if ctx:
-    out["additionalContext"] = ctx
-print(json.dumps({"hookSpecificOutput": out}, ensure_ascii=False))
-"##;
+// 🔴 14/11 (Mac): script nạp luật từng VIẾT SẴN ở đây (`huba-nap-luat.py`, `44d6bd8`) và
+// chỉ được dựng khi `HUBA_LUAT_GOC` có — biến chỉ bộ cài Linux đặt ⟹ sang Mac phiên
+// codex mở ra không có luật. Nghiệm thu khi ấy là «model chép lại khối khởi động» — đo
+// NGỮ CẢNH, không đo MÀN: màn codex chỉ in hook qua `systemMessage`, chưa từng đặt.
+// Nay: khâu chung `scripts/mo-dau-phien.py` (mọi CLI), đường tính từ gốc workspace.
 
 /// Dựng + KIỂM tường của một hàng codex, trả câu nói được cho người. Gọi trước
 /// MỌI lượt mở phiên codex. `Err` ⟹ KHÔNG được mở.
@@ -431,7 +400,13 @@ print(json.dumps({"hookSpecificOutput": out}, ensure_ascii=False))
 /// Kiểm HAI CHIỀU mỗi lượt (luật «cổng phải đỏ được»): cổng xét một lệnh CẤM phải
 /// ra 2, một lệnh thường phải ra 0. Một cổng lúc nào cũng 0 (hỏng im) hay lúc nào
 /// cũng 2 (chặn hết) đều bị bắt ở đây, trước khi có cửa sổ nào.
-pub fn ensure_codex_wall(acc: &ClaudeAccountCfg) -> Result<String, String> {
+///
+/// 🔴 Quang 14/11: *«soạn luật đầu tiên cho phiên + mcp tool là bắt buộc trước khi
+/// dán vào ngữ cảnh»*. Trước khi dựng gì, chạy khâu chung [`mo_dau_script`]
+/// `--kiem` với ĐÚNG `CODEX_HOME` và ĐÚNG binary MCP sẽ gắn vào phiên: xác định
+/// được tài khoản · có luật gốc + `phien.sh` · MCP bắt tay thật ra ≥ 1 công cụ.
+/// Thiếu một ⟹ `Err`, không mở.
+pub fn ensure_codex_wall(acc: &ClaudeAccountCfg, goc: &Path) -> Result<String, String> {
     let home = codex_home(acc);
     std::fs::create_dir_all(&home)
         .map_err(|e| format!("không tạo được CODEX_HOME {}: {e}", home.display()))?;
@@ -445,20 +420,45 @@ pub fn ensure_codex_wall(acc: &ClaudeAccountCfg) -> Result<String, String> {
     if !gate.is_file() {
         return Err(format!("thiếu cổng bảo mật {}", gate.display()));
     }
-    // Luật chung (cùng `HUBA_LUAT_GOC` của acc8). Thiếu ⟹ `luat_goc` đã log; phiên
-    // vẫn mở được (tường không phụ thuộc luật), chỉ thiếu ngữ cảnh.
-    let script = home.join("huba-nap-luat.py");
-    let luat = luat_goc();
-    if luat.is_some() && std::fs::read_to_string(&script).ok().as_deref() != Some(CODEX_NAP_LUAT_PY)
-    {
-        std::fs::write(&script, CODEX_NAP_LUAT_PY)
-            .map_err(|e| format!("không ghi được {}: {e}", script.display()))?;
+    let mo_dau = mo_dau_script();
+    if goc.as_os_str().is_empty() || !mo_dau.is_file() {
+        return Err(format!(
+            "không có khâu soạn đoạn mở đầu {} — KHÔNG mở phiên (luật + MCP là bắt buộc)",
+            mo_dau.display()
+        ));
     }
-    let want = serde_json::to_string_pretty(&codex_hooks_json(
-        &gate,
-        luat.as_deref().map(|l| (script.as_path(), l)),
-    ))
-    .map_err(|e| format!("không dựng được hooks.json: {e}"))?;
+    let mcp = codex_mcp_bin(goc);
+    let kiem = std::process::Command::new("python3")
+        .arg(&mo_dau)
+        .args(["--cli", "codex", "--kiem", "--goc"])
+        .arg(goc)
+        .args(["--mcp", &mcp])
+        .env("CODEX_HOME", &home)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("không chạy được {}: {e}", mo_dau.display()))?;
+    let noi = String::from_utf8_lossy(&kiem.stdout).trim().to_string();
+    if !kiem.status.success() {
+        crate::logging::error(
+            "codex_mo_dau_thieu",
+            json!({ "account": acc.name, "code": kiem.status.code(), "out": noi }),
+        );
+        return Err(format!(
+            "đoạn mở đầu phiên thiếu khâu bắt buộc — KHÔNG mở phiên:\n{noi}"
+        ));
+    }
+    // Bản cũ (`44d6bd8`) ghi script nạp luật vào CODEX_HOME — nay hook gọi khâu chung.
+    let cu = home.join("huba-nap-luat.py");
+    if cu.is_file() {
+        if let Err(e) = std::fs::remove_file(&cu) {
+            crate::logging::warn(
+                "codex_nap_luat_cu_con",
+                json!({ "path": cu.display().to_string(), "err": e.to_string() }),
+            );
+        }
+    }
+    let want = serde_json::to_string_pretty(&codex_hooks_json(&gate, Some(goc), &mcp))
+        .map_err(|e| format!("không dựng được hooks.json: {e}"))?;
     let p = home.join("hooks.json");
     let co = std::fs::read_to_string(&p).ok();
     if co.as_deref() != Some(want.as_str()) {
@@ -504,7 +504,7 @@ pub fn ensure_codex_wall(acc: &ClaudeAccountCfg) -> Result<String, String> {
         ));
     }
     Ok(format!(
-        "tường: sandbox workspace-write (không mạng) + hook cổng {} (đã kiểm: cấm ⟹ chặn, thường ⟹ qua)",
+        "tường: sandbox workspace-write (không mạng) + hook cổng {} (đã kiểm: cấm ⟹ chặn, thường ⟹ qua)\n{noi}",
         gate.display()
     ))
 }

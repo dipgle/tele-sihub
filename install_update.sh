@@ -179,6 +179,24 @@ PY
 )"
 fi
 
+# ── CLI codex đúng bản GHIM (cùng tệp ghim với bộ cài Linux) ──────────────────
+# 14/11: Mac còn codex 0.137 trong khi tường + đoạn mở đầu phiên đo trên 0.169 —
+# cài máy mới / máy cũ lệch bản thì chỗ này đưa về đúng bản, không ai phải nhớ.
+[[ -f "$HERE/cli-ghim.env" ]] || die "thiếu $HERE/cli-ghim.env"
+# shellcheck disable=SC1091
+. "$HERE/cli-ghim.env"
+if [[ -f "$CFG" ]] && python3 -c 'import json,sys; sys.exit(0 if any(a.get("cli")=="codex" for a in json.load(open(sys.argv[1])).get("claude_accounts",[])) else 1)' "$CFG"; then
+  CX="$HOME/.npm-global/bin/codex"
+  cx_co="$("$CX" --version 2>/dev/null | awk '{print $NF}' || true)"
+  if [[ "$cx_co" != "$CODEX_VER" ]]; then
+    command -v npm >/dev/null || die "cần npm để cài codex $CODEX_VER (đang có: ${cx_co:-chưa có})"
+    echo "install_update.sh: codex ${cx_co:-chưa có} ⟹ cài $CODEX_VER"
+    npm install -g --prefix "$HOME/.npm-global" "@openai/codex@$CODEX_VER" >/dev/null || die "cài codex $CODEX_VER hỏng"
+  fi
+  echo "install_update.sh: codex $("$CX" --version 2>/dev/null || echo '?')"
+fi
+
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
   launchctl kickstart -k "gui/$(id -u)/$LABEL"
   echo "install_update.sh: restarted $LABEL"
@@ -259,6 +277,19 @@ if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
     fi
   fi
 else
-  echo "install_update.sh: $LABEL is not loaded — bootstrap it with"
-  echo "  launchctl bootstrap gui/\$(id -u) ~/Library/LaunchAgents/$LABEL.plist"
+  # Máy MỚI (hoặc dịch vụ đã gỡ): dựng plist từ mẫu của kho rồi nạp — trước đây
+  # phải tự chạy dòng `sed` trong đầu mẫu + `launchctl bootstrap` bằng tay.
+  # plist ĐÃ có thì GIỮ (có thể chủ máy đã sửa) — chỉ nạp lại.
+  if [[ ! -f "$PLIST" ]]; then
+    mkdir -p "$(dirname "$PLIST")" "$HOME/Library/Logs"
+    sed -e "s|__HOME__|$HOME|g" \
+        -e "s|__INSTALL_DIR__|$HOME/Library/Application Support/hub|g" \
+        -e "s|__HUB_CONFIG__|$HERE/huba.config.json|g" \
+        "$HERE/com.dipgle.hubd.plist" > "$PLIST" || die "không ghi được $PLIST"
+    plutil -lint "$PLIST" >/dev/null || die "plist dựng từ mẫu hỏng: $PLIST"
+    echo "install_update.sh: đã dựng $PLIST từ mẫu"
+  fi
+  launchctl bootstrap "gui/$(id -u)" "$PLIST" || die "launchctl bootstrap $LABEL hỏng — xem: plutil -lint $PLIST"
+  launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || die "$LABEL vẫn chưa nạp sau bootstrap"
+  echo "install_update.sh: bootstrapped $LABEL"
 fi

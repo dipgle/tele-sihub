@@ -24,10 +24,8 @@
         -e "s|__HUB_CONFIG__|$PWD/huba.config.json|g" \
         com.dipgle.hubd.plist > ~/Library/LaunchAgents/com.dipgle.hubd.plist
 
-  Install:
-    ./huba self-install                      (build, ký, cài bản SIGNED)
-    # rồi dòng sed ở trên, rồi:
-    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.dipgle.hubd.plist
+  Install (máy mới — từ 14/11 bộ cài tự làm dòng sed trên + bootstrap):
+    bash install_update.sh                   (build, ký, cài bản SIGNED, dựng plist nếu chưa có, nạp)
   Status / logs:
     launchctl print gui/$(id -u)/com.dipgle.hubd | head -20
     tail -f ~/Library/Logs/hubd.err
@@ -54,7 +52,10 @@
        ngoài tầm với của cargo; đổi nó phải cố ý chạy `install_update.sh`. -->
   <key>ProgramArguments</key>
   <array>
-    <string>__INSTALL_DIR__/bin/hubad</string>
+    <!-- `hubd`, KHÔNG `hubad`: install_update.sh chép bản build `hubad` thành
+         `bin/hubd` (giữ định danh hệ thống, Hà 20/08). Mẫu ghi `hubad` từng làm
+         máy mới cài theo mẫu chạy một tệp không có (sửa 14/11). -->
+    <string>__INSTALL_DIR__/bin/hubd</string>
   </array>
 
   <!-- Thư mục làm việc phải nằm NGOÀI ~/Documents. Đo 2026-08-10: để nó ở
