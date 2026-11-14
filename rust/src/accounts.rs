@@ -326,6 +326,25 @@ pub fn codex_hooks_json(gate: &Path, nap_luat: Option<(&Path, &Path)>) -> Value 
         );
         v["hooks"]["SessionStart"] =
             json!([ { "hooks": [ { "type": "command", "command": nap } ] } ]);
+        // Nhắc chuyển phiên khi ngữ cảnh ≥ 50 % — CÙNG script phiên Claude dùng
+        // (`.claude/settings.json` Stop + UserPromptSubmit), nằm cạnh tệp luật gốc.
+        // Đo 14/11 codex-cli 0.169.0: hai sự kiện ấy bắn y khuôn Claude
+        // (`transcript_path`, `stop_hook_active`); `decision: block` và
+        // `additionalContext` đều tới model. Script đọc `model_context_window` do
+        // codex tự khai trong rollout.
+        if let Some(goc) = luat.parent() {
+            let nhac = format!(
+                "python3 {}",
+                shell_quote(
+                    &goc.join("scripts")
+                        .join("nhac-chuyen-phien.py")
+                        .to_string_lossy()
+                )
+            );
+            let h = json!([ { "hooks": [ { "type": "command", "command": nhac } ] } ]);
+            v["hooks"]["Stop"] = h.clone();
+            v["hooks"]["UserPromptSubmit"] = h;
+        }
     }
     v
 }

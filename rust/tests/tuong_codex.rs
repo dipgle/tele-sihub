@@ -313,3 +313,28 @@ fn dong_lenh_codex_tat_web_va_apps_sau_extra_args() {
         .unwrap_or_else(|| panic!("thiếu tắt codex_apps: {line}"));
     assert!(tat_apps > mo_web, "{line}");
 }
+
+/// Quang 14/11 «mọi tài khoản cùng trải nghiệm»: phiên Claude có hook `Stop` +
+/// `UserPromptSubmit` → `scripts/nhac-chuyen-phien.py` (nhắc chuyển phiên khi ngữ
+/// cảnh ≥ 50 %). Đo 14/11 codex-cli 0.169.0: hai sự kiện ấy bắn với payload y khuôn
+/// Claude (`transcript_path`, `stop_hook_active`), `decision: block` và
+/// `additionalContext` đều tới model. Script nằm CẠNH tệp luật gốc.
+#[test]
+fn nhac_chuyen_phien_nhu_claude() {
+    let gate = std::path::Path::new("/x/kem/scripts/cong_bao_mat.py");
+    let nap = std::path::Path::new("/h/.codex-acc10/huba-nap-luat.py");
+    let luat = std::path::Path::new("/ws/CLAUDE.md");
+    let v = huba::accounts::codex_hooks_json(gate, Some((nap, luat)));
+    for su_kien in ["Stop", "UserPromptSubmit"] {
+        let lenh = v["hooks"][su_kien][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap_or_else(|| panic!("thiếu hook {su_kien}: {v}"));
+        assert!(
+            lenh.contains("/ws/scripts/nhac-chuyen-phien.py"),
+            "{su_kien}: {lenh}"
+        );
+    }
+    // Không có luật gốc (không biết workspace ở đâu) ⟹ không bịa đường script.
+    let v = huba::accounts::codex_hooks_json(gate, None);
+    assert!(v["hooks"].get("Stop").is_none(), "{v}");
+}
