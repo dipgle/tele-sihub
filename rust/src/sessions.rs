@@ -9386,14 +9386,12 @@ pub fn ensure_account_usable(cfg: &Config, account: Option<&str>) -> Result<()> 
     }
 }
 
-/// Vì sao huba chưa mở phiên trên hàng `codex` — MỘT câu cho mọi cửa từ chối.
-///
-/// Luật 1: mọi phiên huba mở đứng sau `DENIED_TOOLS` (`--disallowedTools` của
-/// claude, plugin cổng bảo mật của opencode). codex không có cờ ấy; chưa nối
-/// cổng bảo mật chung vào codex thì mở phiên là mở một tay KHÔNG có tường.
-/// Đăng nhập (`/accounts <tên> -l`) không chạy công cụ nào ⟹ vẫn cho.
+/// Câu từ chối cho MỌI đường mở phiên KHÁC `/new` trên hàng `codex` (bàn giao,
+/// phiên nền, tự chuyển…). Từ 14/11 phiên codex chỉ mở bằng `/new <acc>`
+/// ([`open_codex_window`]) — đường duy nhất dựng + KIỂM tường (luật 1); các
+/// đường kia dựng dòng lệnh kiểu Claude, chạy codex qua đó là chạy không tường.
 pub const CODEX_CHUA_MO_PHIEN: &str =
-    "huba chưa mở phiên codex — codex chưa có tường lệnh cấm (luật 1). Đăng nhập được: /accounts <tên> -l";
+    "phiên codex chỉ mở bằng /new <tên> (cửa sổ có tường: sandbox + cổng lệnh cấm) — đường này (bàn giao/phiên nền) chưa hỗ trợ codex";
 
 /// Câu từ chối cho một tài khoản đang khoá — MỘT chỗ dựng, để `/new`,
 /// `/handover`, `huba handover` và cửa [`ensure_account_usable`] nói cùng một

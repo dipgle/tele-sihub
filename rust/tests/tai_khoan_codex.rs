@@ -91,6 +91,51 @@ fn tim_tien_trinh_dang_nhap_codex_tren_tty() {
     assert_eq!(login_pid("  4101 -bash\n"), None, "CLI đã thoát ⟹ None");
 }
 
+/// Đọc THẬT `~/.codex-acc10` (chỉ đọc) — chạy tay:
+/// `cargo test --test tai_khoan_codex doc_that -- --ignored --nocapture`
+#[test]
+#[ignore = "đọc tài khoản thật trên máy — chạy tay"]
+fn doc_that_acc10() {
+    let home = huba::config::home_dir().unwrap().join(".codex-acc10");
+    let a = ClaudeAccountCfg {
+        name: "acc10".into(),
+        config_dir: Some(home.display().to_string()),
+        cli: Some("codex".into()),
+        ..Default::default()
+    };
+    let l = huba::accounts::codex_info_lines(&a, chrono::Utc::now().timestamp_millis());
+    for x in &l {
+        println!("{x}");
+    }
+    assert!(l[0].starts_with("ChatGPT: "), "{l:?}");
+    assert!(l[1].starts_with("hạn mức: tuần "), "{l:?}");
+}
+
+/// Bản ghi `rate_limits` THẬT của acc10 (nhật ký phiên 14:36 14/11).
+#[test]
+fn cau_han_muc_codex_tu_ban_ghi_that() {
+    let rl = serde_json::json!({
+        "limit_id": "codex", "limit_name": null,
+        "primary": { "used_percent": 7.0, "window_minutes": 10080, "resets_at": 1795235473 },
+        "secondary": null,
+        "credits": { "has_credits": false, "unlimited": false, "balance": "0" },
+        "plan_type": "prolite", "rate_limit_reached_type": null
+    });
+    let ts = "2026-11-14T07:36:00.208Z";
+    let luc = chrono::DateTime::parse_from_rfc3339(ts)
+        .unwrap()
+        .timestamp_millis();
+    let s = huba::accounts::codex_han_muc_say(&rl, ts, luc + 3 * 60_000);
+    assert!(s.starts_with("tuần 7% ↻ "), "{s}");
+    assert!(s.contains("gói prolite"), "{s}");
+    assert!(s.contains("đo 3 phút trước"), "{s}");
+    assert!(!s.contains("KỊCH TRẦN"), "{s}");
+    // Vế ngược: đã kịch trần thì phải nói.
+    let mut het = rl.clone();
+    het["rate_limit_reached_type"] = serde_json::json!("primary");
+    assert!(huba::accounts::codex_han_muc_say(&het, ts, luc).contains("ĐÃ KỊCH TRẦN"));
+}
+
 #[test]
 fn hang_codex_khong_mo_phien_hang_claude_van_mo() {
     let c = cfg_hai();
@@ -98,10 +143,8 @@ fn hang_codex_khong_mo_phien_hang_claude_van_mo() {
         .unwrap_err()
         .to_string();
     assert!(e.contains("acc10") && e.contains("codex"), "{e}");
-    assert!(
-        e.contains("/accounts <tên> -l"),
-        "phải chỉ đường đăng nhập: {e}"
-    );
+    // Đường nền/bàn giao vẫn từ chối codex, và chỉ đúng đường mở có tường.
+    assert!(e.contains("/new <tên>"), "phải chỉ đường /new: {e}");
     assert!(ensure_account_usable(&c, Some("acc1")).is_ok(), "vế ngược");
 }
 
@@ -168,7 +211,12 @@ fn danh_sach_xep_tu_nhien_va_noi_ro_hang_codex() {
         "{s}"
     );
     let khuc = &s[vi("acc10")..];
-    assert!(khuc.contains("codex (ChatGPT)"), "{s}");
+    assert!(khuc.contains("🤖 codex · mở: /new acc10"), "{s}");
+    assert!(khuc.contains("hạn mức: "), "{s}");
+    assert!(
+        !khuc.contains("chưa mở phiên"),
+        "câu cũ (trước 9d7b1ce) đã sai:\n{s}"
+    );
     assert!(
         !khuc.contains("opencode"),
         "hàng codex không được mang nhãn opencode:\n{s}"

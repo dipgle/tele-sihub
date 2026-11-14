@@ -459,18 +459,23 @@ pub fn account_detail_text_voi_probe(
             crate::accounts::opencode_profile_dir(acc).display()
         ));
     } else if acc.is_codex() {
-        // Hàm này THUẦN (không chạy tiến trình) — đăng nhập đọc từ đĩa (`auth.json`),
-        // chi tiết đã có trong khối chẩn đoán `probe` bên dưới.
+        // Đọc ĐĨA, không chạy tiến trình: danh tính từ `auth.json` (id_token), hạn
+        // mức từ nhật ký phiên codex (Quang 14/11 «chưa lấy được thông tin gì»).
         let home = crate::accounts::codex_home(acc);
         out.push_str(&format!(
-            "CLI: codex (ChatGPT) · CODEX_HOME: {}\nđăng nhập: {}\n⛔ {}\n",
-            home.display(),
-            if home.join("auth.json").is_file() {
-                "có auth.json"
-            } else {
-                "CHƯA — /accounts <tên> -l"
-            },
-            crate::sessions::CODEX_CHUA_MO_PHIEN
+            "CLI: codex · effort {} · CODEX_HOME: {}\n",
+            acc.effort
+                .as_deref()
+                .unwrap_or(crate::accounts::CODEX_EFFORT_MAC_DINH),
+            home.display()
+        ));
+        for l in crate::accounts::codex_info_lines(acc, now_ms) {
+            out.push_str(&l);
+            out.push('\n');
+        }
+        out.push_str(&format!(
+            "mở phiên: /new {} [-s dự án] — cửa sổ có tường (sandbox + cổng lệnh cấm), MCP codetrail\n",
+            acc.name
         ));
     } else {
         match id {
@@ -534,7 +539,8 @@ pub fn account_detail_text_voi_probe(
             }
         }
     }
-    if let Some(q) = quota {
+    // codex: dòng hạn mức của chính nó đã in ở khối trên — sổ Claude không có gì.
+    if let Some(q) = quota.filter(|_| !acc.is_codex()) {
         out.push_str(&format!("hạn mức: {}\n", q.say(now_ms)));
     }
     if let Some(l) = do_lai_line(usage_row, quota.and_then(|q| q.fetched_at_ms), now_ms) {
@@ -675,14 +681,13 @@ pub fn accounts_text_voi_email(
                 ),
             }
         ));
-        // codex: nói nó LÀ GÌ ngay dưới tên — không có hạn mức Claude, chưa mở phiên.
+        // codex: nói nó LÀ GÌ ngay dưới tên + gói + hạn mức của CHÍNH codex (nhật ký
+        // phiên) — sổ Claude không có gì về nó.
         if acc.is_codex() {
-            let co = crate::accounts::codex_home(acc).join("auth.json").is_file();
-            out.push_str(&format!(
-                "    🤖 codex (ChatGPT) · {} · ⛔ huba chưa mở phiên codex · đăng nhập lại: /accounts {} -l\n",
-                if co { "đã đăng nhập" } else { "CHƯA đăng nhập" },
-                acc.name
-            ));
+            out.push_str(&format!("    🤖 codex · mở: /new {}\n", acc.name));
+            for l in crate::accounts::codex_info_lines(acc, now_ms) {
+                out.push_str(&format!("    {l}\n"));
+            }
         }
         // 🔒 Ngay dưới tên, trước mọi con số: tài khoản khoá thì hạn mức bên dưới
         // chỉ còn là thông tin, không còn là lý do để chọn nó.
@@ -731,7 +736,10 @@ pub fn accounts_text_voi_email(
         // Ranh giới tệp này tự đặt cho mình — *"phần dựng câu, tách khỏi phần đi
         // đo"* — vốn đã kể tên `usage` và `quotas` là hai thứ phải truyền vào.
         // Nó bỏ sót THỜI GIAN, mà thời gian cũng là một phép đo đi ra ngoài.
-        let q_acc = quotas.iter().find(|q| q.account == acc.name);
+        let q_acc = quotas
+            .iter()
+            .find(|q| q.account == acc.name)
+            .filter(|_| !acc.is_codex());
         if let Some(q) = q_acc {
             out.push_str(&format!("    hạn mức: {}\n", q.say(now_ms)));
             // 🔴 DÒNG RIÊNG, cố ý không nối vào dòng trên. Hai lý do, cả hai đều

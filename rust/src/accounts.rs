@@ -373,6 +373,24 @@ pub fn codex_login_line(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
 /// nhãn để người đọc biết acc nào là ai, không phải một phép xác thực.
 /// `None` = chưa đăng nhập (không có tệp) hoặc đọc hỏng — hỏng thì GHI LOG.
 pub fn codex_email(acc: &ClaudeAccountCfg) -> Option<String> {
+    let email = codex_claims(acc)?
+        .get("email")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|e| !e.is_empty());
+    if email.is_none() {
+        crate::logging::warn(
+            "codex_email_not_found",
+            json!({ "account": acc.name,
+                    "why": "auth.json có nhưng không đọc ra claim email trong tokens.id_token" }),
+        );
+    }
+    email
+}
+
+/// Phần thân (claims) của `tokens.id_token` trong `CODEX_HOME/auth.json`. `None` =
+/// chưa đăng nhập (không có tệp, im) hoặc đọc hỏng (GHI LOG). Không kiểm chữ ký.
+pub fn codex_claims(acc: &ClaudeAccountCfg) -> Option<Value> {
     use base64::Engine;
     let p = codex_home(acc).join("auth.json");
     let text = match std::fs::read_to_string(&p) {
@@ -386,7 +404,7 @@ pub fn codex_email(acc: &ClaudeAccountCfg) -> Option<String> {
             return None;
         }
     };
-    let email = serde_json::from_str::<Value>(&text)
+    let claims = serde_json::from_str::<Value>(&text)
         .ok()
         .and_then(|v| {
             v.pointer("/tokens/id_token")
@@ -399,22 +417,178 @@ pub fn codex_email(acc: &ClaudeAccountCfg) -> Option<String> {
                 .decode(body.trim_end_matches('='))
                 .ok()
         })
-        .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
-        .and_then(|claims| {
-            claims
-                .get("email")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .filter(|e| !e.is_empty());
-    if email.is_none() {
+        .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok());
+    if claims.is_none() {
         crate::logging::warn(
-            "codex_email_not_found",
+            "codex_claims_unreadable",
             json!({ "account": acc.name, "path": p.display().to_string(),
-                    "why": "auth.json có nhưng không đọc ra claim email trong tokens.id_token" }),
+                    "why": "auth.json có nhưng không giải được tokens.id_token" }),
         );
     }
-    email
+    claims
+}
+
+/// Bản đọc `rate_limits` MỚI NHẤT trong nhật ký phiên codex
+/// (`CODEX_HOME/sessions/**/rollout-*.jsonl`, dòng `payload.type = token_count`)
+/// kèm `timestamp` của dòng ấy. Đo 14/11 (codex-cli 0.169.0, acc10): `primary`
+/// `window_minutes 10080` (tuần) `used_percent 7.0` `resets_at` (giây epoch),
+/// `secondary: null`, `plan_type: "prolite"`.
+///
+/// `Ok(None)` = chưa có lượt nào ghi hạn mức (chưa chạy phiên nào) — KHÁC với
+/// `Err` (đọc thư mục/tệp hỏng). Số này do CHÍNH codex ghi ở lượt gần nhất: cũ
+/// bao nhiêu thì khai bấy nhiêu ([`codex_han_muc_say`] in tuổi).
+pub fn codex_rate_limits(acc: &ClaudeAccountCfg) -> Result<Option<(Value, String)>, String> {
+    let goc = codex_home(acc).join("sessions");
+    let mut tep: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    let mut ngan = vec![goc.clone()];
+    while let Some(d) = ngan.pop() {
+        let it = match std::fs::read_dir(&d) {
+            Ok(it) => it,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && d == goc => return Ok(None),
+            Err(e) => return Err(format!("không đọc được {}: {e}", d.display())),
+        };
+        for en in it.flatten() {
+            let p = en.path();
+            match en.file_type() {
+                Ok(t) if t.is_dir() => ngan.push(p),
+                Ok(_) if p.extension().and_then(|x| x.to_str()) == Some("jsonl") => {
+                    if let Ok(m) = en.metadata().and_then(|m| m.modified()) {
+                        tep.push((m, p));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    tep.sort_by_key(|t| std::cmp::Reverse(t.0));
+    for (_, p) in tep.iter().take(8) {
+        let text = std::fs::read_to_string(p)
+            .map_err(|e| format!("không đọc được {}: {e}", p.display()))?;
+        for dong in text.lines().rev() {
+            if !dong.contains("\"rate_limits\"") {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(dong) else {
+                continue;
+            };
+            let rl = v
+                .pointer("/payload/rate_limits")
+                .cloned()
+                .unwrap_or(Value::Null);
+            if rl.is_object() {
+                let ts = v
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                return Ok(Some((rl, ts)));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Câu hạn mức codex cho người đọc. Hàm THUẦN (`now_ms`, múi giờ máy cho mốc reset).
+/// `tuần 7% · ↻ 11:31 21/11 · gói prolite · đo 3 phút trước`.
+pub fn codex_han_muc_say(rl: &Value, ts: &str, now_ms: i64) -> String {
+    let cua = |k: &str| -> Option<String> {
+        let w = rl.get(k)?;
+        let phut = w.get("window_minutes").and_then(Value::as_i64)?;
+        let dung = w.get("used_percent").and_then(Value::as_f64)?;
+        let ten = match phut {
+            300 => "5 tiếng".to_string(),
+            10080 => "tuần".to_string(),
+            m if m % 1440 == 0 => format!("{} ngày", m / 1440),
+            m if m % 60 == 0 => format!("{} tiếng", m / 60),
+            m => format!("{m} phút"),
+        };
+        let reset = w
+            .get("resets_at")
+            .and_then(Value::as_i64)
+            .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
+            .map(|t| {
+                format!(
+                    " ↻ {}",
+                    t.with_timezone(&chrono::Local).format("%H:%M %d/%m")
+                )
+            })
+            .unwrap_or_default();
+        Some(format!("{ten} {dung:.0}%{reset}"))
+    };
+    let mut phan: Vec<String> = ["primary", "secondary"]
+        .iter()
+        .filter_map(|k| cua(k))
+        .collect();
+    if phan.is_empty() {
+        phan.push("không có cửa sổ hạn mức nào trong bản ghi".to_string());
+    }
+    if rl
+        .get("rate_limit_reached_type")
+        .is_some_and(|v| !v.is_null())
+    {
+        phan.push("⛔ ĐÃ KỊCH TRẦN".to_string());
+    }
+    if let Some(g) = rl.get("plan_type").and_then(Value::as_str) {
+        phan.push(format!("gói {g}"));
+    }
+    let tuoi = chrono::DateTime::parse_from_rfc3339(ts)
+        .ok()
+        .map(|t| (now_ms - t.timestamp_millis()).max(0) / 60_000)
+        .map(|p| match p {
+            0 => "đo vừa xong".to_string(),
+            p if p < 120 => format!("đo {p} phút trước"),
+            p if p < 2880 => format!("đo {} tiếng trước", p / 60),
+            p => format!("đo {} ngày trước", p / 1440),
+        })
+        .unwrap_or_else(|| "không rõ lúc đo".to_string());
+    phan.push(tuoi);
+    phan.join(" · ")
+}
+
+/// Hai dòng thông tin của một hàng codex cho `/accounts` (danh sách + chi tiết):
+/// danh tính (email · gói · hạn thuê bao) và hạn mức. Không bao giờ in token.
+pub fn codex_info_lines(acc: &ClaudeAccountCfg, now_ms: i64) -> Vec<String> {
+    let mut out = Vec::new();
+    match codex_claims(acc) {
+        None => out.push(format!(
+            "đăng nhập: CHƯA (hoặc auth.json hỏng) — /accounts {} -l",
+            acc.name
+        )),
+        Some(c) => {
+            let auth = c.get("https://api.openai.com/auth");
+            let s = |k: &str| {
+                auth.and_then(|a| a.get(k))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            };
+            let mut d = vec![c
+                .get("email")
+                .and_then(Value::as_str)
+                .unwrap_or("(không có email)")
+                .to_string()];
+            if let Some(g) = s("chatgpt_plan_type") {
+                d.push(format!("gói {g}"));
+            }
+            if let Some(h) = s("chatgpt_subscription_active_until") {
+                d.push(format!("thuê bao tới {}", h.get(..10).unwrap_or(&h)));
+            }
+            out.push(format!("ChatGPT: {}", d.join(" · ")));
+        }
+    }
+    match codex_rate_limits(acc) {
+        Ok(Some((rl, ts))) => out.push(format!("hạn mức: {}", codex_han_muc_say(&rl, &ts, now_ms))),
+        Ok(None) => out.push(
+            "hạn mức: chưa có số — codex ghi sau lượt chạy đầu tiên của một phiên".to_string(),
+        ),
+        Err(e) => {
+            crate::logging::warn(
+                "codex_rate_limits_unreadable",
+                json!({ "account": acc.name, "err": e }),
+            );
+            out.push(format!("hạn mức: KHÔNG ĐỌC ĐƯỢC — {e}"));
+        }
+    }
+    out
 }
 
 /// `CODEX_HOME=<thư mục> <codex_cli>` — gốc cho `login …`; KHÔNG mang `extra_args` của phiên.
