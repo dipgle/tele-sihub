@@ -74,7 +74,7 @@ riêng, không phải xanh.
 | B1 cổng ghi gắn dự án | ✅ guard-write-path | ✅ plugin | ✅ cổng nguồn 14/11 (tự kiểm 30/30 + lượt codex thật qua/chặn) · ⚠ bản chép `~/huba/kem` CHƯA cài lại |
 | B1 tắt tìm web | ✅ `--disallowedTools` | ✅ cổng | ✅ `web_search="disabled"` (`bd6ee9e`, đo hai chiều: mặc định codex TỰ tìm web) |
 | MCP mặc định | — | — | `codex_apps` tắt bằng `features.apps=false` · `codex_tui` (quản luồng) KHÔNG tắt được |
-| MCP codetrail gọi được | ✅ | ✅ | ❌ `-a never` ⟹ «MCP tool call requires approval» (thấy trên pts/14) |
+| MCP codetrail gọi được | ✅ | ✅ | ✅ `default_tools_approval_mode="approve"` (`3e5aca5`; đo hai chiều: không khoá ⟹ «requires approval, but approval policy is never») |
 | B3 `/session` liệt kê | ✅ | ✅ | ✅ `huba sessions --json` máy thật (`06cbaa6`) · ⚠ hubd CHƯA cài lại · Telegram chưa đo |
 | B3 bảng hỏi → nút `/pick` | ✅ | ✅ (dịch khuôn) | ❌ chưa (`request_user_input` trong rollout) |
 | `/new` + `/close` trên Telegram | ✅ | ✅ | chưa đo sau `a17b03a` |
