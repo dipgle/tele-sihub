@@ -273,16 +273,18 @@ fn dong_accounts_cua_acc9_khong_mang_noi_dung_hay_so_cu() {
         name: name.into(),
         ..Default::default()
     };
+    let mut ui = p("huba", "Huba UI handoff continuation");
+    ui.lane = "ui".into();
     let rows = [
         p("remote", "Đọc quy tắc dự án CLAUDE.md"),
-        p("huba", "Huba UI handoff continuation"),
+        ui,
         p("dwork", "V-0194 M1 schedule UI continuation"),
         p("dwork", "Brief bàn giao dci-ke-nhiem-1511-v0194"),
         p("", "projects-f5"),
     ];
     let refs: Vec<&LiveSession> = rows.iter().collect();
     let s = huba::runtime::nhan_du_an_phien(&refs);
-    assert_eq!(s, "remote, huba, dwork ×2, projects-f5");
+    assert_eq!(s, "remote, huba/ui, dwork ×2, projects-f5");
     assert!(!s.contains("CLAUDE.md") && !s.contains("Brief"), "{s}");
 
     // ② Câu khai mẫu số model chỉ cho nguồn CÓ bảng model.

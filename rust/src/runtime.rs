@@ -632,10 +632,11 @@ pub fn ten_tu_nhien(ten: &str) -> Vec<(String, u64)> {
 pub fn nhan_du_an_phien(mine: &[&crate::sessions::LiveSession]) -> String {
     let mut thu_tu: Vec<(String, usize)> = Vec::new();
     for s in mine {
-        let nhan = if s.folder.trim().is_empty() {
-            s.name.clone()
-        } else {
-            s.folder.clone()
+        // Cùng nhãn `/session`: `dự án/module` khi phiên khai module (`lane`), ví dụ `huba/ui`.
+        let nhan = match (s.folder.trim(), s.lane.trim()) {
+            ("", _) => s.name.clone(),
+            (f, "") => f.to_string(),
+            (f, l) => format!("{f}/{l}"),
         };
         match thu_tu.iter_mut().find(|(n, _)| *n == nhan) {
             Some((_, k)) => *k += 1,
