@@ -1,6 +1,11 @@
 # Việc mở huba
 
-- [ ] Phụ thuộc sau gộp origin `f6e5c12` (15/11): Ubuntu thiếu `../scripts/mo-dau-phien.py`. Hai bài `tuong_codex_hai_chieu` và `mo_dau_phien_hien_man_va_vao_ngu_canh` đỏ vì thiếu khâu này; 5 bài cùng nhóm qua, 1 bài ghi tài khoản thật ignored. Không sửa/ghi cây hạ tầng ngoài phiên huba; chưa cài lại bản sau gộp. Cần phiên hạ tầng đồng bộ dependency rồi chạy lại 2 bài, không bỏ kiểm tra.
+- [ ] 🔴 **Ubuntu: cập nhật lên `bc3b516`** (Quang 15/11: «ghi chú luôn thì tôi đỡ phải nhắc»). Mac đã làm + đẩy; Ubuntu làm ĐỦ 3 bước, theo thứ tự:
+  1. Kéo **CẢ HAI** kho: huba **và** kho chung `/mnt/data/projects` (`workspace-infra`, cần ≥ `4997f88` — mang `scripts/mo-dau-phien.py` + `acc-mo-vai.sh`). Thiếu kho chung ⟹ đúng lỗi mục cũ dưới đây.
+  2. Chạy lại 2 bài từng đỏ: `cd rust && cargo test --offline --test tuong_codex --test codex_duoc_chon` ⟹ phải XANH (đỏ ⟹ ghi lại đây, KHÔNG bỏ kiểm).
+  3. Cài lại hubd: dựng gói `bash scripts/dong-goi-linux.sh` rồi `bash install_update_linux.sh` trong thư mục gói (chép `mo-dau-phien.py`/`nhac-chuyen-phien.py` vào `~/huba/kem/scripts`, nâng codex đúng bản ghim `cli-ghim.env`). Lần ĐẦU trình cài/gói Linux mới chạy thật — chỉ mới `bash -n` trên Mac. Kiểm: `bash ~/huba/install_update_linux.sh --verify`.
+  - Có gì mới trong bản này: acc codex được CHỌN bằng hạn mức thật (trước đây bị ép «khoá» — `quota::rank_all`), bàn giao sang codex, `/accounts` dài chia nhiều tin, mở tab đọc gộp, đoạn mở đầu phiên bắt buộc (luật + MCP), trình cài kiểm hệ điều hành. Chi tiết: `docs/kiem-tra-them-tai-khoan-va-nguon-model.md` §B0/B2.
+  - Mục cũ (giữ làm bằng chứng): «Phụ thuộc sau gộp origin `f6e5c12` (15/11): Ubuntu thiếu `../scripts/mo-dau-phien.py`. Hai bài `tuong_codex_hai_chieu` và `mo_dau_phien_hien_man_va_vao_ngu_canh` đỏ vì thiếu khâu này» — gốc: kho chung chưa kéo `4997f88`.
 
 - [ ] Hạ tầng QG Linux: lượt gom 15/11 `.tmp/qg-acc10-tele-20261115.log` thoát 2 vì vé biến mất khỏi `/tmp/qg-hang-doi-1000`. KHÔNG xanh. Kiểm trực tiếp trước commit: release build 0, 66/66 test liên quan (1 smoke desktop ignored), clippy all-targets -D warnings 0.
 
