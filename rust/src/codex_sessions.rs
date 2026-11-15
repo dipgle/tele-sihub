@@ -403,8 +403,40 @@ pub fn thread_name(index: &str, id: &str) -> Option<String> {
         .find(|n| !n.trim().is_empty())
 }
 
-/// Mọi đích fd của một tiến trình. Chỉ Linux (`/proc`) — nơi khác là KHÔNG ĐO
-/// ĐƯỢC, trả `Err` nói rõ, không trả danh sách rỗng.
+/// Mọi đích fd của một tiến trình. Linux: `/proc/<pid>/fd`. macOS: `lsof -p` (không có
+/// `/proc`). Nơi khác / đọc hỏng là KHÔNG ĐO ĐƯỢC — `Err` nói rõ, không trả rỗng.
+///
+/// 🔴 15/11 (Mac): chỉ có nhánh `/proc` ⟹ huba trên Mac KHÔNG BAO GIỜ thấy phiên codex
+/// (log lặp `không đọc được /proc/<pid>/fd`) ⟹ hòm thư của phiên codex bị bỏ với
+/// `runin_inbox_session_gone` (phiên tfl5/ios trên acc10: build iOS + thăm dò không chạy).
+/// Đo: `lsof -p 18456 -Fn` trả đúng hai rollout acc10 đang mở, 0,17 s.
+#[cfg(target_os = "macos")]
+pub fn fd_targets(pid: i64) -> Result<Vec<PathBuf>, String> {
+    let out = std::process::Command::new("/usr/sbin/lsof")
+        .args(["-n", "-P", "-p", &pid.to_string(), "-Fn"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("không chạy được lsof cho pid {pid}: {e}"))?;
+    // lsof thoát 1 khi pid không còn — nói ra, đừng trả rỗng như thể «không mở tệp nào».
+    if !out.status.success() && out.stdout.is_empty() {
+        return Err(format!(
+            "lsof pid {pid}: tiến trình không còn hoặc không đọc được"
+        ));
+    }
+    Ok(parse_lsof_fn(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Tách `lsof -Fn`: dòng `n<đường>` tuyệt đối ⟹ một đích. THUẦN — kiểm được mọi nơi.
+pub fn parse_lsof_fn(out: &str) -> Vec<PathBuf> {
+    out.lines()
+        .filter_map(|l| l.strip_prefix('n'))
+        .filter(|p| p.starts_with('/'))
+        .map(PathBuf::from)
+        .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn fd_targets(pid: i64) -> Result<Vec<PathBuf>, String> {
     let dir = PathBuf::from(format!("/proc/{pid}/fd"));
     let rd =
