@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>huba — bản mẫu thiết kế desktop</title>
+  <meta name="description" content="Bản mẫu thiết kế huba desktop. Dữ liệu minh họa; chưa kết nối CLI, model hay Telegram.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="prototype-bar"><span><b>BẢN MẪU THIẾT KẾ</b> · Dữ liệu minh họa · Chưa kết nối máy thật</span><a href="../thiet-ke-desktop.md">Đọc thiết kế & luồng ↗</a></div>
+  <header class="app-header">
+    <a href="#chat" class="brand"><span class="logo">h</span><strong>huba<span>Không gian làm việc của bạn</span></strong></a>
+    <button class="quick-search" data-action="search"><span>⌕</span> Tìm phiên, dự án… <kbd>⌘ K</kbd></button>
+    <div class="header-right"><span class="local-status"><i></i> Trên máy này</span><button class="icon-button" data-action="notifications" aria-label="Thông báo">♧</button><button class="owner" data-action="owner"><span class="avatar owner-avatar">C</span><span>Chủ máy<small>Quản trị viên</small></span><span>⌄</span></button></div>
+  </header>
+  <div class="app-body">
+    <aside class="sidebar" aria-label="Điều hướng chính">
+      <button class="collapse" id="collapse" aria-label="Thu gọn menu" aria-expanded="true"><span>☰</span><span class="nav-label">Không gian làm việc</span><span class="nav-label">‹</span></button>
+      <nav id="nav"></nav>
+      <div class="sidebar-footer"><div class="device"><span class="device-icon">▣</span><div class="nav-label"><b>Máy của bạn</b><small>Cùng một huba trên mọi PC</small></div></div><div class="sidebar-note nav-label">Phiên vẫn tiếp tục khi bạn đóng cửa sổ.</div></div>
+    </aside>
+    <main id="main" tabindex="-1"></main>
+  </div>
+  <div class="prototype-tools"><label for="scenario">Trạng thái mẫu</label><select id="scenario"><option value="normal">Mặc định</option><option value="waiting">Chờ lựa chọn</option><option value="empty">Chưa có dữ liệu</option><option value="error">Lỗi đọc nguồn</option><option value="offline">Mất kết nối</option></select><button id="reset-demo">Đặt lại bản mẫu</button></div>
+  <dialog id="modal"><form id="modal-form"><div id="modal-content"></div></form></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
