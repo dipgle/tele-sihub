@@ -15,3 +15,5 @@ NỢ MỞ CỦA LÀN: duyệt thiết kế và mức raw; đọc host review khi
 Telegram xác nhận Markdown1736/27212B, HTML1742/63927B; receipts .tmp/gui-thiet-ke-receipt.json và gui-html-thiet-ke-receipt.json. HTML tự chứa xuất từ docs/ui/export.py. Sửa cách xếp hòm thư: cần claude-UID/slug/ID/scratchpad; bản cũ thiếu slug nên không ai chạy UI review. Không có kiểm browser/ảnh mới. Không còn job gửi treo.
 
 Chủ máy hỏi chỉ2plugin Claude/OpenCode có phủ mọi model/rẻ nhất không: thiết kế thêm hướng ưu tiên2CLI, provider catalog dữ liệu; chưa kết luận mọi provider/thuê bao hay chi phí khi chưa đo; không xoá Codex. Brief .tmp/brief-huba-ui-ke-nhiem-20261115-0920.md. Không có việc nền.
+
+Chuyển phiên: d454f92 đã push/remote-match. Cổng chọn acc10, tạo pane%16/ttypts18, nhưng SUCCESSOR_EXIT2 do không đo được CLI sống; trạng thái TẮC, không mở vòng qua. Log .tmp/chuyen-ui-20261115.log. Không có phiên mới được xác nhận, không còn job nền.
