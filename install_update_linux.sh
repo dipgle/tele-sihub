@@ -17,6 +17,14 @@
 # Đè: HUBA_HOME · HUBA_KHONG_CAI_CLI=1 (không tự cài claude/opencode) · HUBA_KHONG_MO_TRANG=1.
 # Mã thoát: 0 xong · 1 hỏng · 2 KHÔNG ĐO ĐƯỢC (thiếu systemd --user / thiếu tệp gói).
 set -u
+# 🔴 Hệ điều hành TRƯỚC mọi việc (Quang 15/11: «đây là máy win mà trình cài không kiểm tra hệ điều
+# hành trước khi làm à»). Sai máy ⟹ mã 2, chỉ đúng trình cài — không build/ký/ghi gì nửa chừng.
+case "$(uname -s 2>/dev/null || echo khong-ro)" in
+  Linux) ;;
+  Darwin) echo "SAI MÁY: install_update_linux.sh dành cho Linux — máy này macOS: install_update.sh (có cây mã) hoặc install_mac.sh trong gói huba-mac-*.tar.gz"; exit 2 ;;
+  MINGW*|MSYS*|CYGWIN*) echo "SAI MÁY: install_update_linux.sh dành cho Linux — máy này Windows: mở PowerShell, chạy install_update.ps1 (gói huba-windows-*.zip)"; exit 2 ;;
+  *) echo "SAI MÁY: install_update_linux.sh dành cho Linux — hệ «$(uname -s 2>/dev/null)» chưa hỗ trợ"; exit 2 ;;
+esac
 SRC="$(cd "$(dirname "$0")" && pwd)"
 DIR="${HUBA_HOME:-$HOME/huba}"
 BIN_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hub/bin"

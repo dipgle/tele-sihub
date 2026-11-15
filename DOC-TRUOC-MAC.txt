@@ -1,0 +1,22 @@
+huba cho macOS (Apple Silicon) — cài từ gói
+
+  tar xzf huba-mac-<sha>.tar.gz
+  bash huba-mac-<sha>/install_mac.sh
+
+Trình cài tự làm:
+  · chép gói vào ~/huba (cài lại giữ nguyên huba.config.json · huba.env · data/)
+  · tạo ~/projects nếu chưa có, đặt luật chung ~/projects/CLAUDE.md + skill/tác tử (đã có thì GIỮ)
+  · thư mục tài khoản + MCP codetrail cho các tài khoản claude
+  · cài claude / opencode / codex đúng bản ghim (cli-ghim.env)
+  · tạo định danh ký «Hub Local Signing» (một lần), ký hubd, dựng plist launchd, khởi động
+
+Phải có NGƯỜI làm (hộp thoại hệ thống / bí mật — không tự động được):
+  · Cài đặt hệ thống › Quyền riêng tư & Bảo mật › Trợ năng: thêm
+      ~/Library/Application Support/hub/bin/hubd
+  · Lần đầu huba điều khiển Terminal: bấm «Cho phép»
+  · Bot Telegram: trình cài mở trang `huba setup` nếu chưa có (dán token, nhắn bot một câu, Lưu)
+  · Đăng nhập từng tài khoản: trên Telegram gõ /accounts <acc> -l
+
+Kiểm:     bash ~/huba/install_mac.sh --verify
+Nhật ký:  ~/Library/Logs/hubd.err
+Nâng bản: giải nén gói mới, chạy lại install_mac.sh của gói mới.
