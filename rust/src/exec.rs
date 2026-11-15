@@ -260,6 +260,25 @@ pub enum GroupKill {
     Unknown,
 }
 
+/// Đối số `/bin/kill` nhắm vào cả NHÓM `pgid`. THUẦN.
+///
+/// 🔴 Đo 15/11 trên Ubuntu (`kill from procps-ng 4.0.4`), một nhóm `setsid` còn sống:
+/// `/bin/kill -0 -<pgid>` ⟹ **rc=1** (đọc `-<pgid>` là CỜ, không phải pid âm) ·
+/// `/bin/kill -0 -- -<pgid>` ⟹ rc=0. Thiếu `--` thì [`group_alive`] trả «đã chết» ⟹
+/// [`kill_group_verified`] ra `AlreadyGone` mà KHÔNG gửi tín hiệu nào ⟹ hết giờ trên Linux
+/// để lại cả họ tiến trình (bài `a_timeout_kills_grandchildren_not_just_the_child` đỏ 3/3).
+/// `-TERM -<pgid>` không `--` còn làm chết chính shell gọi nó (thoát 144) trong lượt đo.
+/// macOS giữ NGUYÊN dạng cũ (đã chạy đúng từ 08/2026; máy này không đo được `kill` BSD).
+#[cfg(unix)]
+fn kill_nhom_args(sig: &str, pgid: u32) -> Vec<String> {
+    let mut v = vec![sig.to_string()];
+    if cfg!(target_os = "linux") {
+        v.push("--".to_string());
+    }
+    v.push(format!("-{pgid}"));
+    v
+}
+
 /// Nhóm tiến trình `pgid` còn ai sống không. `None` = không hỏi được.
 ///
 /// Hỏi cả NHÓM (`-pgid`) chứ không hỏi đứa con: câu cần trả lời là *"cả họ chết
@@ -269,7 +288,7 @@ pub enum GroupKill {
 #[cfg(unix)]
 pub fn group_alive(pgid: u32) -> Option<bool> {
     Command::new("/bin/kill")
-        .args(["-0", &format!("-{pgid}")])
+        .args(kill_nhom_args("-0", pgid))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -310,7 +329,7 @@ pub fn kill_group_verified(pgid: u32) -> GroupKill {
         ),
     ] {
         if let Err(e) = Command::new("/bin/kill")
-            .args([sig, &format!("-{pgid}")])
+            .args(kill_nhom_args(sig, pgid))
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
