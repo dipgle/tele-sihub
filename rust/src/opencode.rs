@@ -647,6 +647,58 @@ fn chatgpt_token(acc: &ClaudeAccountCfg, now_ms: i64) -> Result<(String, String)
     }
 }
 
+/// Claims (phần thân, KHÔNG kiểm chữ ký) của một JWT. THUẦN.
+pub fn jwt_claims(jwt: &str) -> Option<Value> {
+    use base64::Engine;
+    let body = jwt.split('.').nth(1)?;
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(body.trim_end_matches('='))
+        .ok()?;
+    serde_json::from_slice(&raw).ok()
+}
+
+/// Email ChatGPT trong claims token opencode (`https://api.openai.com/profile.email`,
+/// đo 15/11 trên token acc9). THUẦN.
+pub fn email_tu_claims(claims: &Value) -> Option<String> {
+    claims["https://api.openai.com/profile"]["email"]
+        .as_str()
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(str::to_string)
+}
+
+/// Email ChatGPT của hàng opencode — đọc CHỈ-ĐỌC kho opencode, chỉ lấy claim email
+/// (token không rời hàm này). `None` = chưa đăng nhập / đọc hỏng (ghi log).
+pub fn chatgpt_email(acc: &ClaudeAccountCfg) -> Option<String> {
+    let path = db_path(acc);
+    let raw: Result<String, String> = Connection::open_with_flags(
+        &path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| e.to_string())
+    .and_then(|c| {
+        c.query_row(
+            "SELECT value FROM credential WHERE integration_id = 'openai' AND active = 1 \
+             ORDER BY time_updated DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())
+    });
+    let email = raw
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v["access"].as_str().and_then(jwt_claims))
+        .and_then(|c| email_tu_claims(&c));
+    if email.is_none() {
+        crate::logging::warn(
+            "opencode_chatgpt_email_unreadable",
+            json!({ "account": acc.name, "db": path.display().to_string() }),
+        );
+    }
+    email
+}
+
 fn fetch_chatgpt_rate_limits(acc: &ClaudeAccountCfg, now_ms: i64) -> Result<Value, String> {
     let (access, account_id) = chatgpt_token(acc, now_ms)?;
     let client = reqwest::blocking::Client::builder()

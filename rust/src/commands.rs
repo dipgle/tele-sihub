@@ -208,8 +208,8 @@ pub const ROUTES: &[Route] = &[
         // 🔴 Hà 2026-08-15: *"lệnh sẽ như thế này `/new [acc] [text]`"*. Mỗi
         // tham số thêm một BƯỚC, và đó là cả cấu trúc: trống = cửa sổ trần ·
         // kèm tài khoản = dựng CLI · kèm chữ = gõ đề bài vào.
-        usage: "[acc] [việc]",
-        help: "Trống = cửa sổ trần · +acc = dựng CLI · +việc = gõ luôn đề bài",
+        usage: "[-a acc] [-y] [việc]",
+        help: "Trống = cửa sổ trần · +acc = dựng CLI · +việc = gõ luôn đề bài · -y = acc đang khoá vẫn mở, không hỏi",
         listed: true,
     },
     Route {

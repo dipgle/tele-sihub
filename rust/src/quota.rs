@@ -501,6 +501,14 @@ impl Quota {
     /// không ai nói ra. `/accounts` là chỗ DUY NHẤT chủ máy soi lại được luật
     /// chọn tài khoản, nên nó phải in cả cái để soi.
     pub fn say(&self, now_ms: i64) -> String {
+        self.say_cho(now_ms, true)
+    }
+
+    /// [`Quota::say`] cho một hàng mà nguồn của nó CÓ THỂ có bảng theo model hay không.
+    /// `false` (opencode / codex — nguồn chỉ có trần tuần/5 giờ) ⟹ bỏ câu khai mẫu số
+    /// «model: nguồn không có hàng nào»: với nguồn ấy câu đó không bao giờ đổi được trạng
+    /// thái (Hà 15/11, ảnh `/accounts` acc9), nên nó là nhiễu chứ không phải phép đo.
+    pub fn say_cho(&self, now_ms: i64, co_bang_model: bool) -> String {
         if let Some(why) = &self.why_unknown {
             return format!("chưa đo được — {why}");
         }
@@ -572,7 +580,7 @@ impl Quota {
         // KHAI MẪU SỐ khi không có hàng model nào. Im lặng ở đây đọc y hệt "tài
         // khoản này không có hạn mức riêng theo model", mà nó cũng có thể là
         // "chẳng ai đi đọc" — hai chuyện dẫn tới hai việc khác nhau.
-        if self.models.is_empty() && self.why_unknown.is_none() {
+        if co_bang_model && self.models.is_empty() && self.why_unknown.is_none() {
             p.push("model: nguồn không có hàng nào".to_string());
         }
         let hang = rank(self, now_ms);

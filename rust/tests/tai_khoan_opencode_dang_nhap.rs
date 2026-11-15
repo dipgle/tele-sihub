@@ -259,3 +259,104 @@ fn doc_that_acc9_chatgpt() {
     assert!(q.why_unknown.is_none(), "{:?}", q.why_unknown);
     assert!(q.week_pct.is_some());
 }
+
+/// Hà 15/11 (ảnh `/accounts` acc9): *«sao lại có nội dung gán vào phiên ở danh sách tài
+/// khoản»*. Dòng in `4 phiên: Đọc quy tắc dự án CLAUDE.md, Huba UI handoff continuation, …`
+/// (tiêu đề opencode = nội dung câu đầu) · `API key (apiKeyHelper ngoài huba)` (sổ Claude
+/// CŨ của acc9) · `model: nguồn không có hàng nào` (nguồn ChatGPT không bao giờ có bảng model).
+#[test]
+fn dong_accounts_cua_acc9_khong_mang_noi_dung_hay_so_cu() {
+    use huba::sessions::LiveSession;
+    // ① Phiên theo DỰ ÁN, gộp trùng, không phải tiêu đề.
+    let p = |folder: &str, name: &str| LiveSession {
+        folder: folder.into(),
+        name: name.into(),
+        ..Default::default()
+    };
+    let rows = [
+        p("remote", "Đọc quy tắc dự án CLAUDE.md"),
+        p("huba", "Huba UI handoff continuation"),
+        p("dwork", "V-0194 M1 schedule UI continuation"),
+        p("dwork", "Brief bàn giao dci-ke-nhiem-1511-v0194"),
+        p("", "projects-f5"),
+    ];
+    let refs: Vec<&LiveSession> = rows.iter().collect();
+    let s = huba::runtime::nhan_du_an_phien(&refs);
+    assert_eq!(s, "remote, huba, dwork ×2, projects-f5");
+    assert!(!s.contains("CLAUDE.md") && !s.contains("Brief"), "{s}");
+
+    // ② Câu khai mẫu số model chỉ cho nguồn CÓ bảng model.
+    let than: serde_json::Value = serde_json::from_str(
+        r#"{"rate_limit":{"limit_reached":false,"primary_window":{"used_percent":50,
+            "limit_window_seconds":604800,"reset_at":1795235473},"secondary_window":null},
+            "rate_limit_reached_type":null}"#,
+    )
+    .unwrap();
+    let q = huba::quota::codex_quota_tu(
+        "acc9",
+        &huba::opencode::wham_sang_rate_limits(&than).unwrap(),
+        "2026-11-15T14:00:00+00:00",
+    );
+    let now = 1_794_754_800_000;
+    assert!(!q.say_cho(now, false).contains("nguồn không có hàng nào"));
+    assert!(
+        q.say(now).contains("nguồn không có hàng nào"),
+        "ĐỐI CHỨNG: đường Claude vẫn khai mẫu số"
+    );
+
+    // ③ Email ChatGPT từ claims token (JWT dựng tay, khuôn claim đo 15/11).
+    use base64::Engine;
+    let b = |v: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v);
+    let jwt = format!(
+        "{}.{}.chuky",
+        b(r#"{"alg":"RS256"}"#),
+        b(r#"{"https://api.openai.com/profile":{"email":"chu@may.vn","email_verified":true}}"#)
+    );
+    let c = huba::opencode::jwt_claims(&jwt).unwrap();
+    assert_eq!(
+        huba::opencode::email_tu_claims(&c).as_deref(),
+        Some("chu@may.vn")
+    );
+    assert_eq!(huba::opencode::jwt_claims("khong-phai-jwt"), None);
+
+    // ④ Hàng opencode KHÔNG đọc sổ Claude cũ dù `settings.json` còn `apiKeyHelper`.
+    let tmp = std::env::temp_dir().join(format!("huba-acc-cu-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(
+        tmp.join("settings.json"),
+        r#"{"apiKeyHelper":"/x/helper-ngoai.sh"}"#,
+    )
+    .unwrap();
+    let mut cfg = common::cfg_for_tests();
+    let mk = |ten: &str, cli: Option<&str>, model: Option<&str>| ClaudeAccountCfg {
+        name: ten.into(),
+        config_dir: Some(tmp.to_string_lossy().to_string()),
+        cli: cli.map(str::to_string),
+        model: model.map(str::to_string),
+        ..Default::default()
+    };
+    cfg.claude_accounts = vec![
+        mk(
+            "acc8",
+            Some("opencode"),
+            Some("opencode-go/deepseek-v4.1-flash"),
+        ),
+        mk("accX", None, None),
+    ];
+    let ids = huba::account_login::danh_tinh_tat_ca(&cfg);
+    let cua = |t: &str| {
+        ids.iter()
+            .find(|(n, _)| n == t)
+            .and_then(|(_, e)| e.clone())
+    };
+    assert_eq!(
+        cua("acc8").as_deref(),
+        Some("opencode · gói Go (khoá trong env_file)")
+    );
+    assert_eq!(
+        cua("accX").as_deref(),
+        Some("API key (apiKeyHelper ngoài huba)"),
+        "ĐỐI CHỨNG: hàng Claude cùng thư mục vẫn đọc apiKeyHelper"
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+}

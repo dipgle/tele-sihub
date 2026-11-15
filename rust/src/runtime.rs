@@ -541,7 +541,10 @@ pub fn account_detail_text_voi_probe(
     }
     // codex: dòng hạn mức của chính nó đã in ở khối trên — sổ Claude không có gì.
     if let Some(q) = quota.filter(|_| !acc.is_codex()) {
-        out.push_str(&format!("hạn mức: {}\n", q.say(now_ms)));
+        out.push_str(&format!(
+            "hạn mức: {}\n",
+            q.say_cho(now_ms, acc.is_claude())
+        ));
     }
     if let Some(l) = do_lai_line(usage_row, quota.and_then(|q| q.fetched_at_ms), now_ms) {
         out.push_str(&l);
@@ -619,6 +622,33 @@ pub fn ten_tu_nhien(ten: &str) -> Vec<(String, u64)> {
     out
 }
 
+/// Danh sách phiên của MỘT tài khoản trên `/accounts`: theo DỰ ÁN (`folder`, cùng nhãn
+/// `/session`), gộp trùng `dwork ×2`, giữ thứ tự gặp. Không có dự án ⟹ tên phiên. THUẦN.
+///
+/// 🔴 Hà 15/11 (ảnh `/accounts`): *«sao lại có nội dung gán vào phiên ở danh sách tài
+/// khoản»* — acc9 in `Đọc quy tắc dự án CLAUDE.md, Huba UI handoff continuation, …`:
+/// tiêu đề phiên opencode do model đặt từ CÂU ĐẦU, tức là nội dung hội thoại. Cùng luật
+/// 12/11 «NHÃN PHẢI LÀ DỰ ÁN, không phải tiêu đề phiên».
+pub fn nhan_du_an_phien(mine: &[&crate::sessions::LiveSession]) -> String {
+    let mut thu_tu: Vec<(String, usize)> = Vec::new();
+    for s in mine {
+        let nhan = if s.folder.trim().is_empty() {
+            s.name.clone()
+        } else {
+            s.folder.clone()
+        };
+        match thu_tu.iter_mut().find(|(n, _)| *n == nhan) {
+            Some((_, k)) => *k += 1,
+            None => thu_tu.push((nhan, 1)),
+        }
+    }
+    thu_tu
+        .into_iter()
+        .map(|(n, k)| if k > 1 { format!("{n} ×{k}") } else { n })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub fn accounts_text_voi_email(
     cfg: &Config,
     live: &SessionsSnapshot,
@@ -672,13 +702,7 @@ pub fn accounts_text_voi_email(
                 // codex: huba chưa có bộ liệt kê ⟹ «0» là phép đo chưa từng chạy.
                 _ if acc.is_codex() => "phiên: huba chưa đọc được".to_string(),
                 0 => "không có phiên nào đang chạy".to_string(),
-                n => format!(
-                    "{n} phiên: {}",
-                    mine.iter()
-                        .map(|s| s.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
+                n => format!("{n} phiên: {}", nhan_du_an_phien(&mine)),
             }
         ));
         // codex: nói nó LÀ GÌ ngay dưới tên + gói + hạn mức của CHÍNH codex (nhật ký
@@ -741,7 +765,10 @@ pub fn accounts_text_voi_email(
             .find(|q| q.account == acc.name)
             .filter(|_| !acc.is_codex());
         if let Some(q) = q_acc {
-            out.push_str(&format!("    hạn mức: {}\n", q.say(now_ms)));
+            out.push_str(&format!(
+                "    hạn mức: {}\n",
+                q.say_cho(now_ms, acc.is_claude())
+            ));
             // 🔴 DÒNG RIÊNG, cố ý không nối vào dòng trên. Hai lý do, cả hai đều
             // là lý do tệp này đã tự đặt ra cho dòng `(dò /usage: …)`:
             // ① khác HỌ — dòng trên là TRẦN (được phép dùng bao nhiêu), dòng này

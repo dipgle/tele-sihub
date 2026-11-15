@@ -919,6 +919,21 @@ pub fn danh_tinh_tat_ca(cfg: &Config) -> Vec<(String, Option<String>)> {
                     crate::accounts::codex_email(a).map(|e| format!("ChatGPT {e}")),
                 );
             }
+            // opencode: danh tính là của CHÍNH opencode — KHÔNG đọc sổ Claude cũ của hàng
+            // (Hà 15/11, ảnh `/accounts`: acc9 in «API key (apiKeyHelper ngoài huba)» lấy từ
+            // `~/.claude-acc9/settings.json` còn sót từ hồi acc9 chạy Claude+deepseek).
+            // ChatGPT: «ChatGPT <email>» CÙNG khuôn codex ⟹ acc9/acc10 cùng tài khoản được
+            // gom nhóm trùng (đúng: chung một trần).
+            if a.is_opencode() {
+                let nhan = if crate::quota::is_chatgpt_opencode(a) {
+                    crate::opencode::chatgpt_email(a).map(|e| format!("ChatGPT {e}"))
+                } else if crate::quota::is_go_plan(a) {
+                    Some("opencode · gói Go (khoá trong env_file)".to_string())
+                } else {
+                    Some("opencode · khoá API (env_file)".to_string())
+                };
+                return (a.name.clone(), nhan);
+            }
             if let Some(nhan) = crate::api_key::nhan(&crate::api_key::thu_muc(a)) {
                 return (a.name.clone(), Some(nhan));
             }

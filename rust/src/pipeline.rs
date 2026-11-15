@@ -78,6 +78,45 @@ pub fn split_flags(
     (flags, rest.join(" "))
 }
 
+/// Cờ «vào luôn» của `/new`: `-y` / `-f` — tài khoản ĐANG KHOÁ vẫn mở, KHÔNG hỏi xác nhận.
+pub const CO_VAO_LUON: &[&str] = &["-y", "-f"];
+
+/// Bóc cờ «vào luôn» (`-y`/`-f`) khỏi `/new`, CHỈ trong dãy cờ đứng ĐẦU (trước đề bài).
+/// Trả `(có cờ, phần còn lại)`. THUẦN.
+///
+/// Hà 15/11: *«lệnh mở phiên cần thêm cờ để nếu acc đang khóa vẫn vào luôn mà không hỏi
+/// xác nhận»*. Khoá sinh ra để huba không TỰ dùng tài khoản; chủ máy GÕ cờ này là bàn tay
+/// người cho đúng lượt ấy — cùng tinh thần cú bấm xác nhận (Hà 30/09), khoá giữ nguyên.
+/// 🔴 Chỉ nhận ở ĐẦU: `/new -a acc2 chạy rm -f x` không được mất `-f` của đề bài (luật cờ:
+/// lặng lẽ ăn một phần đề bài là chạy một việc khác việc đã gõ). Cờ có giá trị trong
+/// `valued` (`-a acc2`, `-s dwork`) được bước qua cùng giá trị của nó.
+pub fn tach_co_vao_luon(arg: &str, valued: &[&str]) -> (bool, String) {
+    let toks: Vec<&str> = arg.split_whitespace().collect();
+    let mut co = false;
+    let mut giu: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < toks.len() {
+        let t = toks[i];
+        if CO_VAO_LUON.contains(&t) {
+            co = true;
+            i += 1;
+            continue;
+        }
+        let ten = t.trim_start_matches('-');
+        if t.starts_with('-') && !ten.is_empty() && valued.contains(&ten) {
+            giu.push(t);
+            if let Some(v) = toks.get(i + 1) {
+                giu.push(v);
+            }
+            i += 2;
+            continue;
+        }
+        break; // tới đề bài — từ đây giữ nguyên văn
+    }
+    giu.extend_from_slice(&toks[i.min(toks.len())..]);
+    (co, giu.join(" "))
+}
+
 /// `/new <id> [chữ]` — từ đầu là ID MỘT PHIÊN thì đây là lượt MỞ LẠI phiên ấy.
 ///
 /// Trả `(id đầy đủ, tài khoản, phần chữ còn lại)`; `None` nếu từ đầu không phải
@@ -15454,7 +15493,8 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                 // các nút Telegram đã gửi đi; bỏ nó là làm hỏng thứ đang chạy.
                 const NEW_FLAGS: &[&str] =
                     &["a", "acc", "account", "s", "p", "project", "duan", "du-an"];
-                let (flags, rest) = split_flags(&cmd.arg, NEW_FLAGS);
+                let (vao_luon, arg_new) = tach_co_vao_luon(&cmd.arg, NEW_FLAGS);
+                let (flags, rest) = split_flags(&arg_new, NEW_FLAGS);
                 let flag_project = ["s", "p", "project", "duan", "du-an"]
                     .iter()
                     .find_map(|k| flags.get(*k))
@@ -15782,6 +15822,14 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                             });
                             let tu_choi = codex_tu_choi.or_else(|| {
                                 khoa.as_deref().and_then(|a| {
+                                    // `-y`/`-f`: chủ máy đã GÕ «vào luôn» ⟹ không hỏi lại.
+                                    if vao_luon {
+                                        logging::info(
+                                            "account_locked_open_forced",
+                                            json!({ "account": a, "via": "cờ -y/-f chủ máy gõ" }),
+                                        );
+                                        return None;
+                                    }
                                     hoi_mo_tai_khoan_khoa(
                                         cfg,
                                         a,
