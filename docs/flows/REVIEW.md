@@ -12,7 +12,7 @@
 | Tự xem ảnh | Đã mở ảnh13 sơ đồ, ảnh toàn cảnh `previews/X0-full.png`, hover và390px. Sửa thêm min-width để sơ đồ tối đa5 cột vừa desktop; sơ đồ tổng11 nhóm kéo ngang có chủ ý |
 | Browser/asset | Script mang theo Git `review.cjs` (Playwright đã cài, browser path tùy env); log lịch sử `.tmp/flows-review.log`, `.tmp/flows-review-final.log`; lượt kiểm lại trước commit `.tmp/flows-review-commit.log` GATE0/hash khớp |
 | Kết quả browser | Log cuối GATE_EXIT0, console/page/request errors0, remote requests0; bấm13 liên kết/13 bảng bước. Màn390px không tràn trang, sơ đồ tự cuộn1000px trong vùng326px |
-| WebKit | Chưa có browser WebKit tại host; chưa đo |
+| WebKit | Chưa đo13 sơ đồ bằng WebKit. Kế nhiệm21:14 xác nhận host đã có WebKit2311 và chạy3/3 bài prototype riêng; kết quả đó không thay kiểm sơ đồ |
 | Mã sản phẩm / build / deploy | Không sửa core/CLI/provider hoặc dựng/cài app. Lượt gom theo lệnh commit đã chạy QG: fmt/clippy0, nhưng chủ động ngắt130 khi bước dựng test Rust còn chạy để chuyển phiên; KHÔNG có QG toàn kho xanh |
 | Tích hợp thật | Chưa nghiệm thu UI→core→CLI→model→tool; các contract mới vẫn là đề xuất |
 
