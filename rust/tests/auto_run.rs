@@ -72,6 +72,31 @@ fn one_mark_arms_exactly_one_line() {
     assert_eq!(marked_commands(&text, 8), vec!["ls ~/projects"]);
 }
 
+/// Phiên zkey 15/11 ~16:00: câu trả lời có `git -C /mnt/data/projects/zkey push origin
+/// master`, màn TUI đã rút gọn thành `… push…` ⟹ huba chạy bản cụt, git báo
+/// «'push…' is not a git command». Dòng mang dấu rút gọn `…` là chữ MÀN HÌNH, không
+/// phải lệnh phiên viết — từ chối, đừng chạy rồi báo lỗi (hòm thư vẫn mang nguyên văn).
+#[test]
+fn a_line_truncated_by_the_screen_is_not_run() {
+    for cut in [
+        "git -C /mnt/data/projects/zkey push…",
+        "git -C /mnt/data/projects/zkey push… origin master",
+        "…/zkey push origin master",
+    ] {
+        let text = format!("{RUN_MARK}\n{cut}\n");
+        assert!(
+            marked_commands(&text, 8).is_empty(),
+            "dòng cụt vẫn được chạy: {cut:?}"
+        );
+    }
+    // Đối chứng: cùng lệnh, nguyên văn ⟹ vẫn chạy.
+    let text = format!("{RUN_MARK}\ngit -C /mnt/data/projects/zkey push origin master\n");
+    assert_eq!(
+        marked_commands(&text, 8),
+        vec!["git -C /mnt/data/projects/zkey push origin master"]
+    );
+}
+
 /// Dòng trống giữa dấu và lệnh không làm mất dấu — TUI hay chèn một dòng trống.
 #[test]
 fn a_blank_line_after_the_mark_is_tolerated() {

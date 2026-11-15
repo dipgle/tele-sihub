@@ -4758,6 +4758,17 @@ pub fn marked_commands(text: &str, max: usize) -> Vec<String> {
         } else {
             BTN_CMD_REPORT_MAX
         };
+        // `…` = TUI/màn đã RÚT GỌN dòng (zkey 15/11: `push origin master` ⟹ `push…`,
+        // huba chạy bản cụt). Chữ ấy không phải lệnh phiên viết — từ chối có log;
+        // hòm thư `huba-run.txt` vẫn mang nguyên văn.
+        if cmd.contains('…') {
+            logging::warn(
+                "run_mark_line_truncated",
+                json!({ "len": cmd.len(),
+                        "why": "dòng sau dấu mang «…» — màn đã rút gọn, không chạy bản cụt" }),
+            );
+            continue;
+        }
         if cmd.len() < 2 || cmd.len() > cap {
             logging::warn(
                 "run_mark_line_rejected",
