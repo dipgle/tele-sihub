@@ -1,6 +1,6 @@
 # Việc mở huba
 
-- [ ] 🔴 **Ubuntu: cập nhật lên `bc3b516`** (Quang 15/11: «ghi chú luôn thì tôi đỡ phải nhắc»). Mac đã làm + đẩy; Ubuntu làm ĐỦ 3 bước, theo thứ tự:
+- [ ] 🔴 **Ubuntu: cập nhật lên `bc3b516`** — phiên AI Ubuntu làm (brief `.tmp/brief-huba-ubuntu-cap-nhat-20261115.md`) (Quang 15/11: «ghi chú luôn thì tôi đỡ phải nhắc»). Mac đã làm + đẩy; Ubuntu làm ĐỦ 3 bước, theo thứ tự:
   1. Kéo **CẢ HAI** kho: huba **và** kho chung `/mnt/data/projects` (`workspace-infra`, cần ≥ `4997f88` — mang `scripts/mo-dau-phien.py` + `acc-mo-vai.sh`). Thiếu kho chung ⟹ đúng lỗi mục cũ dưới đây.
   2. Chạy lại 2 bài từng đỏ: `cd rust && cargo test --offline --test tuong_codex --test codex_duoc_chon` ⟹ phải XANH (đỏ ⟹ ghi lại đây, KHÔNG bỏ kiểm).
   3. Cài lại hubd: dựng gói `bash scripts/dong-goi-linux.sh` rồi `bash install_update_linux.sh` trong thư mục gói (chép `mo-dau-phien.py`/`nhac-chuyen-phien.py` vào `~/huba/kem/scripts`, nâng codex đúng bản ghim `cli-ghim.env`). Lần ĐẦU trình cài/gói Linux mới chạy thật — chỉ mới `bash -n` trên Mac. Kiểm: `bash ~/huba/install_update_linux.sh --verify`.
