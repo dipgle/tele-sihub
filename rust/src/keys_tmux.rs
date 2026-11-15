@@ -11,9 +11,10 @@
 //!   `ps -o tty=` in cho tiến trình `claude` chạy trong pane. Nhờ vậy luật ghép
 //!   phiên ↔ cửa sổ bằng tty của macOS dùng nguyên được.
 //! * `/new` mở một WINDOW tmux mới trong phiên tmux [`PHIEN`] (chưa có thì dựng,
-//!   tách rời) rồi GÕ dòng lệnh vào shell của nó — như `do script` gõ vào shell
-//!   của tab Terminal. Lệnh chạy xong shell vẫn còn, chủ máy `tmux attach -t huba`
-//!   là thấy và gõ tiếp được: đúng luật cầu nối (CLAUDE.md "huba is a BRIDGE").
+//!   tách rời) và CHẠY dòng lệnh bằng argv (`bash -lc '<lệnh>⏎exec bash -l'`) —
+//!   KHÔNG gõ: gõ là đi qua readline, nơi bộ gõ Telex (zkey) sửa chữ trong nháy
+//!   (15/11, [`lenh_mo_pane`]). Lệnh chạy xong shell vẫn còn, chủ máy `tmux attach
+//!   -t huba` là thấy và gõ tiếp được: đúng luật cầu nối (CLAUDE.md "huba is a BRIDGE").
 //! * Gõ: `send-keys -l` (chữ nguyên văn) · phím rời theo tên tmux (`Enter`,
 //!   `Up`, `C-c`…). Khối nhiều dòng đi bằng `paste-buffer -p` (dán có ngoặc khi
 //!   chương trình xin) — gửi từng dòng kèm Enter là gửi từng mảnh đề bài.
@@ -940,46 +941,63 @@ pub fn open_window(cmd: &str) -> Result<(i64, String)> {
     Ok((w, tty))
 }
 
+/// Argv tmux mở pane cho `cmd` — THUẦN, để bài kiểm khoá được hình dạng.
+///
+/// 🔴 Quang 15/11 (acc10 không mở được, cửa sổ lỗi để lại): lệnh được GÕ vào bash
+/// tương tác (`send-keys -l`) nên đi qua readline ⟹ bộ gõ Telex dòng lệnh (zkey,
+/// chế độ `quoted` mặc định — sửa chữ TRONG nháy) viết lại `project_doc_max_bytes`
+/// → `project_doc_mã_bytes`, `PROJECTS_ROOT` → `PROJECTS_RÔT` (codex: «invalid type:
+/// string, expected a map») — và `'Bash(git reset:*)'` → `git rết` trong
+/// `--disallowedTools`, tức là **tường mất `git reset` mà không ai hay**. Lệnh giờ
+/// chạy bằng ARGV của tmux (không qua phím, không qua readline — cùng cách
+/// `acc-mo-vai-linux.py` sửa ở 4b723ed). `exec bash -l` sau lệnh giữ shell lại cho
+/// chủ máy gõ tiếp khi CLI thoát — y như lúc gõ vào shell (luật cầu nối).
+/// Shell đăng nhập (`-l`) để PATH có `~/.local/bin` (`claude_cli` = `claude` trần).
+fn lenh_mo_pane(phien: &str, co_phien: bool, cmd: &str) -> Vec<String> {
+    let khuon = "#{pane_id} #{pane_tty}";
+    let mut a: Vec<String> = if co_phien {
+        vec![
+            "new-window".into(),
+            "-d".into(),
+            "-t".into(),
+            format!("={phien}:"),
+        ]
+    } else {
+        vec![
+            "new-session".into(),
+            "-d".into(),
+            "-s".into(),
+            phien.into(),
+            "-x".into(),
+            CO_COT.into(),
+            "-y".into(),
+            CO_HANG.into(),
+        ]
+    };
+    a.extend(["-P".into(), "-F".into(), khuon.into()]);
+    // Xuống dòng, không `;`: `cmd` kết thúc bằng `&` hay chú thích vẫn không nuốt
+    // mất `exec`.
+    a.extend([
+        "--".into(),
+        "bash".into(),
+        "-lc".into(),
+        format!("{cmd}\nexec bash -l"),
+    ]);
+    a
+}
+
 /// Phần tmux của [`open_window`], KHÔNG bật cửa sổ — tự kiểm dùng cái này.
 fn mo_pane(cmd: &str) -> Result<(i64, String)> {
     let phien = ten_phien();
-    let khuon = "#{pane_id} #{pane_tty}";
     let co_phien = tmux(&["has-session", "-t", &format!("={phien}")]).is_ok();
-    let out = if co_phien {
-        tmux(&[
-            "new-window",
-            "-d",
-            "-t",
-            &format!("={phien}:"),
-            "-P",
-            "-F",
-            khuon,
-        ])?
-    } else {
-        tmux(&[
-            "new-session",
-            "-d",
-            "-s",
-            &phien,
-            "-x",
-            CO_COT,
-            "-y",
-            CO_HANG,
-            "-P",
-            "-F",
-            khuon,
-        ])?
-    };
+    let argv = lenh_mo_pane(&phien, co_phien, cmd);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let out = tmux(&argv)?;
     let mut it = out.split_whitespace();
     let (Some(w), Some(tty)) = (it.next().and_then(so_pane), it.next()) else {
         return Err(anyhow!("tmux không trả pane mới: {out:?}"));
     };
     let tty = tty.trim_start_matches("/dev/").to_string();
-    // Chờ shell vẽ dấu nhắc rồi mới gõ — gõ trước khi shell đọc thì vẫn vào hàng
-    // đợi của tty, nhưng chờ một nhịp cho chắc với shell khởi động chậm (.bashrc).
-    std::thread::sleep(Duration::from_millis(300));
-    tmux(&["send-keys", "-t", &dich(w), "-l", "--", cmd])?;
-    tmux(&["send-keys", "-t", &dich(w), "Enter"])?;
     crate::logging::info(
         "tmux_window_opened",
         serde_json::json!({ "pane": w, "tty": tty, "session": phien, "new_session": !co_phien }),
@@ -1146,6 +1164,41 @@ pub fn tu_kiem() -> Vec<(String, Ket)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Quang 15/11: acc10 chết với `PROJECTS_RÔT` / `project_doc_mã_bytes` vì lệnh
+    /// mở phiên được GÕ qua readline (zkey Telex). Lệnh phải là ARGV cuối của tmux,
+    /// nguyên từng byte, và shell phải còn lại sau khi CLI thoát.
+    #[test]
+    fn mo_pane_chay_lenh_bang_argv_khong_go_qua_ban_phim() {
+        let cmd = "cd '/x' && CODEX_HOME=/f codex -c 'project_doc_max_bytes=131072' \
+                   -c 'mcp_servers.p.env={PROJECTS_ROOT=\"/p\"}' \
+                   --disallowedTools 'Bash(git reset:*)'";
+        for co_phien in [true, false] {
+            let a = lenh_mo_pane("huba", co_phien, cmd);
+            assert_eq!(
+                a[0],
+                if co_phien {
+                    "new-window"
+                } else {
+                    "new-session"
+                }
+            );
+            assert!(!a.iter().any(|x| x == "send-keys"), "{a:?}");
+            let n = a.len();
+            assert_eq!(a[n - 4..n - 1], ["--", "bash", "-lc"], "{a:?}");
+            let body = &a[n - 1];
+            assert!(body.starts_with(cmd), "lệnh phải nguyên văn: {body:?}");
+            assert!(body.contains("project_doc_max_bytes") && body.contains("PROJECTS_ROOT"));
+            assert!(body.contains("git reset:*"));
+            assert!(
+                body.ends_with("\nexec bash -l"),
+                "shell phải còn lại: {body:?}"
+            );
+            // `-P -F` vẫn đứng TRƯỚC `--` (tmux đọc cờ tới `--`).
+            let gach = a.iter().position(|x| x == "--").unwrap();
+            assert!(a.iter().position(|x| x == "-P").unwrap() < gach);
+        }
+    }
 
     /// Đọc cho luồng đăng nhập phải nối dòng gãy (`-J`) và lấy cả lịch sử (`-S`) —
     /// thiếu một trong hai là đường dẫn OAuth cụt hoặc mất dòng `visit:`.
