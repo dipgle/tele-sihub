@@ -1,0 +1,24 @@
+#!/bin/bash
+# Kéo mã về (git pull/merge) mà phần CHẠY ĐƯỢC đổi ⟹ TỰ CÀI LẠI huba ở nền.
+# Quang 15/11: «tự cài luôn đi ai rảnh mà đi bấm thêm upgrade làm gì». Bật một lần mỗi bản sao:
+# `git config core.hooksPath .githooks` — install_update.sh và scripts/dong-goi-linux.sh tự bật.
+# Cái giá đã biết (Quang chấp nhận): cài xong hubd khởi động lại ⟹ việc /runin đang chạy bị cắt.
+# Gọi bởi post-merge (không đối số) và post-rewrite (đối số «rebase» — pull --rebase).
+[ "${1:-merge}" = amend ] && exit 0
+H="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$H" || exit 0
+[ "${HUBA_KHONG_TU_CAI:-0}" = 1 ] && { echo "huba: HUBA_KHONG_TU_CAI=1 — bỏ qua tự cài"; exit 0; }
+DOI=$(git diff --name-only ORIG_HEAD HEAD 2>/dev/null | grep -E '^(rust/(src|Cargo)|install_update|install_mac\.sh|cli-ghim\.env|com\.dipgle\.hubd\.plist|sign\.sh|scripts/(dong-goi-linux\.sh|huba_cai_linux\.py))')
+[ -z "$DOI" ] && exit 0
+mkdir -p "$H/.tmp"
+LOG="$H/.tmp/tu-cai-$(date +%Y%m%d-%H%M%S).log"
+case "$(uname -s 2>/dev/null)" in
+  Darwin) CMD='bash install_update.sh' ;;
+  Linux)  CMD='bash scripts/dong-goi-linux.sh && G=$(ls -t .tmp/huba-linux-*.tar.gz | head -1) && D=$(mktemp -d) && tar xzf "$G" -C "$D" && HUBA_KHONG_MO_TRANG=1 bash "$D"/huba-linux-*/install_update_linux.sh' ;;
+  *) echo "huba: hệ $(uname -s) chưa tự cài được — chạy trình cài bằng tay"; exit 0 ;;
+esac
+echo "huba: $(printf '%s\n' "$DOI" | wc -l | tr -d ' ') tệp chạy được đổi ⟹ tự cài ở nền · nhật ký $LOG"
+# Tách hẳn khỏi tiến trình đã gọi git (setsid qua perl — macOS không có lệnh setsid): git kéo về có
+# thể chạy TRONG hubd (hòm thư /runin), mà lượt cài khởi động lại chính hubd.
+perl -e 'use POSIX qw(setsid); setsid(); exec @ARGV' bash -c "cd '$H' && { echo \"tệp đổi:\"; printf '%s\n' \"$DOI\"; $CMD; echo GATE_EXIT=\$?; }" > "$LOG" 2>&1 < /dev/null &
+exit 0

@@ -116,3 +116,24 @@ fn ten_luong_moi_nhat_thang() {
     assert_eq!(thread_name(idx, "a").as_deref(), Some("Mới"));
     assert_eq!(thread_name(idx, "c"), None);
 }
+
+/// macOS không có `/proc` ⟹ `fd_targets` đọc `lsof -Fn` (15/11: thiếu nhánh này thì huba
+/// trên Mac không thấy phiên codex nào, hòm thư của phiên codex bị bỏ `runin_inbox_session_gone`).
+#[test]
+fn lsof_fn_ra_dung_duong_tuyet_doi() {
+    let out = "p18456\nfcwd\nn/Users/a/projects\nf27\nn/Users/a/.codex-acc10/sessions/2026/11/15/rollout-x.jsonl\nf3\nn->0xabc\nnTCP 1.2.3.4:443\n";
+    let v = huba::codex_sessions::parse_lsof_fn(out);
+    assert_eq!(v.len(), 2, "{v:?}");
+    assert!(v[1].ends_with("rollout-x.jsonl"));
+}
+
+/// Máy thật (macOS): một tiến trình đang sống có ít nhất một đích fd; pid không tồn tại ⟹ Err.
+#[cfg(target_os = "macos")]
+#[test]
+fn fd_targets_mac_doc_duoc_va_do_ra_loi() {
+    let ta = std::process::id() as i64;
+    let v =
+        huba::codex_sessions::fd_targets(ta).expect("lsof phải đọc được chính tiến trình bài kiểm");
+    assert!(!v.is_empty());
+    assert!(huba::codex_sessions::fd_targets(999_999_999).is_err());
+}

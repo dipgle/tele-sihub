@@ -204,6 +204,11 @@ if [[ -f "$CFG" ]] && python3 -c 'import json,sys; sys.exit(0 if any(a.get("cli"
   echo "install_update.sh: codex $("$CX" --version 2>/dev/null || echo '?')"
 fi
 
+# Kéo mã về ⟹ tự cài (Quang 15/11 «tự cài luôn đi»): bật hook của kho cho bản sao này.
+git -C "$HERE" rev-parse --git-dir >/dev/null 2>&1 \
+  && git -C "$HERE" config core.hooksPath .githooks \
+  && echo "install_update.sh: kéo mã về ⟹ tự cài (core.hooksPath=.githooks)"
+
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
   launchctl kickstart -k "gui/$(id -u)/$LABEL"

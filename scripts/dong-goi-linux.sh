@@ -22,6 +22,8 @@ if [ -n "$(git -C "$H" status --porcelain -- rust install_update_linux.sh cli-gh
   echo "⚠ cây có thay đổi CHƯA commit trong phần đóng gói — tên gói mang sha HEAD nhưng nội dung là cây hiện tại"
 fi
 SHA=$(git -C "$H" rev-parse --short HEAD)
+# Kéo mã về ⟹ tự dựng gói + cài (Quang 15/11 «tự cài luôn đi»): bật hook của kho cho bản sao này.
+git -C "$H" config core.hooksPath .githooks && echo "kéo mã về ⟹ tự cài (core.hooksPath=.githooks)"
 
 # huba LUÔN đi kèm (Quang 13/11 «cài cả mcp nữa, huba luôn đi kèm mcp codetrail»): MCP codetrail
 # `project-agent` dựng cho Linux + cụm cổng bảo mật mà plugin opencode tìm theo đường TƯƠNG ĐỐI
