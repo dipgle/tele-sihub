@@ -3809,23 +3809,43 @@ impl Inbox {
         })
     }
 
+    /// Các thân `sendMessage` cho một câu chữ trơn — MỘT khi vừa trần Telegram,
+    /// NHIỀU khi dài hơn (cắt theo dòng, có dấu nối: [`crate::pipeline::split_for_telegram`]).
+    ///
+    /// 🔴 Quang 15/11 «lệnh accounts sao không chạy nữa»: 10 tài khoản (thêm acc10)
+    /// đẩy `/accounts` quá 4096 ký tự ⟹ một `sendMessage` bị từ chối «message is
+    /// too long» ⟹ người ra lệnh không nhận gì. Cắt ở ĐÂY, cửa chung của mọi câu trơn,
+    /// không ở từng route.
+    pub fn plain_message_bodies(chat_id: &str, text: &str) -> Vec<Value> {
+        crate::pipeline::split_for_telegram(text)
+            .iter()
+            .map(|p| Self::plain_message_body(chat_id, p.trim_end_matches('\n')))
+            .collect()
+    }
+
     /// Gửi một câu ra Telegram. `Err` chứ không nuốt — chỗ gọi phải log.
+    /// Dài hơn trần ⟹ nhiều tin liên tiếp; mẩu nào hỏng ⟹ `Err` nói rõ mẩu nào.
     pub fn send_text(&self, text: &str) -> Result<(), String> {
         self.forget_ack_live();
-        let v = self.post_retry(
-            "sendMessage",
-            &Self::plain_message_body(&self.chat_id, text),
-        )?;
-        if v.get("ok").and_then(Value::as_bool) == Some(true) {
-            remember_sent(&self.cfg(), &v);
-            Ok(())
-        } else {
-            Err(v
-                .get("description")
-                .and_then(Value::as_str)
-                .unwrap_or("Telegram từ chối sendMessage")
-                .to_string())
+        let than = Self::plain_message_bodies(&self.chat_id, text);
+        let n = than.len();
+        for (i, b) in than.iter().enumerate() {
+            let v = self.post_retry("sendMessage", b)?;
+            if v.get("ok").and_then(Value::as_bool) == Some(true) {
+                remember_sent(&self.cfg(), &v);
+            } else {
+                let ly_do = v
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Telegram từ chối sendMessage");
+                return Err(if n > 1 {
+                    format!("mẩu {}/{n}: {ly_do}", i + 1)
+                } else {
+                    ly_do.to_string()
+                });
+            }
         }
+        Ok(())
     }
 
     /// Gửi câu hỏi của một phiên kèm MỘT NÚT CHO MỖI LỰA CHỌN.

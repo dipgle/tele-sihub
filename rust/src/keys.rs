@@ -1187,20 +1187,27 @@ pub fn landed(screen: &str, typed: &str) -> Landed {
 }
 
 /// Mọi tab của mọi cửa sổ: `(id cửa sổ, /dev/ttysNNN)`.
+///
+/// 🔴 MỘT Apple event, không phải một event mỗi tab (15/11, Quang «tại sao lại mở
+/// phiên mới ở cửa sổ mới rồi? sửa mãi được rồi lại bị lại?»). Đo log 14/11 17:15Z:
+/// `tab_open_skipped: osascript quá 45s` lúc máy tải ~29 (hai máy ảo Android ~12 GB)
+/// ⟹ [`open_tab`] lùi về cửa sổ riêng. Bản cũ lặp `repeat with w … tabs of w` —
+/// mỗi `id`/`tty` là một event tới Terminal, 19 tab ⟹ ~40 event, mỗi event chờ
+/// Terminal dưới tải. Lấy gộp `{id, tty of every tab} of every window` (hai danh
+/// sách SONG SONG từ cùng một event, không lệch nhau): đo 0,60 s ⟹ 0,15 s, cùng
+/// 19 dòng, `diff` rỗng.
 #[cfg(target_os = "macos")]
 fn all_tabs() -> Result<Vec<(i64, String)>> {
     let out = osascript(
-        r#"tell application "Terminal"
-  set out to ""
-  repeat with w in every window
-    try
-      repeat with t in tabs of w
-        set out to out & (id of w as text) & " " & (tty of t) & linefeed
-      end repeat
-    end try
+        r#"tell application "Terminal" to set {ids, tts} to {id, tty of every tab} of every window
+set out to ""
+repeat with i from 1 to count of ids
+  set w to item i of ids
+  repeat with t in item i of tts
+    set out to out & (w as text) & " " & t & linefeed
   end repeat
-  return out
-end tell"#,
+end repeat
+return out"#,
     )?;
     Ok(parse_all_tabs(&out))
 }
@@ -1227,13 +1234,24 @@ pub fn parse_all_tabs(out: &str) -> Vec<(i64, String)> {
 /// MỚI xuất hiện — không đoán "tab cuối" hay "tab đang chọn".
 #[cfg(target_os = "macos")]
 fn open_tab(cmd: &str) -> Result<Option<(i64, String)>> {
-    let truoc = match all_tabs() {
+    // Đọc hỏng ≠ «không có cửa sổ nào» (luật 11b): hỏi LẠI một lần trước khi lùi
+    // về cửa sổ riêng — một lượt đọc chậm vì máy tải nặng không được đổi thiết kế
+    // «mở tab trong cửa sổ có sẵn» (Quang 12/11).
+    let doc = all_tabs().or_else(|e| {
+        logging::warn(
+            "tab_list_retry",
+            json!({ "err": e.to_string(), "effect": "đọc lại danh sách tab một lần" }),
+        );
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        all_tabs()
+    });
+    let truoc = match doc {
         Ok(t) if !t.is_empty() => t,
         Ok(_) => return Ok(None),
         Err(e) => {
             logging::warn(
                 "tab_open_skipped",
-                json!({ "err": e.to_string(), "effect": "mở cửa sổ riêng như cũ" }),
+                json!({ "err": e.to_string(), "effect": "mở cửa sổ riêng như cũ (đọc tab hỏng HAI lần)" }),
             );
             return Ok(None);
         }

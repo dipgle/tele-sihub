@@ -96,7 +96,18 @@ fn send_text_dung_than_chung(src: &str) -> Option<bool> {
         .find("\n    pub fn ")
         .map(|i| i + 1)
         .unwrap_or(rest.len());
-    Some(rest[..het].contains("Self::plain_message_body(&self.chat_id, text)"))
+    // 15/11: `send_text` chia tin dài qua `plain_message_bodies` — mỗi mẩu vẫn dựng
+    // bằng ĐÚNG `plain_message_body` (có bàn phím).
+    if !rest[..het].contains("Self::plain_message_bodies(&self.chat_id, text)") {
+        return Some(false);
+    }
+    let b = src.find("pub fn plain_message_bodies(")?;
+    let than = &src[b..];
+    let het_b = than[1..]
+        .find("\n    pub fn ")
+        .map(|i| i + 1)
+        .unwrap_or(than.len());
+    Some(than[..het_b].contains("Self::plain_message_body(chat_id"))
 }
 
 #[test]
