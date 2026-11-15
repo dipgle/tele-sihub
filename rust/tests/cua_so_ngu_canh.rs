@@ -205,3 +205,68 @@ fn so_cli_tu_khai_thang_bang_doan() {
     };
     assert_eq!(session_display_window(&c), 1_000_000);
 }
+
+/// 🔴 Ca thật 15/11 (Hà: *«% trên cửa sổ acc9 thấp nhưng hiện ở lệnh session lại rất
+/// cao»*): phiên opencode acc9 `ses_e20c76d7…` model `openai/gpt-6.1-sol` (đăng nhập
+/// ChatGPT), lượt cuối 118 856 token, TUI in **19 %**. Dịch vụ opencode khai
+/// `limit.context = 628 000` (`GET /api/model`). Trước bản này: model không có trong
+/// bảng ⟹ 200k ⟹ **59 %**.
+#[test]
+fn opencode_chatgpt_dung_so_dich_vu_khai() {
+    use huba::opencode::{bang_cua_so_tu_api_model, limit_context_tu_api_model, url_cuc_bo};
+    use huba::sessions::{session_display_window, LiveSession};
+    // Khuôn THẬT của `GET /api/model` (rút gọn còn các trường đọc; số giữ nguyên văn).
+    let body: serde_json::Value = serde_json::from_str(
+        r#"{"data":[
+          {"id":"gpt-6.1-sol","providerID":"openai","limit":{"context":628000,"input":500000,"output":128000}},
+          {"id":"gpt-6-sol","providerID":"openai","limit":{"context":400000,"input":272000,"output":128000}},
+          {"id":"gpt-6.1-sol","providerID":"opencode","limit":{"context":1050000,"input":922000,"output":128000}},
+          {"id":"khong-limit","providerID":"openai"}
+        ]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        limit_context_tu_api_model(&body, "openai/gpt-6.1-sol"),
+        Some(628_000)
+    );
+    assert_eq!(
+        limit_context_tu_api_model(&body, "opencode/gpt-6.1-sol"),
+        Some(1_050_000),
+        "cùng model, KHÁC provider ⟹ khác cửa sổ"
+    );
+    assert_eq!(
+        limit_context_tu_api_model(&body, "openai/khong-limit"),
+        None
+    );
+    assert_eq!(bang_cua_so_tu_api_model(&body).len(), 3);
+    let mut s = LiveSession {
+        kind: "opencode".into(),
+        context_tokens: 118_856,
+        model: Some("openai/gpt-6.1-sol".into()),
+        context_window: limit_context_tu_api_model(&body, "openai/gpt-6.1-sol"),
+        ..Default::default()
+    };
+    assert_eq!(
+        context_pct(s.context_tokens, session_display_window(&s)),
+        19
+    );
+    // Dịch vụ không trả lời ⟹ đường lui đo cùng ngày, vẫn khớp TUI (không về 59 %).
+    s.context_window = None;
+    assert_eq!(
+        context_pct(s.context_tokens, session_display_window(&s)),
+        19
+    );
+    assert_eq!(display_window(Some("openai/gpt-6-sol")), 400_000);
+    assert_eq!(display_window(Some("opencode/gpt-6.1-sol")), 1_000_000);
+    // ĐỐI CHỨNG NGƯỢC: model lạ vẫn rơi về 200k — đúng con số sai đã thấy trên điện thoại.
+    assert_eq!(
+        context_pct(118_856, display_window(Some("openai/mo-hinh-la"))),
+        59
+    );
+    // Mật khẩu dịch vụ chỉ đi tới máy này.
+    assert!(url_cuc_bo("http://127.0.0.1:49374"));
+    assert!(url_cuc_bo("http://localhost:4096/"));
+    assert!(!url_cuc_bo("https://127.0.0.1:49374"));
+    assert!(!url_cuc_bo("http://127.0.0.1.evil.com:80"));
+    assert!(!url_cuc_bo("http://evil.com/127.0.0.1:1"));
+}

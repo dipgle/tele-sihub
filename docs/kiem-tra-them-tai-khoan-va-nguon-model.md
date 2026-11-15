@@ -93,6 +93,17 @@ riêng, không phải xanh.
 - `CODEX_HOME` chưa tồn tại ⇒ codex thoát 1 (`ensure_dirs` tạo trước).
 - Claude: `--disallowedTools` nhận nhiều đối số (ăn mất prompt đặt sau nó) — luật 10.
 
+### C2. opencode + ChatGPT (acc9, `openai/gpt-6.1-sol`) — đo 15/11
+- Đăng nhập: `opencode auth login openai --method chatgpt-headless --standalone` (mã thiết bị,
+  `auth.openai.com/codex/device`, hết hạn 15 phút). Từ Telegram: `/accounts acc9 -l` (`account_login::start_opencode`).
+- B1: GPT ghi bằng tool `patch` {patchText}; lượt CLI thật (bỏ `instructions`, giữ plugin): trong dự án QUA,
+  gốc workspace «CHẶN». ⚠ `cong_bao_mat.py --opencode` với payload V1 {patch, patchText} ⟹ allow (V2 2.2.7 đưa
+  `resources` nên vẫn chặn) — nợ của cổng chung. Ca sang dự án khác chưa đo riêng.
+- `%` ngữ cảnh: dịch vụ opencode TỰ KHAI `limit.context` (`GET /api/model`): `openai/gpt-6.1-*` 628 000 ·
+  `openai/gpt-6-*` 400 000 · `opencode/gpt-6.1-sol` 1 050 000 ⟹ `opencode::cua_so_tu_khai`.
+- Hạn mức: opencode KHÔNG lưu/hỏi hạn mức ChatGPT ⟹ `/accounts` = không đo được. Cùng tài khoản ChatGPT với
+  acc10 (so `chatgpt-account-id`).
+
 ## C. Trạng thái các nguồn hiện có (chỉ ghi cái ĐÃ đo)
 
 | Mục | claude | opencode (acc8) | codex (acc10) |

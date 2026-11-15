@@ -113,7 +113,9 @@ pub fn after_prompt(screen: &str) -> String {
 /// gõ `exit` hay một mã vào đó là gõ vào việc của người khác. Dòng lệnh huba gõ lúc mở
 /// (`… auth login`) và dòng `visit:` của CLI cùng nằm trên màn thì mới là của mình.
 pub fn la_man_dang_nhap(screen: &str) -> bool {
-    (screen.contains(" auth login") && screen.contains("visit:")) || la_man_codex(screen)
+    (screen.contains(" auth login") && screen.contains("visit:"))
+        || la_man_codex(screen)
+        || la_man_opencode(screen)
 }
 
 // ── codex (ChatGPT) — luồng MÃ THIẾT BỊ ─────────────────────────────────────
@@ -162,7 +164,13 @@ pub fn codex_device(screen: &str) -> Option<(String, String)> {
         }
     }
     let code = code?;
-    let ok = match code.split_once('-') {
+    ma_thiet_bi_ok(&code).then_some((url, code))
+}
+
+/// Mã thiết bị OpenAI: `XXXX-XXXXX` — chữ hoa/số, đúng một gạch. Chữ khác ở chỗ mã là CLI
+/// đổi chữ, không đoán. THUẦN.
+fn ma_thiet_bi_ok(code: &str) -> bool {
+    match code.split_once('-') {
         Some((a, b)) => {
             let hop = |s: &str| {
                 !s.is_empty()
@@ -172,8 +180,54 @@ pub fn codex_device(screen: &str) -> Option<(String, String)> {
             hop(a) && hop(b)
         }
         None => false,
+    }
+}
+
+// ── opencode (provider `openai`) — cũng luồng MÃ THIẾT BỊ ─────────────────────
+//
+// 📐 Đo 15/11 trên opencode 2.2.7, Ubuntu tmux, lượt đăng nhập THẬT của acc9 (Hà gõ mã
+// trên điện thoại): `opencode auth login openai --method chatgpt-headless` in
+//   `●  Enter code: JKYZ-B36HQ` · `●  https://auth.openai.com/codex/device` ·
+//   `◇  Waiting for authorization...`
+// rồi tự hỏi máy chủ. Xong: `◆  Connected to OpenAI` · `└  Done`, thoát 0. Để quá 15 phút:
+// `■  Authorization expired` · `└  Failed`, thoát 1 (đo hai lần cùng ngày).
+// Hình dạng y codex ⟹ cùng đường [`start_thiet_bi`].
+
+/// Dòng lệnh opencode trên màn — CHỐT "đây là cửa sổ của mình" (xem `accounts::opencode_login_line`).
+pub const OPENCODE_LOGIN_ARGS: &str = " auth login openai --method chatgpt-headless";
+
+/// Màn này có đúng là cửa sổ `opencode auth login openai` của huba không. THUẦN.
+pub fn la_man_opencode(screen: &str) -> bool {
+    screen.contains(OPENCODE_LOGIN_ARGS) && screen.contains("auth.openai.com")
+}
+
+/// Đường dẫn + mã trên màn opencode — lấy dòng `Enter code:` CUỐI. `None` khi chưa in đủ. THUẦN.
+pub fn opencode_device(screen: &str) -> Option<(String, String)> {
+    let url = screen
+        .split_whitespace()
+        .rev()
+        .find(|t| t.starts_with("https://auth.openai.com/"))?
+        .to_string();
+    let code = screen.lines().rev().find_map(|l| {
+        l.split_once("Enter code:")
+            .map(|(_, c)| c.trim().to_string())
+    })?;
+    ma_thiet_bi_ok(&code).then_some((url, code))
+}
+
+/// Chữ opencode in SAU dòng `Waiting for authorization` (kết cục), gọn về một dòng: bỏ
+/// khung vẽ (`│ ◆ └ ■`) và dấu nhắc shell. THUẦN.
+pub fn opencode_after(screen: &str) -> String {
+    let Some((_, sau)) = screen.rsplit_once("Waiting for authorization") else {
+        return String::new();
     };
-    ok.then_some((url, code))
+    sau.lines()
+        .skip(1)
+        .map(|l| l.trim_start_matches(|c: char| !c.is_alphanumeric()).trim())
+        .filter(|l| !l.is_empty())
+        .filter(|l| !l.ends_with('%') && !l.ends_with('$'))
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// Chữ codex in SAU khối mã (kết cục đăng nhập), gọn về một dòng. THUẦN.
@@ -195,8 +249,20 @@ pub fn codex_after(screen: &str) -> String {
 
 /// Câu dẫn đường codex gửi về điện thoại. THUẦN.
 pub fn guide_codex(name: &str, url: &str, code: &str, w: i64, nhac_lai: bool) -> String {
+    guide_thiet_bi(name, "codex", url, code, w, nhac_lai)
+}
+
+/// Câu dẫn đường mã thiết bị cho một CLI (`codex` | `opencode`). THUẦN.
+pub fn guide_thiet_bi(
+    name: &str,
+    cli: &str,
+    url: &str,
+    code: &str,
+    w: i64,
+    nhac_lai: bool,
+) -> String {
     format!(
-        "🔑 Đăng nhập ChatGPT cho {name} (codex){}\n\
+        "🔑 Đăng nhập ChatGPT cho {name} ({cli}){}\n\
          1. Mở trên điện thoại: {url}\n\
          2. Đăng nhập ChatGPT, nhập mã: {code}\n\
          (mã hết hạn sau 15 phút · không cần gửi gì về máy — cửa sổ {w} tự nhận)\n\
@@ -323,6 +389,9 @@ pub fn start(cfg: &Config, db: &Db, name: &str) -> String {
     else {
         return unknown(cfg, name);
     };
+    if acc.is_opencode() {
+        return start_opencode(cfg, db, &acc);
+    }
     if acc.is_codex() {
         return start_codex(cfg, db, &acc);
     }
@@ -439,33 +508,156 @@ fn codex_status(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
 /// (cửa sổ còn trong sổ) đọc kết cục: CLI còn chạy ⟹ nhắc lại mã, đã thoát ⟹
 /// báo NGUYÊN VĂN chữ CLI in + `codex login status`, đóng cửa sổ.
 fn start_codex(cfg: &Config, db: &Db, acc: &ClaudeAccountCfg) -> String {
+    start_thiet_bi(
+        db,
+        acc,
+        &ThietBi {
+            cli: "codex",
+            lenh_hien: "codex login --device-auth",
+            lenh: crate::accounts::codex_login_line(cfg, acc),
+            la_man: la_man_codex,
+            ma: codex_device,
+            sau: codex_after,
+            trang_thai: &|| codex_status(cfg, acc),
+        },
+    )
+}
+
+/// `-l` cho một hàng opencode. Chỉ hàng có provider đăng nhập được (hiện: `openai` = ChatGPT,
+/// `accounts::opencode_login_provider`); hàng chạy khoá API thì nói thẳng là không có gì để
+/// đăng nhập — KHÔNG rơi xuống nhánh claude (lỗi trước 15/11: mở `claude auth login`).
+fn start_opencode(cfg: &Config, db: &Db, acc: &ClaudeAccountCfg) -> String {
+    let Some(provider) = crate::accounts::opencode_login_provider(acc) else {
+        logging::info(
+            "account_login_opencode_no_provider",
+            json!({ "account": acc.name, "model": acc.model }),
+        );
+        return format!(
+            "ℹ {} (opencode, model {}) chạy bằng khoá API trong env_file — không có luồng đăng nhập. \
+             Chỉ hàng opencode dùng model `openai/…` (ChatGPT) mới đăng nhập bằng mã thiết bị.",
+            acc.name,
+            acc.model.as_deref().unwrap_or("(chưa đặt)")
+        );
+    };
+    start_thiet_bi(
+        db,
+        acc,
+        &ThietBi {
+            cli: "opencode",
+            lenh_hien: "opencode auth login openai",
+            lenh: crate::accounts::opencode_login_line(cfg, acc, provider),
+            la_man: la_man_opencode,
+            ma: opencode_device,
+            sau: opencode_after,
+            trang_thai: &|| opencode_status(cfg, acc),
+        },
+    )
+}
+
+/// `opencode auth list` của đúng phân vùng ấy — chỉ dòng của provider OpenAI (tên + «stored»,
+/// không có giá trị khoá nào), một dòng.
+fn opencode_status(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
+    let out = crate::exec::run(
+        "bash",
+        &["-c", &crate::accounts::opencode_auth_list_line(cfg, acc)],
+        crate::exec::RunOpts {
+            timeout: Some(Duration::from_secs(30)),
+            ..Default::default()
+        },
+    );
+    match out {
+        Ok(r) => {
+            let sach = bo_mau(&r.stdout);
+            let dong = sach
+                .lines()
+                .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+                .filter(|l| l.to_lowercase().contains("openai"))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            format!(
+                "`opencode auth list`: {} (mã {})",
+                if dong.is_empty() {
+                    "KHÔNG có dòng OpenAI".to_string()
+                } else {
+                    crate::exec::truncate(&dong, 200)
+                },
+                r.code.map_or_else(|| "?".to_string(), |c| c.to_string())
+            )
+        }
+        Err(e) => {
+            logging::warn(
+                "account_login_opencode_status_failed",
+                json!({ "account": acc.name, "err": logging::err_chain(&e) }),
+            );
+            format!("⚠ không chạy được `opencode auth list`: {e}")
+        }
+    }
+}
+
+/// Bỏ chuỗi màu ANSI `ESC [ … <chữ>` — `opencode auth list` tô màu cả khi không có tty. THUẦN.
+pub fn bo_mau(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '\u{1b}' && it.peek() == Some(&'[') {
+            it.next();
+            for d in it.by_ref() {
+                if d.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Một CLI đăng nhập bằng MÃ THIẾT BỊ (codex · opencode-openai): CLI tự hỏi máy chủ,
+/// không có mã nào chép ngược về máy.
+struct ThietBi<'a> {
+    cli: &'static str,
+    /// Tên lệnh trong câu báo (không phải dòng lệnh thật — dòng ấy có đường dẫn dài).
+    lenh_hien: &'static str,
+    lenh: String,
+    la_man: fn(&str) -> bool,
+    ma: fn(&str) -> Option<(String, String)>,
+    sau: fn(&str) -> String,
+    trang_thai: &'a dyn Fn() -> String,
+}
+
+/// Lượt ĐẦU mở cửa sổ + gửi đường dẫn và mã; lượt SAU (cửa sổ còn trong sổ) đọc kết cục:
+/// CLI còn chạy ⟹ nhắc lại mã, đã thoát ⟹ báo NGUYÊN VĂN chữ CLI in + trạng thái đăng nhập,
+/// đóng cửa sổ.
+fn start_thiet_bi(db: &Db, acc: &ClaudeAccountCfg, tb: &ThietBi) -> String {
     let name = acc.name.as_str();
+    let cli = tb.cli;
     if let Some((w, at, tty)) = pending(db, name) {
         let tuoi = chrono::Utc::now().timestamp_millis() - at;
         let man = crate::keys::screen_text_noi(w).unwrap_or_default();
-        if la_man_codex(&man) {
+        if (tb.la_man)(&man) {
             let song = cli_pid(&tty).is_some();
             if song && tuoi < LOGIN_STALE_MS {
-                if let Some((url, code)) = codex_device(&man) {
+                if let Some((url, code)) = (tb.ma)(&man) {
                     logging::info(
                         "account_login_reminded",
-                        json!({ "account": name, "window": w, "tuoi_ms": tuoi, "cli": "codex" }),
+                        json!({ "account": name, "window": w, "tuoi_ms": tuoi, "cli": cli }),
                     );
-                    return guide_codex(name, &url, &code, w, true);
+                    return guide_thiet_bi(name, cli, &url, &code, w, true);
                 }
             }
             if !song {
-                let ket = codex_after(&man);
+                let ket = (tb.sau)(&man);
                 let dong = dong_cua_so(name, w);
                 forget(db, name);
-                let trang_thai = codex_status(cfg, acc);
+                let trang_thai = (tb.trang_thai)();
                 logging::info(
                     "account_login_finished",
-                    json!({ "account": name, "window": w, "cli": "codex",
+                    json!({ "account": name, "window": w, "cli": cli,
                             "ket": ket, "status": trang_thai, "dong": dong }),
                 );
                 return format!(
-                    "🔑 {name} (codex): CLI đã thoát — «{}»\n{trang_thai}\n{dong}",
+                    "🔑 {name} ({cli}): CLI đã thoát — «{}»\n{trang_thai}\n{dong}",
                     if ket.is_empty() {
                         "(không in gì)".to_string()
                     } else {
@@ -479,18 +671,17 @@ fn start_codex(cfg: &Config, db: &Db, acc: &ClaudeAccountCfg) -> String {
 
     if let Err(e) = crate::accounts::ensure_dirs(acc) {
         logging::error(
-            "account_login_codex_home_failed",
-            json!({ "account": name, "err": e }),
+            "account_login_dirs_failed",
+            json!({ "account": name, "cli": cli, "err": e }),
         );
-        return format!("⚠ không tạo được CODEX_HOME cho {name}: {e}");
+        return format!("⚠ không tạo được thư mục cấu hình {cli} cho {name}: {e}");
     }
-    let cmd = crate::accounts::codex_login_line(cfg, acc);
-    let (w, tty) = match crate::keys::open_window(&cmd) {
+    let (w, tty) = match crate::keys::open_window(&tb.lenh) {
         Ok(x) => x,
         Err(e) => {
             logging::error(
                 "account_login_window_failed",
-                json!({ "account": name, "cli": "codex", "err": logging::err_chain(&e) }),
+                json!({ "account": name, "cli": cli, "err": logging::err_chain(&e) }),
             );
             return format!("⚠ không mở được cửa sổ Terminal để đăng nhập {name}: {e}");
         }
@@ -499,25 +690,26 @@ fn start_codex(cfg: &Config, db: &Db, acc: &ClaudeAccountCfg) -> String {
     for _ in 0..20 {
         std::thread::sleep(Duration::from_secs(1));
         man = crate::keys::screen_text_noi(w).unwrap_or_default();
-        if codex_device(&man).is_some() {
+        if (tb.ma)(&man).is_some() {
             break;
         }
     }
-    let Some((url, code)) = codex_device(&man) else {
+    let Some((url, code)) = (tb.ma)(&man) else {
         let cuoi: Vec<&str> = man.lines().filter(|l| !l.trim().is_empty()).collect();
         let cuoi = cuoi[cuoi.len().saturating_sub(3)..].join(" · ");
         logging::warn(
             "account_login_no_url",
-            json!({ "account": name, "window": w, "tty": tty, "cli": "codex", "man_cuoi": cuoi }),
+            json!({ "account": name, "window": w, "tty": tty, "cli": cli, "man_cuoi": cuoi }),
         );
         return format!(
-            "⚠ đã mở cửa sổ {w} chạy `codex login --device-auth` cho {name} nhưng sau 20 s màn \
-             chưa có đường dẫn + mã. Màn cuối: «{}»",
+            "⚠ đã mở cửa sổ {w} chạy `{}` cho {name} nhưng sau 20 s màn chưa có đường dẫn + mã. \
+             Màn cuối: «{}»",
+            tb.lenh_hien,
             crate::exec::truncate(&cuoi, 300)
         );
     };
     let ghi = json!({ "window": w, "tty": tty, "at_ms": chrono::Utc::now().timestamp_millis(),
-                      "cli": "codex" });
+                      "cli": cli });
     if let Err(e) = db.set_cursor(&cursor_key(name), &ghi.to_string()) {
         logging::error(
             "account_login_cursor_not_saved",
@@ -527,9 +719,9 @@ fn start_codex(cfg: &Config, db: &Db, acc: &ClaudeAccountCfg) -> String {
     }
     logging::info(
         "account_login_started",
-        json!({ "account": name, "window": w, "tty": tty, "cli": "codex" }),
+        json!({ "account": name, "window": w, "tty": tty, "cli": cli }),
     );
-    guide_codex(name, &url, &code, w, false)
+    guide_thiet_bi(name, cli, &url, &code, w, false)
 }
 
 /// Gõ mã người dán vào đúng cửa sổ đang chờ, đọc lại kết quả; CLI đã thoát thì đo lại
@@ -545,12 +737,12 @@ pub fn finish(cfg: &Config, db: &Db, name: &str, code: &str) -> String {
     if cfg
         .claude_accounts_or_ambient()
         .iter()
-        .any(|a| a.name == name && a.is_codex())
+        .any(|a| a.name == name && (a.is_codex() || a.is_opencode()))
     {
-        // codex tự hỏi máy chủ — mã nhập trên TRANG, không gõ vào cửa sổ.
+        // codex / opencode tự hỏi máy chủ — mã nhập trên TRANG, không gõ vào cửa sổ.
         return format!(
-            "ℹ {name} là codex: mã nhập trên trang auth.openai.com, không gửi về máy. \
-             Đăng nhập xong gõ /accounts {name} -l để xem kết quả."
+            "ℹ {name} đăng nhập bằng mã thiết bị: mã nhập trên trang auth.openai.com, không gửi \
+             về máy. Đăng nhập xong gõ /accounts {name} -l để xem kết quả."
         );
     }
     if let Some(why) = code_shape_why(name, code) {

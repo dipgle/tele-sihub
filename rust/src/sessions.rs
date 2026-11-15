@@ -2544,6 +2544,13 @@ fn cua_so(model: Option<&str>) -> (u64, u64) {
         // Trước dòng này model lạ rơi về 200 k ⇒ huba báo **100%**, kẹp trần, và
         // tự động bàn giao một phiên chỉ dùng 35% ngữ cảnh.
         Some(m) if m.starts_with("opencode-") || m.contains("/deepseek-") => (1_000_000, 1_000_000),
+        // Đường LUI khi dịch vụ opencode không trả lời (số thật đi `opencode::cua_so_tu_khai`).
+        // Đo 15/11 `GET /api/model` dịch vụ acc9 (đăng nhập ChatGPT): `openai/gpt-6.1-*`
+        // = 628 000 (TUI: 118 856 token ⟹ 19 %), `openai/gpt-6-*` = 400 000. Zen
+        // (`opencode/…`) ≥ 1 000 000 cho mọi model lớn.
+        Some(m) if m.starts_with("openai/gpt-6.1-") => (628_000, 628_000),
+        Some(m) if m.starts_with("openai/gpt-6-") => (400_000, 400_000),
+        Some(m) if m.starts_with("opencode/") => (1_000_000, 1_000_000),
         // Gồm cả `None`: không đọc được model thì rơi về đúng con số CLI dùng cho
         // model nó không biết — thà báo sớm còn hơn báo muộn.
         _ => (180_000, 200_000),
@@ -6508,6 +6515,15 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
                 status: s.busy.map(|b| if b { "busy" } else { "idle" }.to_string()),
                 state: None,
                 context_tokens: s.context_tokens,
+                // Số dịch vụ opencode TỰ KHAI cho đúng provider/model thắng bảng đoán
+                // (`opencode::cua_so_tu_khai`; Hà 15/11: TUI 19 % mà huba in 59 %).
+                context_window: s.model.as_deref().and_then(|m| {
+                    crate::opencode::cua_so_tu_khai(
+                        account,
+                        m,
+                        chrono::Utc::now().timestamp_millis(),
+                    )
+                }),
                 model: s.model,
                 tty,
                 // Bảng hỏi opencode (công cụ `question`) đã được dịch sang khuôn

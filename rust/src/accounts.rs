@@ -517,6 +517,63 @@ pub fn codex_login_line(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
     format!("{} login --device-auth", codex_base_line(cfg, acc))
 }
 
+/// Bốn `XDG_*=$HOME/.opencode-<tên>/…` của một hàng opencode — MỘT nguồn cho dòng mở phiên,
+/// dòng đăng nhập và dòng `auth list` (lệch nhau = đăng nhập vào chỗ phiên không đọc).
+fn opencode_xdg_assigns(acc: &ClaudeAccountCfg) -> Vec<String> {
+    let base = format!("$HOME/.opencode-{}", opencode_slug(acc));
+    [
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_STATE_HOME", "state"),
+    ]
+    .iter()
+    .map(|(var, sub)| assign_path(var, &format!("{base}/{sub}")))
+    .collect()
+}
+
+/// Provider có luồng ĐĂNG NHẬP của một hàng opencode, suy từ tiền tố `model`.
+/// `None` = hàng không phải opencode, hoặc chạy khoá API (`env_file`) — không có gì để đăng nhập.
+///
+/// 📐 Đo 15/11 (opencode 2.2.7): `auth login openai` có `chatgpt-headless` = mã thiết bị
+/// (`https://auth.openai.com/codex/device`), CLI tự hỏi máy chủ, không chép gì NGƯỢC về máy.
+/// Chỉ `openai` được đo ⟹ chỉ `openai` được nhận; provider khác thêm khi đã đo luồng của nó.
+pub fn opencode_login_provider(acc: &ClaudeAccountCfg) -> Option<&'static str> {
+    if !acc.is_opencode() {
+        return None;
+    }
+    let (p, _) = some(&acc.model)?.split_once('/')?;
+    p.trim().eq_ignore_ascii_case("openai").then_some("openai")
+}
+
+/// Dòng lệnh ĐĂNG NHẬP ChatGPT cho một hàng opencode — đúng phân vùng XDG của hàng ấy
+/// (cùng `$HOME/.opencode-<tên>` mà [`opencode_launch_line`] dùng, nên thông tin đăng nhập
+/// nằm đúng chỗ phiên đọc). KHÔNG nạp `env_file` / `OPENCODE_CONFIG_CONTENT`: đăng nhập
+/// không cần khoá API hay cấu hình phiên. `BROWSER=/bin/true`: không bao giờ mở trình duyệt
+/// trên máy (trình duyệt nằm ở điện thoại). `--standalone`: máy chủ riêng của lượt này,
+/// không dựa vào dịch vụ nền của phiên khác (đo 15/11: thành công với cờ này).
+pub fn opencode_login_line(cfg: &Config, acc: &ClaudeAccountCfg, provider: &str) -> String {
+    let mut parts: Vec<String> = vec!["env".to_string()];
+    parts.extend(opencode_xdg_assigns(acc));
+    parts.push("OPENCODE_DISABLE_AUTOUPDATE=1".to_string());
+    parts.push("BROWSER=/bin/true".to_string());
+    parts.push(path_token(&cfg.opencode_cli));
+    parts.push(format!(
+        "auth login {} --method chatgpt-headless --standalone",
+        value_token(provider)
+    ));
+    parts.join(" ")
+}
+
+/// `opencode auth list` của đúng phân vùng ấy — để báo «đã lưu» sau lượt đăng nhập.
+pub fn opencode_auth_list_line(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
+    let mut parts: Vec<String> = vec!["env".to_string()];
+    parts.extend(opencode_xdg_assigns(acc));
+    parts.push(path_token(&cfg.opencode_cli));
+    parts.push("auth list".to_string());
+    parts.join(" ")
+}
+
 /// Email ChatGPT của một hàng codex — claim `email` trong `tokens.id_token`
 /// (JWT) của `CODEX_HOME/auth.json`. Đo 14/11 (codex-cli 0.169.0): có `email`
 /// và `email_verified`. Chỉ đọc PHẦN THÂN của JWT, không kiểm chữ ký — đây là
@@ -1245,15 +1302,7 @@ fn opencode_launch_line(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
                     "why": "khai api_key_env mà thiếu env_file — biến chỉ có nếu môi trường ngoài đã đặt" }),
         );
     }
-    let base = format!("$HOME/.opencode-{}", opencode_slug(acc));
-    for (var, sub) in [
-        ("XDG_CONFIG_HOME", "config"),
-        ("XDG_DATA_HOME", "data"),
-        ("XDG_CACHE_HOME", "cache"),
-        ("XDG_STATE_HOME", "state"),
-    ] {
-        parts.push(assign_path(var, &format!("{base}/{sub}")));
-    }
+    parts.extend(opencode_xdg_assigns(acc));
     parts.push("OPENCODE_DISABLE_AUTOUPDATE=1".to_string());
     let content = serde_json::to_string(&opencode_config_content(acc)).unwrap_or_else(|e| {
         crate::logging::error(

@@ -534,6 +534,135 @@ fn fetch_go_limits(acc: &ClaudeAccountCfg) -> Result<GoLimits, String> {
     parse_go_limits(&body)
 }
 
+// ── Cửa sổ ngữ cảnh opencode TỰ KHAI ──────────────────────────────────────────
+//
+// 🔴 Hà 15/11: *«% trên cửa sổ acc9 thấp nhưng hiện ở lệnh session lại rất cao»*. TUI
+// opencode in `tokens / limit.context` với `limit` lấy từ danh sách model SỐNG của dịch
+// vụ nền (đo trong mã opencode 2.2.7: `percent: Math.round(l/p.limit.context*100)`).
+// Số ấy KHÁC theo provider, kể cả cùng một model — đo 15/11 qua `GET /api/model` của dịch
+// vụ acc9: `openai/gpt-6.1-sol` (ChatGPT) = 628 000 · `openai/gpt-6-*` = 400 000 ·
+// `opencode/gpt-6.1-sol` (Zen) = 1 050 000. Bảng đoán của huba không có dòng `openai/…`
+// ⟹ rơi về 200k ⟹ 118 856 token đọc ra 59 % trong khi TUI in 19 %. Bảng nào cũng trôi;
+// số do chính dịch vụ khai mới khớp màn của chủ máy.
+
+/// Bản đọc nhớ cửa sổ theo tài khoản: `(mốc đọc, model → limit.context | lỗi)`.
+type CuaSoCache = BTreeMap<String, (i64, Result<BTreeMap<String, u64>, String>)>;
+static CUA_SO_CACHE: std::sync::OnceLock<std::sync::Mutex<CuaSoCache>> = std::sync::OnceLock::new();
+/// Tuổi tối đa của bản đọc nhớ — danh sách model chỉ đổi khi đăng nhập/cập nhật.
+pub const CUA_SO_CACHE_MS: i64 = 10 * 60_000;
+
+/// `limit.context` của MỘT model (`provider/id`) trong thân `GET /api/model`. THUẦN.
+pub fn limit_context_tu_api_model(body: &Value, model: &str) -> Option<u64> {
+    bang_cua_so_tu_api_model(body).get(model).copied()
+}
+
+/// Cả bảng `provider/id → limit.context` của thân `GET /api/model`. THUẦN.
+pub fn bang_cua_so_tu_api_model(body: &Value) -> BTreeMap<String, u64> {
+    let mut out = BTreeMap::new();
+    for m in body["data"].as_array().into_iter().flatten() {
+        let (Some(p), Some(id), Some(n)) = (
+            m["providerID"].as_str(),
+            m["id"].as_str(),
+            m["limit"]["context"].as_u64().filter(|n| *n > 0),
+        ) else {
+            continue;
+        };
+        out.insert(format!("{p}/{id}"), n);
+    }
+    out
+}
+
+/// Chỉ gửi mật khẩu dịch vụ tới MÁY NÀY: `http://127.0.0.1:<cổng>` / `http://localhost:<cổng>`. THUẦN.
+pub fn url_cuc_bo(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let host = rest.split(['/', '?']).next().unwrap_or("");
+    let ten = host.rsplit_once(':').map_or(host, |(h, _)| h);
+    matches!(ten, "127.0.0.1" | "localhost")
+}
+
+/// Cửa sổ ngữ cảnh mà dịch vụ opencode của tài khoản TỰ KHAI cho `model`. `None` = không
+/// hỏi được (dịch vụ chưa chạy, lỗi — đã ghi log) ⟹ người gọi rơi về bảng đoán.
+pub fn cua_so_tu_khai(acc: &ClaudeAccountCfg, model: &str, now_ms: i64) -> Option<u64> {
+    let cache = CUA_SO_CACHE.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()));
+    if let Ok(m) = cache.lock() {
+        if let Some((at, r)) = m.get(&acc.name) {
+            if now_ms - at < CUA_SO_CACHE_MS {
+                return r.as_ref().ok().and_then(|b| b.get(model).copied());
+            }
+        }
+    }
+    let r = hoi_bang_cua_so(acc);
+    match &r {
+        Ok(b) => crate::logging::info(
+            "opencode_context_windows_read",
+            json!({ "account": acc.name, "so_model": b.len(), "model": model,
+                    "context": b.get(model) }),
+        ),
+        Err(e) => crate::logging::warn(
+            "opencode_context_windows_unreadable",
+            json!({ "account": acc.name, "err": e,
+                    "effect": "% ngữ cảnh rơi về bảng đoán sessions::cua_so" }),
+        ),
+    }
+    let ket = r.as_ref().ok().and_then(|b| b.get(model).copied());
+    if let Ok(mut m) = cache.lock() {
+        m.insert(acc.name.clone(), (now_ms, r));
+    }
+    ket
+}
+
+/// Hỏi `GET /api/model` của dịch vụ nền opencode ghi trong
+/// `~/.opencode-<tên>/state/opencode/service.json` (`url` + `password`, đo 15/11:
+/// Basic `opencode:<password>`). Mật khẩu KHÔNG vào log, chỉ đi tới máy này.
+fn hoi_bang_cua_so(acc: &ClaudeAccountCfg) -> Result<BTreeMap<String, u64>, String> {
+    let p = crate::accounts::opencode_profile_dir(acc).join("state/opencode/service.json");
+    let text =
+        std::fs::read_to_string(&p).map_err(|e| format!("không đọc được {}: {e}", p.display()))?;
+    let v: Value =
+        serde_json::from_str(&text).map_err(|e| format!("{} không phải JSON: {e}", p.display()))?;
+    let url = v["url"]
+        .as_str()
+        .ok_or_else(|| format!("{} thiếu url", p.display()))?;
+    if !url_cuc_bo(url) {
+        return Err(format!(
+            "url dịch vụ không phải máy này ({}) — không gửi mật khẩu",
+            exec::truncate(url, 60)
+        ));
+    }
+    let pw = v["password"]
+        .as_str()
+        .ok_or_else(|| format!("{} thiếu password", p.display()))?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|e| format!("không dựng được HTTP client: {e}"))?;
+    let resp = client
+        .get(format!("{}/api/model", url.trim_end_matches('/')))
+        .basic_auth("opencode", Some(pw))
+        .header("accept", "application/json")
+        .send()
+        .map_err(|e| {
+            format!(
+                "không gọi được dịch vụ opencode: {}",
+                exec::truncate(&e.to_string(), 120)
+            )
+        })?;
+    let ma = resp.status().as_u16();
+    if ma != 200 {
+        return Err(format!("dịch vụ opencode trả HTTP {ma} cho /api/model"));
+    }
+    let body: Value = resp
+        .json()
+        .map_err(|e| format!("/api/model không trả JSON: {e}"))?;
+    let bang = bang_cua_so_tu_api_model(&body);
+    if bang.is_empty() {
+        return Err("/api/model không có model nào mang limit.context".into());
+    }
+    Ok(bang)
+}
+
 /// Có bảng ấy không. Kho cũ (chưa từng chạy opencode mới) không có
 /// `session_v2`; hỏi `sqlite_master` thay vì để câu truy vấn nổ.
 fn has_table(conn: &Connection, name: &str) -> Result<bool, String> {

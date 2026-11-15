@@ -523,7 +523,10 @@ fn detail(cfg: &Config, name: &str, st: &mut PageState, err: Option<String>) -> 
             .to_string()
     };
 
-    let actions = if in_config && acc.is_opencode() {
+    let actions = if in_config
+        && acc.is_opencode()
+        && accounts::opencode_login_provider(acc).is_none()
+    {
         format!(
             "<div class=\"row\">\
              <form method=\"POST\" action=\"/acc/{n}/lock\"><input type=\"hidden\" name=\"t\" value=\"{tk}\">\
@@ -729,7 +732,8 @@ fn mo_khoa_opencode(cfg: &Config, name: &str) -> Option<Resp> {
         .claude_accounts_or_ambient()
         .into_iter()
         .find(|a| a.name == name)?;
-    if !acc.is_opencode() {
+    // opencode model `openai/…` (ChatGPT) có luồng mã thiết bị ⟹ đi `account_login` như codex.
+    if !acc.is_opencode() || accounts::opencode_login_provider(&acc).is_some() {
         return None;
     }
     Some(Resp::html(page_shell(
