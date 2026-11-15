@@ -1,4 +1,4 @@
-# huba — VIỆC CHO PHIÊN UBUNTU: cập nhật lên `f4ac96a` (Mac, 15/11 ~08:30 +07)
+# huba — VIỆC CHO PHIÊN UBUNTU: cập nhật lên `7bf441f`+ (Mac, 15/11 ~08:30 +07)
 
 Quang 15/11: «commit ghi chú luôn thì tôi đỡ phải nhắc» · «trên ubuntu cũng model ai làm». ⟹ Việc
 này ĐƯỢC GIAO cho phiên huba trên Ubuntu, làm ngay khi mở, không chờ ai nhắc.
@@ -21,4 +21,6 @@ Làm ĐỦ, theo thứ tự, mỗi bước đọc mã thoát:
 Mới trong bản: acc codex được CHỌN bằng hạn mức thật (trước bị ép «khoá» ở `quota::rank_all`),
 bàn giao sang codex, `/accounts` dài chia nhiều tin, đoạn mở đầu phiên bắt buộc (luật + MCP),
 gói Mac, trình cài kiểm hệ điều hành. Chi tiết: `docs/kiem-tra-them-tai-khoan-va-nguon-model.md`.
+Từ bản `7bf441f`: bước 3 bật `core.hooksPath=.githooks` ⟹ các lần `git pull` SAU tự dựng gói + cài ở nền
+(`.tmp/tu-cai-*.log`, Quang «tự cài luôn đi»). Codex trên Mac thấy phiên qua `lsof`; Linux vẫn `/proc`.
 Việc nền: không có.
