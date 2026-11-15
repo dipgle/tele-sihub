@@ -1283,14 +1283,14 @@ pub fn rank_all(cfg: &crate::config::Config, now_ms: i64) -> Vec<Ranked> {
             // năm đường cùng thấy, và dòng log dưới cũng nói ra.
             // Gói Go có trần đo được (`go_quota`) ⟹ xếp như mọi tài khoản gói;
             // opencode ví trả-theo-lượt thì vẫn KHÔNG tự chọn (luật 8).
-            let opencode = cfg
-                .claude_accounts_or_ambient()
-                .iter()
-                .any(|a| a.name == q.account && a.is_opencode() && !is_go_plan(a));
+            let opencode = cfg.claude_accounts_or_ambient().iter().any(|a| {
+                a.name == q.account && a.is_opencode() && !is_go_plan(a) && !is_chatgpt_opencode(a)
+            });
+            // opencode-ChatGPT xếp như codex: trần THẬT của gói ChatGPT, bản đọc cũ ⟹ chưa sẵn sàng.
             let codex = cfg
                 .claude_accounts_or_ambient()
                 .iter()
-                .any(|a| a.name == q.account && a.is_codex());
+                .any(|a| a.name == q.account && (a.is_codex() || is_chatgpt_opencode(a)));
             let codex_unmeasured = codex
                 && (q.fetched_at_ms.is_none_or(|t| t > now_ms)
                     || [
@@ -1451,6 +1451,9 @@ pub fn read_all(cfg: &crate::config::Config) -> Vec<Quota> {
             if a.is_codex() {
                 return codex_quota(a);
             }
+            if is_chatgpt_opencode(a) {
+                return chatgpt_opencode_quota(a);
+            }
             // opencode: "Không đo được" là trạng thái riêng, không phải "chưa
             // đăng nhập" (luật 13②) — xem [`read_acc`].
             if !is_go_plan(a) {
@@ -1472,6 +1475,27 @@ pub fn is_go_plan(a: &crate::config::ClaudeAccountCfg) -> bool {
         && a.model
             .as_deref()
             .is_some_and(|m| m.starts_with("opencode-go/"))
+}
+
+/// Hàng opencode đăng nhập ChatGPT (model `openai/…`) — gói THUÊ BAO ChatGPT, cùng
+/// trần với codex trên cùng tài khoản (Hà 15/11 chọn hỏi thẳng máy chủ).
+pub fn is_chatgpt_opencode(a: &crate::config::ClaudeAccountCfg) -> bool {
+    crate::accounts::opencode_login_provider(a) == Some("openai")
+}
+
+/// `Quota` của một hàng opencode-ChatGPT: `GET /wham/usage` (`opencode::chatgpt_rate_limits`)
+/// đổi sang khuôn codex rồi đi CHUNG [`codex_quota_tu`]. Mốc đọc = lúc máy chủ trả lời.
+pub fn chatgpt_opencode_quota(a: &crate::config::ClaudeAccountCfg) -> Quota {
+    let (doc_luc, r) = crate::opencode::chatgpt_rate_limits(a, now_ms());
+    match r {
+        Ok(rl) => {
+            let ts = chrono::DateTime::from_timestamp_millis(doc_luc)
+                .map(|d| d.to_rfc3339())
+                .unwrap_or_default();
+            codex_quota_tu(&a.name, &rl, &ts)
+        }
+        Err(e) => khong_do_duoc(&a.name, &format!("opencode ChatGPT: {e}")),
+    }
 }
 
 /// Trần THÁNG gấp mấy lần trần TUẦN của gói Go (tài liệu: tuần = 50 % tháng).

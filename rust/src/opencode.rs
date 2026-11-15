@@ -534,6 +534,153 @@ fn fetch_go_limits(acc: &ClaudeAccountCfg) -> Result<GoLimits, String> {
     parse_go_limits(&body)
 }
 
+// ── Hạn mức ChatGPT của hàng opencode đăng nhập ChatGPT ──────────────────────
+//
+// 🔴 Hà 15/11: *«/accounts chưa hiện thông tin sử dụng»* · chọn B (hỏi thẳng máy chủ).
+// opencode KHÔNG lưu và KHÔNG hỏi hạn mức ChatGPT (đo 15/11: kho phiên/sự kiện/nhật ký
+// không có `used_percent`; mã opencode 2.2.7 không gọi `/wham/usage`). codex hỏi
+// `GET https://chatgpt.com/backend-api/wham/usage` (đường trong mã codex-cli 0.169).
+// Đo THẬT 15/11 bằng token acc9: HTTP 200, `plan_type:"prolite"`,
+// `rate_limit.primary_window = {used_percent:46, limit_window_seconds:604800,
+// reset_after_seconds, reset_at:<giây>}`, `secondary_window:null`,
+// `rate_limit_reached_type:null`. Token đọc CHỈ-ĐỌC từ kho của chính opencode
+// (`credential.value` = `{type:"oauth", access, refresh, expires, metadata.accountID}`),
+// chỉ gửi tới `chatgpt.com` — đúng nơi opencode vẫn gửi — và KHÔNG vào log.
+// huba không tự làm mới token (ghi vào kho của CLI khác) — hết hạn thì nói ra.
+
+/// Cửa hạn mức ChatGPT (codex dùng cùng cửa này).
+pub const CHATGPT_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+
+type ChatgptCache = BTreeMap<String, (i64, Result<Value, String>)>;
+static CHATGPT_CACHE: std::sync::OnceLock<std::sync::Mutex<ChatgptCache>> =
+    std::sync::OnceLock::new();
+/// Tuổi tối đa của bản đọc nhớ — cùng nhịp với gói Go.
+pub const CHATGPT_CACHE_MS: i64 = 5 * 60_000;
+
+/// Thân `/wham/usage` → khuôn `rate_limits` của nhật ký codex (`primary`/`secondary`
+/// = `{used_percent, window_minutes, resets_at}`), để dùng CHUNG `quota::codex_quota_tu`.
+/// `None` = thân không có `rate_limit`. THUẦN.
+pub fn wham_sang_rate_limits(body: &Value) -> Option<Value> {
+    let rl = body.get("rate_limit").filter(|v| v.is_object())?;
+    let cua = |w: &Value| -> Value {
+        if w.is_null() {
+            return Value::Null;
+        }
+        json!({
+            "used_percent": w["used_percent"].as_f64(),
+            "window_minutes": w["limit_window_seconds"].as_i64().map(|s| s / 60),
+            "resets_at": w["reset_at"].as_i64(),
+        })
+    };
+    let chan = match body["rate_limit_reached_type"].as_str() {
+        Some(t) => Value::String(t.to_string()),
+        None if rl["limit_reached"].as_bool() == Some(true) => "limit_reached".into(),
+        None => Value::Null,
+    };
+    Some(json!({
+        "primary": cua(&rl["primary_window"]),
+        "secondary": cua(&rl["secondary_window"]),
+        "rate_limit_reached_type": chan,
+    }))
+}
+
+/// Hạn mức ChatGPT (khuôn codex) của một hàng opencode, hỏi máy chủ (nhớ
+/// [`CHATGPT_CACHE_MS`]). Trả kèm mốc ĐỌC thật.
+pub fn chatgpt_rate_limits(acc: &ClaudeAccountCfg, now_ms: i64) -> (i64, Result<Value, String>) {
+    let cache = CHATGPT_CACHE.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()));
+    if let Ok(m) = cache.lock() {
+        if let Some((at, r)) = m.get(&acc.name) {
+            if now_ms - at < CHATGPT_CACHE_MS {
+                return (*at, r.clone());
+            }
+        }
+    }
+    let r = fetch_chatgpt_rate_limits(acc, now_ms);
+    if let Err(e) = &r {
+        crate::logging::warn(
+            "opencode_chatgpt_usage_unreadable",
+            json!({ "account": acc.name, "err": e }),
+        );
+    }
+    if let Ok(mut m) = cache.lock() {
+        m.insert(acc.name.clone(), (now_ms, r.clone()));
+    }
+    (now_ms, r)
+}
+
+/// `(access, accountID)` của đăng nhập ChatGPT đang bật trong kho opencode — CHỈ ĐỌC.
+fn chatgpt_token(acc: &ClaudeAccountCfg, now_ms: i64) -> Result<(String, String), String> {
+    let path = db_path(acc);
+    let conn = Connection::open_with_flags(
+        &path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| format!("mở {}: {e}", path.display()))?;
+    let raw: String = conn
+        .query_row(
+            "SELECT value FROM credential WHERE integration_id = 'openai' AND active = 1 \
+             ORDER BY time_updated DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|_| {
+            "chưa có đăng nhập ChatGPT trong kho opencode — /accounts <tên> -l".to_string()
+        })?;
+    let v: Value =
+        serde_json::from_str(&raw).map_err(|_| "đăng nhập ChatGPT trong kho hỏng".to_string())?;
+    if v["type"].as_str() != Some("oauth") {
+        return Err("đăng nhập openai không phải OAuth ChatGPT (khoá API?)".into());
+    }
+    if v["expires"].as_i64().is_some_and(|t| t <= now_ms) {
+        return Err(
+            "token ChatGPT đã hết hạn — dùng phiên một lượt (opencode tự làm mới) hoặc /accounts <tên> -l"
+                .into(),
+        );
+    }
+    let access = v["access"].as_str().filter(|s| !s.is_empty());
+    let id = v["metadata"]["accountID"]
+        .as_str()
+        .filter(|s| !s.is_empty());
+    match (access, id) {
+        (Some(a), Some(i)) => Ok((a.to_string(), i.to_string())),
+        _ => Err("đăng nhập ChatGPT thiếu token hoặc accountID".into()),
+    }
+}
+
+fn fetch_chatgpt_rate_limits(acc: &ClaudeAccountCfg, now_ms: i64) -> Result<Value, String> {
+    let (access, account_id) = chatgpt_token(acc, now_ms)?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("không dựng được HTTP client: {e}"))?;
+    let resp = client
+        .get(CHATGPT_USAGE_URL)
+        .bearer_auth(access)
+        .header("chatgpt-account-id", account_id)
+        .header("accept", "application/json")
+        .header("originator", "opencode")
+        .send()
+        .map_err(|e| {
+            format!(
+                "không gọi được {CHATGPT_USAGE_URL}: {}",
+                exec::truncate(&e.to_string(), 160)
+            )
+        })?;
+    let ma = resp.status().as_u16();
+    if ma == 401 || ma == 403 {
+        return Err(format!(
+            "máy chủ ChatGPT từ chối token (HTTP {ma}) — dùng phiên một lượt để opencode làm mới, hoặc /accounts <tên> -l"
+        ));
+    }
+    if ma != 200 {
+        return Err(format!("{CHATGPT_USAGE_URL} trả HTTP {ma}"));
+    }
+    let body: Value = resp
+        .json()
+        .map_err(|e| format!("thân trả về không phải JSON: {e}"))?;
+    wham_sang_rate_limits(&body).ok_or_else(|| "thân /wham/usage không có rate_limit".to_string())
+}
+
 // ── Cửa sổ ngữ cảnh opencode TỰ KHAI ──────────────────────────────────────────
 //
 // 🔴 Hà 15/11: *«% trên cửa sổ acc9 thấp nhưng hiện ở lệnh session lại rất cao»*. TUI

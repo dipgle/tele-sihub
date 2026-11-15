@@ -175,3 +175,87 @@ fn bo_mau_cua_auth_list() {
     );
     assert_eq!(bo_mau("không màu"), "không màu", "chữ không màu giữ nguyên");
 }
+
+/// Hà 15/11 *«/accounts chưa hiện thông tin sử dụng»* — chọn B: hỏi `/wham/usage`.
+/// Thân THẬT đo 15/11 bằng token acc9 (bỏ các ô danh tính; số giữ nguyên văn).
+#[test]
+fn han_muc_chatgpt_tu_wham_usage() {
+    use huba::opencode::wham_sang_rate_limits;
+    use huba::quota::{codex_quota_tu, is_chatgpt_opencode};
+    let than: serde_json::Value = serde_json::from_str(
+        r#"{"plan_type":"prolite","rate_limit":{"allowed":true,"limit_reached":false,
+            "primary_window":{"used_percent":46,"limit_window_seconds":604800,
+            "reset_after_seconds":486315,"reset_at":1795235473},"secondary_window":null},
+            "code_review_rate_limit":null,"rate_limit_reached_type":null,
+            "user_id":"BI-MAT-KHONG-DUOC-LOT","email":"khong@lot.vn"}"#,
+    )
+    .unwrap();
+    let rl = wham_sang_rate_limits(&than).expect("có rate_limit");
+    let chu = rl.to_string();
+    assert!(
+        !chu.contains("BI-MAT") && !chu.contains("khong@lot"),
+        "danh tính không đi tiếp: {chu}"
+    );
+    let q = codex_quota_tu("acc9", &rl, "2026-11-15T13:30:00+00:00");
+    assert_eq!(q.week_pct, Some(46));
+    assert_eq!(
+        q.hour5_pct,
+        Some(46),
+        "gói chỉ có cửa tuần ⟹ 5 giờ gán ngược từ tuần"
+    );
+    assert!(q
+        .week_resets_at
+        .as_deref()
+        .unwrap()
+        .starts_with("2026-11-21"));
+    assert!(q.why_unknown.is_none());
+    assert!(q.fetched_at_ms.is_some());
+    // Kịch trần: `limit_reached` mà không có loại ⟹ 100 %.
+    let mut kich = than.clone();
+    kich["rate_limit"]["limit_reached"] = true.into();
+    let q = codex_quota_tu(
+        "acc9",
+        &wham_sang_rate_limits(&kich).unwrap(),
+        "2026-11-15T13:30:00+00:00",
+    );
+    assert_eq!(q.week_pct, Some(100));
+    // Ngược: thân không có rate_limit ⟹ None (không bịa 0 %).
+    assert_eq!(
+        wham_sang_rate_limits(&serde_json::json!({"plan_type":"free"})),
+        None
+    );
+    // Chỉ hàng opencode + model openai mới đi đường này.
+    assert!(is_chatgpt_opencode(&hang(
+        "acc9",
+        Some("opencode"),
+        Some("openai/gpt-6.1-sol")
+    )));
+    assert!(!is_chatgpt_opencode(&hang(
+        "acc8",
+        Some("opencode"),
+        Some("opencode-go/deepseek-v4.1-flash")
+    )));
+    assert!(!is_chatgpt_opencode(&hang(
+        "acc10",
+        Some("codex"),
+        Some("openai/gpt-6.1-sol")
+    )));
+}
+
+/// Hỏi THẬT máy chủ ChatGPT bằng đăng nhập của acc9 trên máy này (chỉ đọc kho opencode) —
+/// chạy tay: `cargo test --test tai_khoan_opencode_dang_nhap doc_that -- --ignored --nocapture`
+#[test]
+#[ignore = "gọi máy chủ ChatGPT bằng tài khoản thật — chạy tay"]
+fn doc_that_acc9_chatgpt() {
+    let q = huba::quota::chatgpt_opencode_quota(&hang(
+        "acc9",
+        Some("opencode"),
+        Some("openai/gpt-6.1-sol"),
+    ));
+    println!(
+        "acc9: tuần {:?} (reset {:?}) · 5h {:?} · đọc lúc {:?} · không đo được: {:?}",
+        q.week_pct, q.week_resets_at, q.hour5_pct, q.fetched_at_ms, q.why_unknown
+    );
+    assert!(q.why_unknown.is_none(), "{:?}", q.why_unknown);
+    assert!(q.week_pct.is_some());
+}
