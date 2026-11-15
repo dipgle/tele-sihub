@@ -101,6 +101,9 @@ riêng, không phải xanh.
   `resources` nên vẫn chặn) — nợ của cổng chung. Ca sang dự án khác chưa đo riêng.
 - `%` ngữ cảnh: dịch vụ opencode TỰ KHAI `limit.context` (`GET /api/model`): `openai/gpt-6.1-*` 628 000 ·
   `openai/gpt-6-*` 400 000 · `opencode/gpt-6.1-sol` 1 050 000 ⟹ `opencode::cua_so_tu_khai`.
+- ⚠ THEO MÁY, git không mang: hàng acc9 trong `huba.config.json` (`cli:"opencode"`, model `openai/gpt-6.1-sol`,
+  mở khoá; acc10 khoá — sửa qua trang `huba accounts`) và đăng nhập ChatGPT (`~/.opencode-acc9/`). Máy khác (Mac):
+  cài bản mới ⟹ sửa hàng acc9 trên trang ⟹ `/accounts acc9 -l` đăng nhập lại.
 - Hạn mức: opencode KHÔNG lưu/hỏi hạn mức ChatGPT ⟹ `/accounts` = không đo được. Cùng tài khoản ChatGPT với
   acc10 (so `chatgpt-account-id`).
 

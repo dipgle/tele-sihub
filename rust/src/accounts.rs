@@ -549,14 +549,14 @@ pub fn opencode_login_provider(acc: &ClaudeAccountCfg) -> Option<&'static str> {
 /// Dòng lệnh ĐĂNG NHẬP ChatGPT cho một hàng opencode — đúng phân vùng XDG của hàng ấy
 /// (cùng `$HOME/.opencode-<tên>` mà [`opencode_launch_line`] dùng, nên thông tin đăng nhập
 /// nằm đúng chỗ phiên đọc). KHÔNG nạp `env_file` / `OPENCODE_CONFIG_CONTENT`: đăng nhập
-/// không cần khoá API hay cấu hình phiên. `BROWSER=/bin/true`: không bao giờ mở trình duyệt
+/// không cần khoá API hay cấu hình phiên. `BROWSER=true` (tên trần: macOS không có `/bin/true`): không mở trình duyệt
 /// trên máy (trình duyệt nằm ở điện thoại). `--standalone`: máy chủ riêng của lượt này,
 /// không dựa vào dịch vụ nền của phiên khác (đo 15/11: thành công với cờ này).
 pub fn opencode_login_line(cfg: &Config, acc: &ClaudeAccountCfg, provider: &str) -> String {
     let mut parts: Vec<String> = vec!["env".to_string()];
     parts.extend(opencode_xdg_assigns(acc));
     parts.push("OPENCODE_DISABLE_AUTOUPDATE=1".to_string());
-    parts.push("BROWSER=/bin/true".to_string());
+    parts.push("BROWSER=true".to_string());
     parts.push(path_token(&cfg.opencode_cli));
     parts.push(format!(
         "auth login {} --method chatgpt-headless --standalone",

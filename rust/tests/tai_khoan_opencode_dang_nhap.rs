@@ -138,7 +138,7 @@ fn dong_lenh_dang_nhap_dung_phan_vung_khong_mang_bi_mat() {
         "XDG_DATA_HOME=$HOME/.opencode-acc9/data",
         "XDG_CACHE_HOME=$HOME/.opencode-acc9/cache",
         "XDG_STATE_HOME=$HOME/.opencode-acc9/state",
-        "BROWSER=/bin/true",
+        " BROWSER=true ",
         " auth login openai --method chatgpt-headless",
     ] {
         assert!(l.contains(phan), "thiếu «{phan}» trong: {l}");
@@ -147,6 +147,8 @@ fn dong_lenh_dang_nhap_dung_phan_vung_khong_mang_bi_mat() {
         la_man_opencode(&format!("$ {l}\n●  https://auth.openai.com/codex/device\n")),
         "màn của CHÍNH dòng lệnh này phải được chốt là của mình"
     );
+    // macOS không có `/bin/true` (chỉ `/usr/bin/true`) ⟹ tên trần, PATH tìm trên cả hai máy.
+    assert!(!l.contains("/bin/true"), "{l}");
     // Đăng nhập không cần khoá API, không cần cấu hình phiên.
     assert!(!l.contains(".opencode_acc9.env"), "không nạp env_file: {l}");
     assert!(!l.contains("OPENCODE_CONFIG_CONTENT"), "{l}");
