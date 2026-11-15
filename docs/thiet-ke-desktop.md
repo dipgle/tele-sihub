@@ -83,7 +83,7 @@ MCP facade dự kiến cung cấp các resource hội thoại/raw và các tool 
 
 Header chạy toàn chiều ngang: trái logo + “huba”; giữa tìm nhanh phiên/dự án; phải trạng thái dịch vụ, thông báo và **Chủ máy**. “Chủ máy” là danh tính điều khiển ứng dụng trên OS này, khác tài khoản model. Không tạo đăng nhập cloud nếu sản phẩm chưa có dịch vụ cloud.
 
-Menu trái có hàng đầu đóng/mở menu; thu gọn vẫn còn icon; màn hẹp chuyển thanh icon. Header không nhảy khi thu menu. Các mục: **Chat · Phiên · Tài khoản & model · Kết nối · Dự án · Hoạt động · Cài đặt**. Phiên bản/cập nhật nằm trong Cài đặt.
+Menu trái có hàng đầu đóng/mở menu; thu gọn vẫn còn icon; màn hẹp chuyển thanh icon. Header không nhảy khi thu menu. Các mục: **Chat · Phiên · Báo cáo token · Tài khoản & model · Kết nối · Dự án · Hoạt động · Cài đặt**. Phiên bản/cập nhật nằm trong Cài đặt.
 
 Màu nền sáng trung tính, một màu nhấn xanh; trạng thái kèm chữ và icon, không chỉ màu. Chủ đề theo hệ điều hành hoặc người dùng. Nội dung chat có độ rộng đọc được, hỗ trợ Unicode, Markdown an toàn, code copy; không chạy HTML/JS từ model. Bảng có STT xuyên trang, nền xen kẽ, tìm toàn bộ tập và phân trang. Bàn phím có focus rõ; Ctrl/Cmd+Enter gửi, Enter xuống dòng, tùy chọn đổi trong cài đặt.
 
@@ -93,6 +93,7 @@ Màu nền sáng trung tính, một màu nhấn xanh; trạng thái kèm chữ v
 |---|---|---|
 | Chat | Danh sách phiên theo dự án, timeline, ô nhập, ngăn chi tiết | Chọn phiên; gửi; lựa chọn đang chờ; mở terminal; xem raw; ngắt lượt; bàn giao/đóng qua menu rõ nghĩa |
 | Phiên | Tìm/lọc theo dự án, CLI, account, trạng thái; tổng theo tập lọc | Mở phiên, vào chat, mở terminal, xem subagent; phiên kết thúc chỉ xem lịch sử |
+| Báo cáo token | Input/output/cache theo thời gian, phiên, dự án, account, model | Bộ lọc chung, chart ECharts, drill-down usage nguồn và CSV; dữ liệu từ CLI/plugin, xem §9 |
 | Tài khoản & model | CLI/account, đăng nhập, model cấu hình, quota có thời điểm | Thêm/sửa/khoá, đăng nhập, kiểm CLI, đồng bộ cấu hình; khoá không xoá lịch sử |
 | Kết nối | Desktop nội bộ, Telegram, MCP; trạng thái từng chiều | Wizard Telegram; kiểm kết nối; theo dõi phạm vi thông báo; quyền client MCP; kênh chưa có adapter hiện “chưa hỗ trợ” |
 | Dự án | Workspace/folder thực, phiên liên quan, mặc định tài khoản/model | Chọn thư mục native, kiểm quyền đọc/ghi và luật; lưu mặc định cho phiên mới |
@@ -232,3 +233,69 @@ E2E đi từ UI thật, mọi menu/nút, nhiều câu hỏi, empty/loading/error
 5. Bộ cài/update ký theo target, smoke trên máy sạch; ghi rõ target nào chưa nghiệm thu.
 
 Điểm cần chủ máy chốt hiện tại: mức “gốc” ở §2. Tauri là đề xuất kiến trúc để giảm sửa mã theo OS; lựa chọn cuối phụ thuộc spike tương thích. Phần còn lại là mặc định thiết kế có thể xem và chỉnh qua bản mẫu, chưa phải sản phẩm đã cài.
+
+## 9. Báo cáo token — phạm vi đã thu gọn theo chủ máy
+
+Chủ máy 15/11 yêu cầu thêm báo cáo/chart để theo dõi sử dụng, sau đó làm rõ: **chỉ thống kê lượng token đã sử dụng, không kéo thêm các dịch vụ về**. Thiết kế này chỉ dùng usage mà CLI/plugin đã cung cấp. Không thêm dịch vụ billing, hoá đơn, tracker công việc hoặc lời gọi model để thống kê; không chuyển token thành tiền hay tiến độ nghiệm thu.
+
+### Màn và chart
+
+- **Tổng quan:** thẻ tổng token, input, output, cache read; cột token theo ngày, cột theo model, donut thành phần input, cột theo tài khoản.
+- **Theo phiên:** input/output của mỗi phiên; bảng đối chiếu có STT, nền xen kẽ, tìm toàn bộ dữ liệu, phân trang; bấm một phiên xem các bản ghi usage.
+- **Input & cache:** tách input chưa cache, cache read, cache write; đường tỷ lệ cache read theo ngày. Không suy tiền tiết kiệm từ tỷ lệ cache.
+- **Nguồn dữ liệu:** số lượt đủ usage/tổng lượt đã thu, phần thiếu/chưa quy thuộc, thời điểm mới nhất, lỗi parser và loại nguồn. Bấm một dòng mở raw usage tương ứng.
+
+Bộ lọc dùng chung: khoảng thời gian + múi giờ, dự án, CLI, tài khoản, model; bộ lọc ngày từ thao tác chart có thể bỏ riêng. Tất cả KPI/chart/bảng/CSV dùng cùng phạm vi. Mỗi phần có nguồn và độ phủ. Dữ liệu cũ khi mất kết nối được ghi rõ; chưa có usage thì hiện “chưa đo”, không hiện 0.
+
+Apache ECharts dùng cùng frontend trên ba OS. Prototype nhúng ECharts 6.0.0 và license/notice để xuất một HTML tự chứa, không gọi CDN khi mở. Source được ghim và kiểm integrity ở `docs/ui/fetch-echarts.py`, metadata trong `docs/ui/vendor/manifest.json`. `reports.js` chỉ chứa fixture và tương tác minh họa; chưa là collector hay dashboard chạy dữ liệu thật.
+
+### Số liệu và cách cộng
+
+| Chỉ số | Quy tắc |
+|---|---|
+| Input tổng | Đầu vào đã chuẩn hoá, gồm input chưa cache + cache read + cache write nếu nguồn cung cấp đủ, không trùng thành phần |
+| Output | Số output mà nguồn khai; reasoning chỉ tách thêm khi được cung cấp và biết có nằm trong output hay không |
+| Tổng token | Input tổng + output; không cộng lại cache hoặc reasoning vốn đã nằm trong tổng |
+| Cache read/write | Giữ riêng; `không áp dụng`, `0 thật` và `chưa có dữ liệu` là ba trạng thái riêng |
+| Tỷ lệ đọc cache | Cache read / input tổng, trên chính các bản ghi có đủ hai thành phần; không gồm output trong mẫu số |
+| Theo ngày/model/account/phiên | Cộng request usage đã khử trùng trong bộ lọc; công bố số bản ghi đủ/tổng và phần chưa quy thuộc |
+
+Với Claude, các trường input chưa cache/cache read/cache creation có thể tách riêng: adapter xác nhận schema và chuẩn hoá về input tổng. Với nguồn đã báo input gồm cache, giữ nguyên input và chỉ lấy cache làm thành phần con. Chưa xác minh semantics thì để “chưa đo”, không đoán. Khác model/tokenizer có thể so lượng sử dụng, không dùng token thô để kết luận chất lượng, hiệu suất hay giá tiền ngang nhau.
+
+Các bản ghi thiếu phần bắt buộc không tham gia “tổng đầy đủ”. Có thể hiển thị phần đã biết với nhãn **≥** và độ phủ; ngày thiếu usage để khoảng trống trên chart thay vì 0. Không lấy counter “ngữ cảnh hiện tại” làm tổng token đã dùng: nhiều lượt gửi lại cùng ngữ cảnh vẫn có usage đầu vào riêng, còn compaction/counter reset không sinh token âm.
+
+### Luồng thu gọn
+
+`CLI/plugin phát usage → collector ghi record nguồn → adapter chuẩn hoá → khử trùng request/turn → chỉ mục thống kê local của huba → chart/bảng/CSV`.
+
+Dùng cùng daemon/kho local đã có, không mở thêm một dịch vụ phân tích. Giao diện không tự gọi model hay truy vấn nhà cung cấp cho mỗi lần đổi bộ lọc. Chuẩn hoá/khử trùng chỉ chạy phía chương trình; MCP có thể đọc lại cùng thống kê theo quyền nếu cần, không bắt thống kê đi qua model.
+
+Mỗi record cần source ref/version, account/CLI/session/parent-session/model, request/turn ID nếu có, thời điểm, raw usage, semantics của bộ đếm (từng lượt hay tích luỹ), số chuẩn hoá và trạng thái đủ/thiếu. Nếu có nhiều chunk và final snapshot cho một request, giữ raw các nguồn nhưng chỉ tính một bản usage chuẩn. Bản tích luỹ cần checkpoint/baseline/reset; chỉ lấy delta khi chứng minh hai mốc cùng counter. Trùng event source, resume, fork và subagent phải có ca đối chiếu để không nhân đôi.
+
+Plugin chỉ biết usage từ lúc thu thì báo mốc bắt đầu và coverage lịch sử. Nếu CLI không phát usage toàn kỳ, không tự gọi model để “ước lượng”. Tài khoản chưa gắn chắc chắn có nhóm “chưa quy thuộc”; không suy từ thư mục transcript được symlink chung.
+
+### Khoảng thiếu của mã hiện tại (đã đọc ở phiên này)
+
+- `rust/src/sessions.rs:1844`, `:2600`: parser giữ usage cuối để tính ngữ cảnh; chưa là tổng usage kỳ báo cáo.
+- `rust/src/codex_sessions.rs:399`: `last_token_usage` được dùng cho ngữ cảnh, không phải collector cộng mọi request trong kỳ.
+- `rust/src/quota.rs:153`, `:173`, `:284`: model usage gần nhất của project không phải tổng tài khoản/kỳ; quota % và reset không phải token tuyệt đối.
+- `rust/src/db.rs:52`, `:520`: bảng spend chỉ phủ một số lời gọi huba, không dùng làm nguồn thống kê toàn bộ hội thoại.
+
+Cần bổ sung thu usage và chỉ mục local khi triển khai plugin. Lượt này chỉ cập nhật thiết kế/HTML fixture, không sửa parser/core hoặc tạo dịch vụ mới.
+
+### Nghiệm thu dành cho thống kê
+
+Đối chiếu một request và tổng một nhóm với raw usage thật: request streaming/final không cộng trùng; input đã gồm cache không được cộng lần hai; usage thiếu vẫn thấy phần thiếu; snapshot tích luỹ/reset/resume/fork không nhân đôi; parent/subagent không bị tính cả hai lần khi parent usage đã bao gồm child. Bộ lọc và CSV phải khớp chart; currency/hoá đơn/giá không nằm trong phạm vi màn này.
+
+Prototype có 18 record mẫu, trong đó một record cố ý thiếu usage. Đây là đối chứng để thấy “chưa đo” và ngày bị khuyết; số mẫu không phải dữ liệu công việc thật. Khi chọn 30 ngày, mẫu chỉ bao phủ 7/30 ngày và công bố phần còn thiếu. E2E đi bằng menu/nút, xem chart và nguồn record, kiểm bộ lọc/CSV/empty/error/màn hẹp và console; chưa chạy nguồn thật thì không gọi dashboard đã nghiệm thu dữ liệu thật.
+
+## 10. Luồng chi tiết và đầy đủ thành phần của một tương tác
+
+Bản vẽ bổ sung theo yêu cầu chủ máy: [HTML offline với sơ đồ SVG](flows/index.html), [Markdown/Mermaid](flows/index.md). Nguồn chung `flows/design.json`, sinh bằng `python3 docs/flows/build.py`.
+
+- **30 thành phần logic**, không phải 30 dịch vụ mới: chủ máy/kênh/khung chat, core/driver/host, CLI/context/provider/model, native tool/MCP client/server/nguồn, collector/raw/projection/usage, renderer, secret/audit, facade MCP tùy chọn.
+- **16 UC** và **13 sơ đồ**, gồm một lượt đầy đủ có MCP/tool/model; ba lớp UC, dữ liệu, context–input–output.
+- Ma trận chỉ rõ dữ liệu nào qua khung chat, MCP công cụ, MCP facade của huba, input model, kho lưu và kết quả UI; tách quản lý không gọi model khỏi gửi tin có inference.
+- Kết quả một lượt có 12 nhóm thành phần: input/kiểm nhận, context quan sát được, trạng thái, assistant blocks, tool trace, bảng hỏi, tệp, child/background, usage/context metrics, provenance và hành động/audit. Phần không được nguồn cung cấp phải ghi thiếu, không giả đầy đủ.
+
+Đây vẫn là **thiết kế để duyệt**; không triển khai collector, service hay Tauri trong lượt vẽ. Bản vẽ không thay dependency map trích từ mã/vết chạy và không phải bằng chứng nghiệm thu UC trên sản phẩm thật.

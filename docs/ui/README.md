@@ -2,15 +2,22 @@
 
 Mở [index.html](index.html) để xem bản mẫu. Không cần build; HTML, CSS, JavaScript nằm cùng thư mục, không dùng CDN. Bản mẫu không gọi mạng, CLI, model, MCP hay Telegram; dữ liệu hoàn toàn minh họa, thay đổi chỉ nằm trong bộ nhớ. Không nhập token hoặc thông tin tài khoản thật.
 
-- Menu trái mở đủ bảy khu vực; hàng đầu thu/mở menu.
+- Menu trái mở tám khu vực; hàng đầu thu/mở menu.
 - Chat: chọn phiên, soạn tin, đổi phiên vẫn giữ draft riêng; xem Nội dung gốc/Hoạt động; mở luồng ngắt/đóng/bàn giao.
 - Phiên, tài khoản, dự án, hoạt động: tìm toàn danh sách; bảng có STT/nền xen kẽ/phân trang.
 - Tài khoản: mở Quản lý để xem form, trạng thái khoá và luồng đăng nhập minh họa.
 - Kết nối: đi hết ba bước Telegram, xem mô tả nguồn/quyền MCP.
 - Thanh dưới chọn mặc định/chờ lựa chọn/rỗng/lỗi/mất kết nối. Đây là bộ chọn để duyệt thiết kế, không thuộc UI sản phẩm cuối.
+- Báo cáo token: input/output/cache theo ngày/model/account/phiên, bộ lọc chung, drill-down usage và CSV mẫu. Chỉ thống kê token từ CLI/plugin; không nối billing/tracker hay dựng thêm dịch vụ phân tích. Mọi số đều là fixture, có một lượt cố ý thiếu usage.
 
 Thiết kế kiến trúc, contract và luồng: [thiet-ke-desktop.md](../thiet-ke-desktop.md). Đề xuất sản phẩm là frontend chung trong Tauri + lõi Rust dùng chung, adapter OS/CLI/kênh tách riêng. Bản mẫu HTML này chưa phải frontend Tauri đã triển khai.
 
-Kiểm tại 15/11/2026 08:53 +07: kiểm cú pháp JS qua cổng Node mã 0; soát mã đã sửa các lỗi draft, bộ lọc, tìm nhanh, giữ khoá account và empty state. Playwright chạy trong sandbox không mở được Chromium (`setsockopt: Operation not permitted`), mã 1 trước khi có page. **Chưa nghiệm thu trình duyệt, chưa có ảnh thực tế.** Lượt kiểm headless host đã được xếp hòm thư huba; log dự kiến `.tmp/ui-review/host-review.log`. Chỉ khi có kết quả và đã xem ảnh mới cập nhật trạng thái này.
+Luồng chi tiết: [bản vẽ HTML offline](../flows/index.html), [Markdown/Mermaid](../flows/index.md). Có 30 thành phần, 16 UC và 13 sơ đồ; chỉ rõ dữ liệu qua chat/MCP/model, context của CLI và các phần của một kết quả. Tài liệu riêng, không thay bản mẫu tám màn hoặc HTML đã gửi1811.
 
-Xuất tệp HTML tự chứa bằng `python3 docs/ui/export.py` (chạy từ cây huba); đầu ra `.tmp/huba-desktop-design.html`. Tệp xuất đã gộp CSS/JS, không cần các tệp bên cạnh. Telegram xác nhận gửi bản xuất 63927 byte ở tin 1742 ngày 15/11; đây là xác nhận giao file, không phải nghiệm thu UI. Bản Markdown trước đó ở tin 1736. Lượt host review ban đầu chưa chạy vì đặt hòm thư sai cấp thư mục; đã xác định đúng cấu trúc trong `rust/src/pipeline.rs:7608`. Cần xếp lại kiểm host nếu tiếp tục duyệt mẫu.
+Kiểm prototype trên host ngày 15/11/2026 09:50 +07: syntax 3 JS mã0; Playwright **3/3**, console/page errors0 trong các luồng đã kiểm; `GATE_EXIT=0` ở `.tmp/ui-review/host-review.log`. Đã xem ảnh desktop, màn hẹp, hover, rỗng, lỗi và usage chưa biết trong `previews/`. Đã kiểm bộ lọc/tìm/CSV, nguyên tắc cache nằm trong input, 17/18 record đủ và một record thiếu; chỉ có phần biết dùng dấu ≥. Đây là nghiệm thu **bản mẫu fixture**, chưa nối CLI/plugin hoặc nghiệm thu dữ liệu thật.
+
+Bộ kiểm: `.tmp/ui-review/{design.spec.cjs,reports.spec.cjs,playwright.config.cjs,check-js.cjs}`; harness `.tmp/ui-review/run-on-host.py` chạy qua cổng Node và ràng hash HTML đầu/cuối. Ca HTML offline đã đỏ vì bước chèn license thay nhầm chuỗi `</body>` nằm trong JS ECharts; exporter nay hoàn tất template trước khi nhúng script, sau sửa ca này và lượt chốt đều xanh. Sandbox không mở được Chromium; kiểm browser đã chạy headless trên host qua hòm thư huba, không mở browser giao diện.
+
+Bộ regression mang theo Git cho máy khác: `tests/prototype.spec.cjs` + `tests/playwright.config.cjs` (draft/account khoá/điều hướng, báo cáo token/CSV/unknown, HTML offline). Chạy exporter trước, rồi dùng Playwright đã cài qua cổng Node: `bash ~/projects/scripts/cong-node chay e2e -- node <đường-dẫn-playwright-cli> test --config docs/ui/tests/playwright.config.cjs`. Có thể khai `NODE_PATH` trỏ kho gói hiện có và `HUBA_CHROMIUM_EXECUTABLE` nếu dùng Chromium ngoài; không cần cài riêng node_modules trong tài liệu. Các log `.tmp` bên trên là lịch sử, không phải đầu vào bắt buộc của bộ kiểm mới.
+
+Xuất tệp HTML tự chứa bằng `python3 docs/ui/export.py` (chạy từ cây huba); đầu ra `.tmp/huba-desktop-design.html`. Tệp xuất đã gộp CSS/JS/ECharts và license, không cần các tệp bên cạnh. Telegram xác nhận bản cập nhật có Báo cáo token ở tin **1811**, **1220808 byte**, SHA256 `3b384ac7d346b5f7cdef83d92ecf1b4a6b0f86d111e831c9e8d5b065cefa36da`; biên nhận `.tmp/gui-html-token-receipt.json`. Bản HTML cũ ở tin1742, Markdown cũ ở tin1736. Đây là xác nhận giao file, không phải nghiệm thu sản phẩm thật.

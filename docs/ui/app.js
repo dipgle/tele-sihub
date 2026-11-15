@@ -4,7 +4,7 @@
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const navigation = [
-  ['chat','◫','Chat','3'], ['sessions','▦','Phiên',''], ['accounts','♙','Tài khoản & model',''],
+  ['chat','◫','Chat','3'], ['sessions','▦','Phiên',''], ['reports','▥','Báo cáo token',''], ['accounts','♙','Tài khoản & model',''],
   ['connections','⌁','Kết nối',''], ['projects','▱','Dự án',''], ['activity','≋','Hoạt động',''], ['settings','⚙','Cài đặt','']
 ];
 const sessions = [
@@ -45,8 +45,10 @@ function navigate() {
   tableQuery = pendingSearch ?? ''; pendingSearch = null; tablePage = 0; tableFilter = 'all'; render();
 }
 function render() {
-  $('#nav').innerHTML = navigation.map((n,i) => `${i===2?'<div class="nav-group nav-label">GÓC QUẢN LÝ</div>':''}<a href="#${n[0]}" title="${n[2]}" class="nav-item ${page===n[0]?'active':''}" ${page===n[0]?'aria-current="page"':''}><span class="nav-icon" aria-hidden="true">${n[1]}</span><span class="nav-label">${n[2]}</span>${n[3]?`<span class="nav-badge">${n[3]}</span>`:''}</a>`).join('');
-  $('#main').innerHTML = ({chat:chatPage,sessions:sessionsPage,accounts:accountsPage,connections:connectionsPage,projects:projectsPage,activity:activityPage,settings:settingsPage}[page])();
+  window.hubaReports?.dispose();
+  $('#nav').innerHTML = navigation.map((n,i) => `${i===2?'<div class="nav-group nav-label">GÓC QUẢN LÝ</div>':''}<a href="#${n[0]}" title="${n[2]}" class="nav-item ${page===n[0]?'active':''}" ${page===n[0]?'aria-current="page"':''}><span class="nav-icon" aria-hidden="true">${n[1]}</span><span class="nav-label">${n[2]}</span>${n[3]?`<span class="nav-badge" aria-hidden="true">${n[3]}</span>`:''}</a>`).join('');
+  $('#main').innerHTML = ({chat:chatPage,sessions:sessionsPage,reports:()=>window.hubaReports.page(scenario),accounts:accountsPage,connections:connectionsPage,projects:projectsPage,activity:activityPage,settings:settingsPage}[page])();
+  if (page === 'reports') window.hubaReports.mount(scenario);
   if ($('#composer-text')) $('#composer-text').value = draft;
   if ($('#table-filter')) $('#table-filter').value = tableFilter;
   if (scenario === 'empty' && page === 'chat') {
@@ -192,4 +194,5 @@ $('#collapse').addEventListener('click',()=>{const collapsed=document.body.class
 $('#scenario').addEventListener('change',e=>{scenario=e.target.value;render();});
 $('#reset-demo').addEventListener('click',()=>location.reload());
 window.addEventListener('hashchange',navigate);
+window.addEventListener('huba-report-change',render);
 navigate();

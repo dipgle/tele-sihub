@@ -1,11 +1,11 @@
-# huba/ui — kế nhiệm sau nhắc 50%
+# huba/ui — cập nhật09:52, không có việc nền
 
-Chỉ làm module UI trong /mnt/data/projects/huba. Chủ máy: thiết kế giao diện/luồng TRƯỚC viết sản phẩm; PC đa nền tảng ít sửa; MCP/input-output gốc; vừa đề nghị chỉ Claude CLI + OpenCode để phủ nhiều model/giảm chi phí nạp.
+Chỉ module UI tại /mnt/data/projects/huba. User chốt thiết kế/luồng TRƯỚC sản phẩm; PC ít sửa; ưu tiên2plugin Claude CLI/OpenCode (chưa đo rẻ nhất). Mới nhất: thêm chart nhưng CHỈ TOKEN đã dùng từ CLI/plugin, không billing/tracker/dịch vụ phân tích.
 
-Đã viết docs/thiet-ke-desktop.md và docs/ui/{index.html,style.css,app.js,export.py,README.md}. Bản mẫu7màn fixture, không nối backend. Đề xuất Tauri+Rust chung, OS/CLI/kênh độc lập; MCP facade không tự thu payload model. Mới thêm mục ưu tiên2CLI; chưa có phép đo đủ để nói phủ hết/rẻ nhất. Không xoá Codex sản phẩm.
+Thiết kế docs/thiet-ke-desktop.md (§9token), mẫu8màn docs/ui/. Reports.js: input/output/cache theo ngày/model/account/phiên, bộ lọc chung, nguồn usage, CSV. ECharts6offline/license/manifest. Dữ liệu18record fixture/1thiếu, CHƯA collector thật/core/Tauri app.
 
-Đã gửi thật qua Tele: Markdown1736(27212B), HTML tự chứa1742(63927B). Biên nhận .tmp/gui-thiet-ke-receipt.json + gui-html-thiet-ke-receipt.json. Đừng gửi trùng. Xuất lại HTML: python3 docs/ui/export.py.
+Đã kiểm host syntax3JS0, Playwright3/3 console/page0, GATE0; log .tmp/ui-review/host-review.log (hash đầu/cuối). Đã xem ảnh rộng/hẹp/hover/empty/error/unknown 16…24. Exporter từng chèn license vào chuỗi </body> của lib làm JS hỏng; nay sửa template trước nhúng, ca HTMLoffline GREEN.
 
-Đo: JSsyntax qua cong-node0; Playwright sandbox1 trước page vì socket. CHƯA nghiệm thu UI/ảnh. Hòm thư host review cũ sai cấp nên chưa chạy; đúng là /tmp/claude-1000/-mnt-data-projects/<ID>/scratchpad/huba-run.txt (pipeline.rs7608). Lệnh chạy lại review: python3 /mnt/data/projects/huba/.tmp/ui-review/run-on-host.py; log .tmp/ui-review/host-review.log.
+Đã gửi Tele: Markdown1736, HTMLcũ1742, HTMLtoken1811/1220808B/hash3b384ac7…. Receipt .tmp/gui-html-token-receipt.json; không gửi trùng. Xuất lại: python3 docs/ui/export.py.
 
-Việc kế: trả lời/gom phản hồi thiết kế; đo nguồn raw/plugin và chi phí so công bằng nếu được triển khai tiếp. Không tự làm app khi chủ máy đang duyệt thiết kế. Config M2836B/mtime14-11 13:41 có trước, không commit. Không chạm công việc account/core của phiên khác. Việc nền: không có; không có job gửi còn treo. Sổ memory/lanes/ui.md.
+Chưacommit mạch token: config ngoài phạmvi đổi2836→3169B/mtime09:26, chưaquytácgiả, khôngstage. Checkpoint cũ d0f8d2d đãpush. Mở kế nhiệm đúng acc-mo-vai thấtbại2: pane16/pts18 khôngđoCLI sống; không vòngqua/khôngđóngpane. Nền: không có, mọi send/test xong. Việc kế: duyệt thiết kế; chưa tự triển khai app khi đang duyệt. Sổ memory/lanes/ui.md.
