@@ -15,8 +15,18 @@ DUOI=""; [ "$TARGET" = x86_64-unknown-linux-gnu ] || DUOI="-${TARGET%%-*}"
 
 rustup target list --installed 2>/dev/null | grep -qx "$TARGET" \
   || { echo "KHÔNG ĐO ĐƯỢC: thiếu target $TARGET (rustup target add $TARGET)"; exit 2; }
-command -v cargo-zigbuild >/dev/null \
-  || { echo "KHÔNG ĐO ĐƯỢC: thiếu cargo-zigbuild (cargo install cargo-zigbuild; brew install zig)"; exit 2; }
+# Dựng NGAY TRÊN Linux cùng kiến trúc (Ubuntu thật, 15/11: máy không có zig) ⇒ `cargo build`
+# thường — zig chỉ để dựng CHÉO từ Mac. Khác kiến trúc/hệ ⇒ vẫn bắt buộc zigbuild.
+if [ "$(uname -s)" = Linux ] && [ "$TARGET" = "$(uname -m)-unknown-linux-gnu" ]; then
+  DUNG="build"
+else
+  DUNG="zigbuild"
+  command -v cargo-zigbuild >/dev/null \
+    || { echo "KHÔNG ĐO ĐƯỢC: thiếu cargo-zigbuild (cargo install cargo-zigbuild; brew install zig)"; exit 2; }
+fi
+echo "dựng bằng: cargo $DUNG ($TARGET)"
+# Cờ bỏ siêu dữ liệu Mac chỉ có ở bsdtar; GNU tar báo «unrecognized option» và DỪNG.
+TAR_CO=(); [ "$(uname -s)" = Darwin ] && TAR_CO=(--no-mac-metadata --no-xattrs)
 
 if [ -n "$(git -C "$H" status --porcelain -- rust install_update_linux.sh cli-ghim.env DOC-TRUOC-LINUX.txt huba.env.example scripts/huba_cai_linux.py scripts/CLAUDE-goc-workspace.md huba.config.json)" ]; then
   echo "⚠ cây có thay đổi CHƯA commit trong phần đóng gói — tên gói mang sha HEAD nhưng nội dung là cây hiện tại"
@@ -36,13 +46,13 @@ for f in "$PA/Cargo.toml" "$KEM_SRC/cong_bao_mat.py" "$KEM_SRC/bao-mat-policy.js
   [ -f "$f" ] || { echo "KHÔNG ĐO ĐƯỢC: thiếu $f — gói thiếu MCP/cổng bảo mật thì không đóng"; exit 2; }
 done
 
-( cd "$R" && cargo zigbuild --offline --release --target "$TARGET" --bin huba --bin hubad )
+( cd "$R" && cargo "$DUNG" --offline --release --target "$TARGET" --bin huba --bin hubad )
 BUILD_EXIT=$?
 echo "BUILD_EXIT=$BUILD_EXIT"
 [ $BUILD_EXIT -eq 0 ] || exit 1
 # Đích dựng của project-agent nằm trong cây huba: không ghi vào cây codetrail.
 PA_TARGET="$H/.tmp/pa-linux-target"  # cargo tự tách theo --target bên trong
-CARGO_TARGET_DIR="$PA_TARGET" cargo zigbuild --offline --locked --release --target "$TARGET" --manifest-path "$PA/Cargo.toml"
+CARGO_TARGET_DIR="$PA_TARGET" cargo "$DUNG" --offline --locked --release --target "$TARGET" --manifest-path "$PA/Cargo.toml"
 PA_EXIT=$?
 echo "PA_EXIT=$PA_EXIT"
 [ $PA_EXIT -eq 0 ] || exit 1
@@ -77,7 +87,7 @@ python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); json.dump(d.get("cl
   "$H/huba.config.json" "$D/kem/tai-khoan.mau.json" || { echo "❌ không trích được mẫu tài khoản"; exit 1; }
 python3 "$D/kem/huba_cai_linux.py" tu-kiem >/dev/null || { echo "❌ huba_cai_linux.py tu-kiem đỏ"; exit 1; }
 chmod 755 "$D/huba" "$D/hubad" "$D/install_update_linux.sh" "$D/kem/bin/project-agent"
-( cd "$H/.tmp" && COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -czf "huba-linux-$SHA$DUOI.tar.gz" "huba-linux-$SHA$DUOI" )
+( cd "$H/.tmp" && COPYFILE_DISABLE=1 tar "${TAR_CO[@]}" -czf "huba-linux-$SHA$DUOI.tar.gz" "huba-linux-$SHA$DUOI" )
 TAR_EXIT=$?
 echo "TAR_EXIT=$TAR_EXIT"
 [ $TAR_EXIT -eq 0 ] || exit 1

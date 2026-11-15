@@ -69,7 +69,9 @@ command -v python3 >/dev/null || { echo "KHÔNG ĐO ĐƯỢC: thiếu python3 (s
 # ① Chép gói vào chỗ CỐ ĐỊNH rồi chạy tiếp từ đó — giải nén bản mới ở đâu cũng được.
 if [ "$SRC" != "$(mkdir -p "$DIR" && cd "$DIR" && pwd)" ]; then
   buoc "① chép gói vào $DIR (giữ nguyên huba.config.json · huba.env · data/)"
-  for f in huba hubad install_update_linux.sh huba.env.example DOC-TRUOC.txt; do
+  # cli-ghim.env PHẢI theo sang: bản chép `exec` lại chính kịch bản này trong $DIR và dòng 35
+  # kiểm nó ⇒ thiếu là «gói thiếu cli-ghim.env» dù gói CÓ (đo 15/11, gói 1a9718a).
+  for f in huba hubad install_update_linux.sh huba.env.example DOC-TRUOC.txt cli-ghim.env; do
     [ -e "$SRC/$f" ] || continue
     # tệp mới rồi đổi tên: đè thẳng lên tệp đang chạy thì `cp` báo "Text file busy".
     cp -p "$SRC/$f" "$DIR/$f.moi" && mv -f "$DIR/$f.moi" "$DIR/$f" || exit 1
