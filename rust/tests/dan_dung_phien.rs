@@ -120,9 +120,14 @@ fn co_hang_rao(src: &str) -> (usize, usize) {
 fn moi_cho_dan_ket_qua_runin_deu_qua_hang_rao() {
     let src = nguon();
     let (tong, rao) = co_hang_rao(&src);
+    let retry = than_ham(&src, "runin_pending_tick").expect("phải đo được cửa retry");
+    // Từ 15/11 retry đi qua chính dan_vao_phien để cùng kiểm journal/verdict.
+    // Một cửa vật lý được hai consumer dùng chung không phải mất một hàng rào.
+    let cua_chung = retry.contains("dan_vao_phien(cfg, &s, &p.b, &p.l)");
+    let toi_thieu = if cua_chung { 1 } else { 2 };
     assert!(
-        tong >= 2,
-        "KHÔNG ĐO ĐƯỢC: chỉ thấy {tong} chỗ dán kết quả /runin (mong ≥ 2: dán lần đầu + gõ lại) — \
+        tong >= toi_thieu,
+        "KHÔNG ĐO ĐƯỢC: chỉ thấy {tong} chỗ dán kết quả /runin (mong ≥ {toi_thieu}) — \
          đổi hình dạng thì sửa bài này: {:?}",
         cho_dan(&src)
     );
@@ -193,8 +198,13 @@ fn cu_dan_chay_hang_gap_o_ca_hai_cua() {
     );
     let go_lai =
         than_ham(&src, "runin_pending_tick").expect("KHÔNG ĐO ĐƯỢC: mất `runin_pending_tick`");
+    let neo = if go_lai.contains("dan_vao_phien(cfg, &s, &p.b, &p.l)") {
+        "dan_vao_phien(cfg, &s, &p.b, &p.l)"
+    } else {
+        "type_and_send(w, &p.b)"
+    };
     assert_eq!(
-        dan_o_hang_gap(go_lai, "type_and_send(w, &p.b)"),
+        dan_o_hang_gap(go_lai, neo),
         Some(true),
         "`runin_pending_tick` phải gõ lại ở hạng gấp"
     );

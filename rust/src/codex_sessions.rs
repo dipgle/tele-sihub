@@ -120,6 +120,68 @@ pub fn assistant_text(record: &Value) -> Option<String> {
     (!texts.is_empty()).then(|| texts.join("\n"))
 }
 
+/// Lượt người dùng CLI thực sự nhận. Thư giữa agent/tool output không phải
+/// bằng chứng gửi; dùng cùng adapter cho tên việc và xác nhận kết quả huba.
+pub fn user_message(record: &Value) -> Option<String> {
+    let p = &record["payload"];
+    let content = match (record["type"].as_str(), p["type"].as_str()) {
+        (Some("response_item"), Some("message")) if p["role"] == "user" => &p["content"],
+        (Some("event_msg"), Some("item_completed")) if p["item"]["type"] == "UserMessage" => {
+            &p["item"]["content"]
+        }
+        (Some("event_msg"), Some("user_message")) => {
+            return p["message"].as_str().map(str::to_string)
+        }
+        _ => return None,
+    };
+    let text = content
+        .as_array()?
+        .iter()
+        .filter_map(|c| c["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.is_empty()).then_some(text)
+}
+
+/// Ô nhập Codex 0.169 đo trên terminal thật: dấu ›, dòng model/workspace,
+/// rồi footer phím. Chỉ một dấu › trong hội thoại không đủ làm neo.
+/// Some("") = ô trống/gợi ý mặc định; None = không đo được kiểu màn này.
+pub fn composer_text(screen: &str) -> Option<&str> {
+    let mut offset = 0;
+    let lines: Vec<(usize, &str)> = screen
+        .split_inclusive('\n')
+        .map(|l| {
+            let at = offset;
+            offset += l.len();
+            (at, l)
+        })
+        .collect();
+    let footer = lines.iter().rposition(|(_, l)| !l.trim().is_empty())?;
+    let hint = lines[footer].1.trim();
+    if !hint.contains("? for shortcuts") && hint != "tab to queue message" {
+        return None;
+    }
+    let model = lines[..footer]
+        .iter()
+        .rposition(|(_, l)| !l.trim().is_empty())?;
+    let metadata = lines[model].1.trim();
+    if !metadata.contains(" · ") || !metadata.ends_with(']') {
+        return None;
+    }
+    let prompt = lines[..model]
+        .iter()
+        .rposition(|(_, l)| l.trim_start().starts_with('›'))?;
+    let column = lines[prompt].1.find('›')?;
+    let start = lines[prompt].0 + column + '›'.len_utf8();
+    let text = screen[start..lines[model].0].trim();
+    // Placeholder quan sát được, không phải bản nháp. Không gửi gợi ý mờ hộ chủ máy.
+    Some(if text == "Ask Codex to do anything" {
+        ""
+    } else {
+        text
+    })
+}
+
 /// Đề bài đầu tiên của CHỦ MÁY, đọc từ đầu rollout khi chưa có thread_name.
 /// Các khối luật/môi trường được CLI chèn cũng có role=user nhưng không phải
 /// tên việc. Giữ tên này ổn định, không lấy lời assistant đang đổi mỗi vòng.
@@ -128,28 +190,9 @@ pub fn user_task(prefix: &str) -> Option<String> {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        let p = &v["payload"];
-        let text = match (v["type"].as_str(), p["type"].as_str()) {
-            (Some("response_item"), Some("message")) if p["role"] == "user" => {
-                p["content"].as_array().map(|a| {
-                    a.iter()
-                        .filter_map(|c| c["text"].as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                })
-            }
-            (Some("event_msg"), Some("user_message")) => p["message"].as_str().map(str::to_string),
-            (Some("event_msg"), Some("item_completed")) if p["item"]["type"] == "UserMessage" => {
-                p["item"]["content"].as_array().map(|a| {
-                    a.iter()
-                        .filter_map(|c| c["text"].as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                })
-            }
-            _ => None,
+        let Some(text) = user_message(&v) else {
+            continue;
         };
-        let Some(text) = text else { continue };
         let text = text.trim();
         if text.is_empty()
             || [

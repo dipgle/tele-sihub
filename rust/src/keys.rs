@@ -986,6 +986,10 @@ pub const BOX_TEXT_MIN_CHARS: usize = 2;
 /// Trả về chữ đã dọn (bỏ khung, dấu nhắc, dòng trạng thái), để chỗ gọi vừa
 /// dựng được nhãn nút vừa biết có đáng dựng hay không.
 pub fn input_box_text(screen: &str) -> Option<String> {
+    if let Some(text) = crate::codex_sessions::composer_text(screen) {
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        return (text.chars().count() >= BOX_TEXT_MIN_CHARS).then_some(text);
+    }
     // 🔴 KHÔNG CÓ Ô NHẬP thì trả `None` — đó là một câu trả lời, không phải một
     // chỗ để đoán (vá 2026-09-09).
     //
@@ -1078,6 +1082,16 @@ pub fn squash_box(s: &str) -> String {
 /// một dòng của ô nhập.
 pub fn still_in_box(screen: &str, typed: &str) -> bool {
     let squash = squash_box;
+    // Codex rút gọn paste dài bằng số ký tự Unicode (đo UI thật: 2923 ký tự,
+    // 2946 byte -> [Pasted Content 2923 chars]). Chỉ nhận đúng một nhãn có
+    // cỡ khớp khối vừa dán; không Enter một paste khác hay bản nháp ghép thêm.
+    if let Some(text) = crate::codex_sessions::composer_text(screen) {
+        let flat = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        let expected = flat(typed);
+        return !expected.is_empty()
+            && (text == format!("[Pasted Content {} chars]", typed.chars().count())
+                || flat(text) == expected);
+    }
     // ⚠ CHỈ soi trong Ô NHẬP, không soi cả màn.
     //
     // Đây là chỗ phép đo suýt trỏ sai: gửi đi RỒI thì `claude` in lại chính câu
@@ -3971,7 +3985,51 @@ pub fn clear_queue(window: i64) -> Result<(usize, usize)> {
 /// vì nó còn ghi log từng lượt bấm; hai chỗ phải kể CÙNG một câu chuyện — sửa
 /// một bên thì sang bên kia đọc lại.
 pub fn type_and_send(window: i64, text: &str) -> Result<Delivered> {
+    #[cfg(target_os = "linux")]
+    if tab_runs(window, "codex")? {
+        let before = screen_text(window)?;
+        match crate::codex_sessions::composer_text(&before) {
+            Some("") => {}
+            Some(_) => {
+                logging::warn(
+                    "codex_paste_held_draft",
+                    json!({"window":window,"effect":"ô có bản nháp, KHÔNG nối thêm kết quả"}),
+                );
+                anyhow::bail!("ô Codex có bản nháp — chưa dán thêm kết quả");
+            }
+            None => {
+                logging::warn(
+                    "codex_paste_held_blind",
+                    json!({"window":window,"effect":"chưa đọc được ô nhập, KHÔNG dán mù"}),
+                );
+                anyhow::bail!("chưa đọc được ô nhập Codex — chưa dán kết quả");
+            }
+        }
+    }
     type_into(window, text)?;
+    finish_send(window, text)
+}
+
+/// Kiểm sau cú dán, rồi Enter bù CHỈ khi còn thấy đúng khối. Tách để đối
+/// chứng UI thật có thể cố tình hụt Enter đầu, dùng cùng đường cứu production.
+pub fn finish_send(window: i64, text: &str) -> Result<Delivered> {
+    #[cfg(target_os = "linux")]
+    let mut codex = match tab_runs(window, "codex") {
+        Ok(b) => b,
+        Err(e) => {
+            logging::warn(
+                "keys_send_cli_blind",
+                json!({"window":window,"err":e.to_string()}),
+            );
+            return Ok(Delivered::Unverified(format!(
+                "không xác định được CLI: {e}"
+            )));
+        }
+    };
+    // Bản tab_runs ngoài Linux dùng AppleScript. Không gọi nó trên Windows;
+    // chrome Codex đọc được bên dưới vẫn bật phép kiểm Codex trên mọi hệ.
+    #[cfg(not(target_os = "linux"))]
+    let mut codex = false;
     for wait_ms in [400u64, 1000] {
         std::thread::sleep(std::time::Duration::from_millis(wait_ms));
         let screen = match screen_text(window) {
@@ -3987,9 +4045,11 @@ pub fn type_and_send(window: i64, text: &str) -> Result<Delivered> {
                 return Ok(Delivered::Unverified(format!("không đọc được màn: {e}")));
             }
         };
-        if !still_in_box(&screen, text) {
-            // Chữ đã rời ô nhập — `do script` gửi được ngay, đường thường.
-            return Ok(Delivered::Gone);
+        codex |= crate::codex_sessions::composer_text(&screen).is_some();
+        match delivery_on_screen(&screen, text, codex) {
+            Delivered::Gone => return Ok(Delivered::Gone),
+            other @ Delivered::Unverified(_) => return Ok(other),
+            Delivered::StillInBox => {}
         }
         if !parse_choices(&screen).is_empty() {
             logging::warn(
@@ -4007,8 +4067,11 @@ pub fn type_and_send(window: i64, text: &str) -> Result<Delivered> {
     // "đã gửi" nói ra vì không thèm nhìn.
     std::thread::sleep(std::time::Duration::from_millis(600));
     match screen_text(window) {
-        Ok(s) if !still_in_box(&s, text) => Ok(Delivered::Gone),
-        Ok(_) => {
+        Ok(s) => {
+            let verdict = delivery_on_screen(&s, text, codex);
+            if verdict != Delivered::StillInBox {
+                return Ok(verdict);
+            }
             logging::warn(
                 "keys_send_left_in_box",
                 json!({ "window": window,
@@ -4017,6 +4080,26 @@ pub fn type_and_send(window: i64, text: &str) -> Result<Delivered> {
             Ok(Delivered::StillInBox)
         }
         Err(e) => Ok(Delivered::Unverified(format!("không đọc được màn: {e}"))),
+    }
+}
+
+/// Codex không nhận ra ô nhập không có nghĩa là ô trống. Khi có chữ KHÁC
+/// cũng không được Enter hộ bản nháp; nhật ký sẽ quyết định đã nhận khối chưa.
+pub fn delivery_on_screen(screen: &str, typed: &str, codex: bool) -> Delivered {
+    if codex {
+        match crate::codex_sessions::composer_text(screen) {
+            Some("") => return Delivered::Gone,
+            Some(_) if still_in_box(screen, typed) => return Delivered::StillInBox,
+            Some(_) => {
+                return Delivered::Unverified("ô Codex có chữ khác — không bấm Enter".into())
+            }
+            None => return Delivered::Unverified("chưa nhận diện được ô nhập Codex".into()),
+        }
+    }
+    if still_in_box(screen, typed) {
+        Delivered::StillInBox
+    } else {
+        Delivered::Gone
     }
 }
 

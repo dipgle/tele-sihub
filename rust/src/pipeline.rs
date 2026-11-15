@@ -8068,6 +8068,7 @@ fn chu_nhap_cua_dong(l: &str) -> Option<String> {
                 .and_then(|c| c.as_str())
                 .map(str::to_string)
         }
+        Some("response_item" | "event_msg") => crate::codex_sessions::user_message(&j),
         _ => None,
     }
 }
@@ -8172,6 +8173,13 @@ fn xac_nhan_da_gui(
     line: &str,
 ) -> DanVao {
     let Some((p, tu)) = nhat_ky else {
+        if s.kind == "codex" {
+            logging::warn(
+                "codex_delivery_unverified",
+                json!({"session":s.session_id,"effect":"không có nhật ký để xác nhận, không khai đã gửi"}),
+            );
+            return DanVao::NamTrongO("chưa đo được nhật ký Codex — chưa xác nhận gửi".into());
+        }
         logging::warn(
             "runin_paste_khong_do_duoc_nhat_ky",
             json!({ "session": s.session_id,
@@ -8247,8 +8255,15 @@ fn dan_vao_phien(
     let _lane = crate::exec::urgent();
     // Mốc nhật ký ĐẶT TRƯỚC khi gõ: mọi thứ ghi thêm sau mốc này mới là bằng chứng
     // cho lượt dán NÀY, không phải một lượt cũ cùng lệnh.
-    let nhat_ky = crate::sessions::find_transcript_any(cfg, &s.session_id)
+    let nhat_ky = crate::sessions::delivery_transcript(cfg, s)
         .and_then(|p| std::fs::metadata(&p).ok().map(|m| (p, m.len())));
+    if s.kind == "codex" && nhat_ky.is_none() {
+        logging::warn(
+            "codex_delivery_held",
+            json!({"session":s.session_id,"effect":"chưa đo được nhật ký, giữ kết quả để thử lại, KHÔNG dán mù"}),
+        );
+        return DanVao::ChuaDan("chưa đo được nhật ký Codex để xác nhận nhận khối".into());
+    }
     match crate::keys::window_of(&s.tty) {
         // Cú Enter rời nằm ở MỘT chỗ (`keys::type_and_send`) — bản chép tay cũ
         // nuốt lỗi bằng `let _ = press(…)`, đúng hình dạng luật 3 cấm.
@@ -8256,6 +8271,13 @@ fn dan_vao_phien(
             Ok(()) => match crate::keys::type_and_send(w, block) {
                 // Màn nói "đã đi" — CHƯA đủ; hỏi nhật ký phiên (xem `xac_nhan_da_gui`).
                 Ok(crate::keys::Delivered::Gone) => xac_nhan_da_gui(
+                    nhat_ky.as_ref().map(|(p, n)| (p.as_path(), *n)),
+                    w,
+                    s,
+                    block,
+                    line,
+                ),
+                Ok(_) if s.kind == "codex" => xac_nhan_da_gui(
                     nhat_ky.as_ref().map(|(p, n)| (p.as_path(), *n)),
                     w,
                     s,
@@ -8955,30 +8977,20 @@ pub fn runin_pending_tick(db: &Db, cfg: &Config, now: i64) {
         // Phiên còn sống không, và cửa sổ nào — hỏi lại mỗi lượt, vì cái tty
         // của một phiên đổi được (nó có thể đã được thay cửa sổ bởi chính
         // `auto_handover` trong lúc chờ).
-        let tty = crate::sessions::snapshot(cfg)
+        let receiver = crate::sessions::snapshot(cfg)
             .sessions
-            .iter()
-            .find(|s| s.session_id == p.s && s.host != "dead")
-            .map(|s| s.tty.clone());
+            .into_iter()
+            .find(|s| s.session_id == p.s && s.host != "dead");
         // `Ok(chữ đã tới đâu)` · `Err(vì sao chưa gõ)` — lý do đi thẳng vào câu bỏ
         // cuộc, không dịch lại thành "không có cửa sổ" (xem [`rao_tab`]).
-        let typed: Result<String, String> = match tty {
-            Some(t) if !t.is_empty() => {
+        let typed = match receiver {
+            Some(s) if !s.tty.is_empty() => {
                 // HẠNG GẤP cả cú gõ lại — cùng lý do với `dan_vao_phien`: ở hạng
                 // nền, từ 21:29Z đường này nhận 2 việc và dán được 0.
                 let _lane = crate::exec::urgent();
-                match crate::keys::window_of(&t) {
-                    Ok(Some(w)) => match paste_target_ok(w, &t, &p.s) {
-                        Ok(()) => crate::keys::type_and_send(w, &p.b)
-                            .map(|d| format!("{d:?}"))
-                            .map_err(|e| e.to_string()),
-                        // Tab sắp nhận chữ không phải của phiên này, hoặc không
-                        // đọc được nó ⟹ chưa gõ, giữ lại lượt sau.
-                        Err(why) => Err(why),
-                    },
-                    Ok(None) => Err(ly_do_khong_cua_so(&t, None)),
-                    Err(e) => Err(ly_do_khong_cua_so(&t, Some(&e.to_string()))),
-                }
+                // Cùng cửa với lượt đầu: đúng tty, đúng journal và đúng verdict.
+                // Không đổi mọi Delivered::Unverified/StillInBox thành Ok(đã gửi).
+                dan_vao_phien(cfg, &s, &p.b, &p.l)
             }
             // Phiên đã chết trong lúc chờ: không còn ai để dán vào, và giữ tiếp
             // là giữ rác. Nói ra rồi bỏ.
@@ -8999,10 +9011,10 @@ pub fn runin_pending_tick(db: &Db, cfg: &Config, now: i64) {
             }
         };
         match typed {
-            Ok(landed) => {
+            DanVao::DaGui => {
                 logging::info(
                     "runin_pending_delivered",
-                    json!({ "session": p.s, "landed": landed, "waited_sec": now - p.t }),
+                    json!({ "session": p.s, "landed": "DaGui", "waited_sec": now - p.t }),
                 );
                 say_closed(
                     cfg,
@@ -9014,7 +9026,18 @@ pub fn runin_pending_tick(db: &Db, cfg: &Config, now: i64) {
                 );
                 continue;
             }
-            Err(why) => {
+            DanVao::NamTrongO(why) => {
+                logging::warn(
+                    "runin_pending_left_in_box",
+                    json!({"session":p.s,"why":why,
+                    "effect":"đã dán nhưng chưa xác nhận nhận — không báo thành công, không dán trùng"}),
+                );
+                say_closed(cfg, &format!(
+                    "⚠ Kết quả còn trong ô nhập hoặc chưa xác nhận gửi ({why}). Không dán thêm bản trùng. Bấm /send_{} để gửi.\n$ {}\n{}",
+                    crate::sessions::ma_lien_ket(&p.s), p.l, crate::exec::truncate(&p.b, 1200)));
+                continue;
+            }
+            DanVao::ChuaDan(why) => {
                 if now - p.t >= RUNIN_GIVE_UP_SEC {
                     let why = crate::exec::truncate(&why, 160);
                     logging::error(

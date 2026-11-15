@@ -1,5 +1,7 @@
 # Việc mở huba
 
+- [ ] 15/11 07:50: sửa kẹt kết quả huba-run/Codex đã viết/kiểm, CHƯA CÀI. RED4 (ô thật bỏ Enter, 2 schema journal, draft chung tiền tố), GREEN93 test liên quan, clippy -Dwarnings/release build0; smoke terminal thật khối2923ký tự: finish_send tự Enter, journal đúng1/0trùng, `.tmp/probe-codex-missed-enter-fixed.log` GATE0. Retry dùng cùng cửa kiểm journal, không nhận Unverified là gửi xong. Đợi user duyệt 3binary + script chuẩn ở workspace/scripts và bản cài/kem/scripts (blob8166c7ea, selftest14/14); installer `.tmp/cai-codex-send.py` backup/rollback/giữ pane. Chưa nghiệm thu toàn route Telegram sau cài.
+
 - [ ] Phụ thuộc sau gộp origin `f6e5c12` (15/11): Ubuntu thiếu `../scripts/mo-dau-phien.py`. Hai bài `tuong_codex_hai_chieu` và `mo_dau_phien_hien_man_va_vao_ngu_canh` đỏ vì thiếu khâu này; 5 bài cùng nhóm qua, 1 bài ghi tài khoản thật ignored. Không sửa/ghi cây hạ tầng ngoài phiên huba; chưa cài lại bản sau gộp. Cần phiên hạ tầng đồng bộ dependency rồi chạy lại 2 bài, không bỏ kiểm tra.
 
 - [ ] Hạ tầng QG Linux: lượt gom 15/11 `.tmp/qg-acc10-tele-20261115.log` thoát 2 vì vé biến mất khỏi `/tmp/qg-hang-doi-1000`. KHÔNG xanh. Kiểm trực tiếp trước commit: release build 0, 66/66 test liên quan (1 smoke desktop ignored), clippy all-targets -D warnings 0.

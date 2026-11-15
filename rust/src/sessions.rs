@@ -7104,6 +7104,42 @@ pub fn find_transcript_any(cfg: &Config, session_id: &str) -> Option<PathBuf> {
         .find_map(|r| find_transcript(r, session_id))
 }
 
+/// Nhật ký xác nhận kết quả tới đúng CLI. Codex dùng fd của root TUI, không
+/// dò khuôn projects/<id>.jsonl của Claude hoặc nhận nhầm rollout agent con.
+pub fn delivery_transcript(cfg: &Config, session: &LiveSession) -> Option<PathBuf> {
+    if session.kind != "codex" {
+        return find_transcript_any(cfg, &session.session_id);
+    }
+    let result = (|| -> std::result::Result<Option<PathBuf>, String> {
+        let account = cfg
+            .claude_accounts_or_ambient()
+            .into_iter()
+            .find(|a| a.name == session.account && a.is_codex())
+            .ok_or_else(|| "không có cấu hình tài khoản Codex".to_string())?;
+        let dir = crate::accounts::codex_home(&account).join("sessions");
+        let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+        let paths = crate::codex_sessions::fd_targets(session.pid)?;
+        let Some(path) = crate::codex_sessions::rollout_among(&paths, &dir)? else {
+            return Ok(None);
+        };
+        let head = crate::codex_sessions::first_line(&path, 1 << 20).map_err(|e| e.to_string())?;
+        if crate::codex_sessions::parse_rollout(&head, "").id != session.session_id {
+            return Err("root TUI đã đổi phiên — không đối chiếu nhật ký của phiên khác".into());
+        }
+        Ok(Some(path))
+    })();
+    match result {
+        Ok(path) => path,
+        Err(e) => {
+            logging::warn(
+                "codex_delivery_journal_unreadable",
+                json!({"session":session.session_id,"err":e}),
+            );
+            None
+        }
+    }
+}
+
 /// Đường thẳng `<gốc>/projects/<slug>/<id>.jsonl` ở từng gốc — chỉ `stat`,
 /// không quét. Cho ảnh chụp mỗi vòng, nơi `roots` được tính MỘT lần.
 pub fn transcript_by_cwd(roots: &[PathBuf], cwd: &str, session_id: &str) -> Option<PathBuf> {
