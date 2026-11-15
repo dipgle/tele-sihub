@@ -1284,13 +1284,12 @@ pub fn rank_all(cfg: &crate::config::Config, now_ms: i64) -> Vec<Ranked> {
                 .claude_accounts_or_ambient()
                 .iter()
                 .any(|a| a.name == q.account && a.is_opencode() && !is_go_plan(a));
-            // codex: huba chưa mở phiên trên nó (`sessions::CODEX_CHUA_MO_PHIEN`)
-            // ⟹ xếp như khoá, để không đường chọn nào gợi ý một cửa sẽ bị từ chối.
-            let codex = cfg
-                .claude_accounts_or_ambient()
-                .iter()
-                .any(|a| a.name == q.account && a.is_codex());
-            let r = if cfg.account_locked(&q.account) || codex {
+            // codex: xếp bằng hạn mức THẬT (`codex_quota`) như mọi acc gói — trước
+            // 15/11 bị ép «khoá» (lý do cũ «huba chưa mở phiên codex»), nên khi các
+            // acc Claude khoá hết thì không đường chọn nào còn ai (Quang «acc10 vứt
+            // cho chó gặm à»). Đường mở nhận acc codex: `/new` và bàn giao
+            // (`sessions::start_fresh_after_handover` ⟹ `open_codex_window`).
+            let r = if cfg.account_locked(&q.account) {
                 Rank::Locked
             } else if opencode || dung_api_key(cfg, &q.account) {
                 // Huba không tự chọn tài khoản opencode: key/plan do chủ máy
@@ -1392,6 +1391,9 @@ pub fn read_all(cfg: &crate::config::Config) -> Vec<Quota> {
             if let Some(q) = read_acc(a) {
                 return q;
             }
+            if a.is_codex() {
+                return codex_quota(a);
+            }
             // opencode: "Không đo được" là trạng thái riêng, không phải "chưa
             // đăng nhập" (luật 13②) — xem [`read_acc`].
             if !is_go_plan(a) {
@@ -1480,6 +1482,86 @@ pub fn go_quota(
                 "chan_boi": if thang_chat_hon { "monthly" } else { "weekly" } }),
     );
     q
+}
+
+/// `Quota` của một hàng codex từ `rate_limits` mà CHÍNH codex ghi vào nhật ký phiên
+/// (`accounts::codex_rate_limits`).
+///
+/// 🔴 Quang 15/11: *«thế tài khoản acc10 vứt cho chó gặm à»* · *«có vấn đề gì ở chỗ lọc
+/// tài khoản vậy mà suốt từ hôm qua tới giờ không chạy được gì»*. `rank_all` xếp MỌI
+/// hàng codex là «khoá» (lý do cũ: huba chưa mở phiên codex — hết đúng từ `9d7b1ce`),
+/// nên khi chủ máy khoá 9 acc Claude thì bàn giao tự động / `/new` không còn ai để chọn
+/// (log 14/11 23:58Z → 15/11 01:01Z: 6 lượt `auto_handover_window_failed`).
+pub fn codex_quota(a: &crate::config::ClaudeAccountCfg) -> Quota {
+    if !crate::accounts::codex_home(a).join("auth.json").is_file() {
+        let mut q = khong_do_duoc(&a.name, "codex: chưa đăng nhập");
+        q.chua_dung_duoc = Some(format!("chưa đăng nhập ChatGPT — /accounts {} -l", a.name));
+        return q;
+    }
+    match crate::accounts::codex_rate_limits(a) {
+        Ok(Some((rl, ts))) => codex_quota_tu(&a.name, &rl, &ts),
+        Ok(None) => khong_do_duoc(
+            &a.name,
+            "codex: chưa có lượt nào ghi hạn mức (mở một phiên là có số)",
+        ),
+        Err(e) => khong_do_duoc(&a.name, &format!("codex: {e}")),
+    }
+}
+
+/// Phần THUẦN của [`codex_quota`] — khuôn đo 14/11 (codex-cli 0.169, gói `prolite`):
+/// `{"primary":{"used_percent":31.0,"window_minutes":10080,"resets_at":<giây>},
+/// "secondary":null,"rate_limit_reached_type":null}`.
+///
+/// Phân cửa sổ theo `window_minutes`: ≥ 28 ngày ⟹ THÁNG · ≥ 1 ngày ⟹ TUẦN · ngắn hơn ⟹
+/// 5 GIỜ. 🔴 Thiếu ô nào thì GÁN NGƯỢC TỪ TRÊN XUỐNG (Quang 15/11: *«5h bằng đúng hạn
+/// tuần» · «nếu không có tuần thì lấy hạn tháng gán vào → cứ gán ngược từ trên xuống»*):
+/// tuần ⟸ tháng, 5 giờ ⟸ tuần. Không gán từ dưới lên, không bịa 0 % cho ô không có.
+/// `rate_limit_reached_type` có giá trị ⟹ 100 %.
+pub fn codex_quota_tu(account: &str, rl: &Value, ts: &str) -> Quota {
+    let chan = !rl["rate_limit_reached_type"].is_null();
+    let mut thang: Option<(i64, Option<String>)> = None;
+    let mut tuan: Option<(i64, Option<String>)> = None;
+    let mut gio5: Option<(i64, Option<String>)> = None;
+    for k in ["primary", "secondary"] {
+        let w = &rl[k];
+        let Some(pct) = w["used_percent"].as_f64() else {
+            continue;
+        };
+        let pct = if chan { 100 } else { pct.round() as i64 };
+        let moc = w["resets_at"]
+            .as_i64()
+            .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
+            .map(|d| d.to_rfc3339());
+        let phut = w["window_minutes"].as_i64().unwrap_or(0);
+        if phut >= 28 * 1440 {
+            thang = Some((pct, moc));
+        } else if phut >= 1440 {
+            tuan = Some((pct, moc));
+        } else {
+            gio5 = Some((pct, moc));
+        }
+    }
+    if thang.is_none() && tuan.is_none() && gio5.is_none() {
+        return khong_do_duoc(account, "codex: rate_limits không có cửa sổ nào");
+    }
+    let tuan = tuan.or(thang);
+    let gio5 = gio5.or_else(|| tuan.clone());
+    let fetched = chrono::DateTime::parse_from_rfc3339(ts)
+        .ok()
+        .map(|d| d.timestamp_millis());
+    Quota {
+        account: account.to_string(),
+        week_pct: tuan.as_ref().map(|t| t.0),
+        week_resets_at: tuan.and_then(|t| t.1),
+        hour5_pct: gio5.as_ref().map(|t| t.0),
+        hour5_resets_at: gio5.and_then(|t| t.1),
+        fetched_at_ms: fetched,
+        why_unknown: None,
+        chua_dung_duoc: None,
+        models: Vec::new(),
+        model_use: None,
+        khong_dung_tu_khi_do: false,
+    }
 }
 
 /// Giờ UTC hiện tại theo ms — tách ra để bài kiểm bơm được một mốc cố định.

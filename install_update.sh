@@ -31,6 +31,14 @@
 #   install_update.sh --verify   CHỈ ĐỌC: bản cài có phải bản vừa build không
 set -euo pipefail
 
+# 🔴 Hệ điều hành TRƯỚC mọi việc (Quang 15/11: «đây là máy win mà trình cài không kiểm tra hệ điều
+# hành trước khi làm à»). Sai máy ⟹ mã 2, chỉ đúng trình cài — không build/ký/ghi gì nửa chừng.
+case "$(uname -s 2>/dev/null || echo khong-ro)" in
+  Darwin) ;;
+  Linux) echo "SAI MÁY: install_update.sh dành cho macOS (cây mã) — máy này Linux: giải nén huba-linux-*.tar.gz, chạy install_update_linux.sh"; exit 2 ;;
+  MINGW*|MSYS*|CYGWIN*) echo "SAI MÁY: install_update.sh dành cho macOS (cây mã) — máy này Windows: mở PowerShell, chạy install_update.ps1 (gói huba-windows-*.zip)"; exit 2 ;;
+  *) echo "SAI MÁY: install_update.sh dành cho macOS (cây mã) — hệ «$(uname -s 2>/dev/null)» chưa hỗ trợ"; exit 2 ;;
+esac
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$HERE/rust/target/release/hubad"
 DEST_DIR="$HOME/Library/Application Support/hub/bin"

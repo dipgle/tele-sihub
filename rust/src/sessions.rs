@@ -9358,6 +9358,30 @@ pub fn start_fresh_after_handover(
     // Tên tài khoản lạ KHÔNG rơi về mặc định — `account_launch` đã gác chỗ ấy,
     // và mở nhầm tài khoản là mở nhầm cả kho phiên.
     let dung_acc = acc.unwrap_or(session.account.as_str());
+    // 🤖 Phiên kế nhiệm trên acc CODEX (Quang 15/11 «acc10 vứt cho chó gặm à»): phiên
+    // sau bàn giao trắng ngữ cảnh, chỉ mang bản bàn giao làm đề bài ⟹ CLI nào cũng nhận
+    // được. Đi ĐÚNG cửa `/new <acc codex>` ([`open_codex_window`]: tường + đoạn mở đầu
+    // bắt buộc KIỂM trước). id phiên codex không ghép được theo nhật ký Claude ⟹ GIỮ cửa
+    // sổ cũ (cùng kết cục an toàn với nhánh «id rỗng» bên dưới).
+    if let Some(row) = account_row(cfg, Some(dung_acc)).filter(|a| a.is_codex()) {
+        if row.locked && !allow_locked {
+            ensure_account_usable(cfg, Some(dung_acc))?;
+        }
+        let (_w, tty_short, tuong) = open_codex_window(cfg, &row, cwd, &task)?;
+        logging::info(
+            "handover_window_opened",
+            json!({ "tty": tty_short, "session": "", "fresh": true, "cli": "codex",
+                    "acc_cu": session.account, "acc_moi": dung_acc, "doi_acc": true,
+                    "tuong": tuong, "old_window": "giữ nguyên" }),
+        );
+        return Ok(FreshWindow {
+            tty: tty_short,
+            new_id: None,
+            closed_err: None,
+            old_kept: true,
+            asking: Vec::new(),
+        });
+    }
     if allow_locked {
         logging::info(
             "account_locked_open_allowed",

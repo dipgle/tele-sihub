@@ -13,6 +13,14 @@
 #     HUBA_THU=1 (lượt THỬ trong HOME giả: KHÔNG ký, KHÔNG launchctl — chỉ dựng tệp; chỉ để đo trình cài).
 # Mã thoát: 0 xong · 1 hỏng · 2 KHÔNG ĐO ĐƯỢC (thiếu tệp gói / không phải macOS).
 set -u
+# 🔴 Hệ điều hành TRƯỚC mọi việc (Quang 15/11: «đây là máy win mà trình cài không kiểm tra hệ điều
+# hành trước khi làm à»). Sai máy ⟹ mã 2, chỉ đúng trình cài — không build/ký/ghi gì nửa chừng.
+case "$(uname -s 2>/dev/null || echo khong-ro)" in
+  Darwin) ;;
+  Linux) echo "SAI MÁY: install_mac.sh dành cho macOS (gói) — máy này Linux: giải nén huba-linux-*.tar.gz, chạy install_update_linux.sh"; exit 2 ;;
+  MINGW*|MSYS*|CYGWIN*) echo "SAI MÁY: install_mac.sh dành cho macOS (gói) — máy này Windows: mở PowerShell, chạy install_update.ps1 (gói huba-windows-*.zip)"; exit 2 ;;
+  *) echo "SAI MÁY: install_mac.sh dành cho macOS (gói) — hệ «$(uname -s 2>/dev/null)» chưa hỗ trợ"; exit 2 ;;
+esac
 SRC="$(cd "$(dirname "$0")" && pwd)"
 DIR="${HUBA_HOME:-$HOME/huba}"
 SUP="$HOME/Library/Application Support/hub"
@@ -23,7 +31,6 @@ THU="${HUBA_THU:-0}"
 CO_TTY=0; [ -t 0 ] && [ -t 1 ] && CO_TTY=1
 buoc() { echo; echo "── $*"; }
 
-[ "$(uname)" = Darwin ] || { echo "KHÔNG ĐO ĐƯỢC: gói này cho macOS — Linux dùng huba-linux-*.tar.gz"; exit 2; }
 [ -x "$SRC/hubad" ] || { echo "KHÔNG ĐO ĐƯỢC: không có $SRC/hubad — chạy trong thư mục giải nén của gói"; exit 2; }
 
 if [ "${1:-}" = "--verify" ]; then

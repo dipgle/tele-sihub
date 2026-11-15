@@ -25,6 +25,14 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+# 🔴 Hệ điều hành TRƯỚC mọi việc (Quang 15/11: «đây là máy win mà trình cài không kiểm tra hệ điều
+# hành trước khi làm à»). PowerShell 7 chạy được cả trên macOS/Linux ⟹ tự hỏi: Windows PowerShell 5.1
+# không có $IsWindows nhưng có $env:OS = 'Windows_NT'.
+if (-not ($IsWindows -or $env:OS -eq 'Windows_NT')) {
+    Write-Host 'SAI MÁY: install_update.ps1 dành cho Windows — macOS: install_update.sh / gói huba-mac-*.tar.gz (install_mac.sh) · Linux: gói huba-linux-*.tar.gz (install_update_linux.sh)'
+    exit 2
+}
+
 $Here   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Rust   = Join-Path $Here 'rust'
 $Dest   = Join-Path $env:LOCALAPPDATA 'hub\bin'
