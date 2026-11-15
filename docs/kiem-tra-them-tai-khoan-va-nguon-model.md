@@ -56,7 +56,13 @@ riêng, không phải xanh.
 ### B0. Cài MÁY MỚI — không sửa tay gì (Quang 14/11)
 - Không biến môi trường riêng máy nào là BẮT BUỘC: luật + MCP tính từ gốc workspace / `.mcp.json`
   (env `HUBA_*` của gói Linux chỉ ĐÈ). Bản CLI ghim ở `cli-ghim.env` — cả hai bộ cài đọc, lệch bản ⟹ cài lại.
-- Mac: `bash install_update.sh` tự dựng plist từ mẫu + bootstrap khi chưa có (mẫu trỏ `bin/hubd`).
+- Mac có cây mã: `bash install_update.sh` tự dựng plist từ mẫu + bootstrap khi chưa có (mẫu trỏ `bin/hubd`).
+- Mac MỚI, không cây mã: gói `bash scripts/dong-goi-mac.sh` ⟹ `.tmp/huba-mac-<sha>.tar.gz`; máy đích
+  `bash huba-mac-<sha>/install_mac.sh` (cùng khuôn gói Linux: `~/huba`, `kem/`, ký bằng định danh của máy,
+  plist khai `HUBA_OPENCODE_PLUGIN`/`BAO_MAT_POLICY`/`HUBA_MCP_PROJECT_AGENT`/`HUBA_LUAT_GOC`/PATH).
+  Đo 15/11 (`82bcc9d`): `HUBA_THU=1` trong HOME giả NGOÀI `/tmp` (policy cho qua mọi ghi `/tmp` ⟹ thử dưới
+  `/tmp` thì cổng 19/30 oan) — cổng 30/30, `huba lenh-mo acc10` của gói: TÀI KHOẢN + MCP ✓ 21; bỏ
+  `kem/bin/project-agent` ⟹ từ chối mở. CHƯA chạy trên máy Mac thật mới (ký, launchctl, cài CLI).
 - Linux: gói mang `kem/scripts/{mo-dau-phien,nhac-chuyen-phien}.py` + `cli-ghim.env`; thiếu ⟹ trình cài dừng.
 - Còn PHẢI có người: đăng nhập tài khoản (`/accounts <acc> -l`), khoá bí mật Telegram (`huba setup`),
   chứng chỉ ký Mac lần đầu (`make-signing-cert.sh`).
