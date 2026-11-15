@@ -11,7 +11,7 @@ use huba::config::{ClaudeAccountCfg, Config};
 use huba::quota::{codex_quota_tu, rank, rank_all, Rank};
 use serde_json::json;
 
-const NOW: i64 = 1_795_000_000_000; // 2026-11-18 — trước mốc mở lại bên dưới
+const NOW: i64 = 1_794_705_000_000; // 2026-11-15 — bản đo còn tươi
 
 /// Nguyên văn khuôn `rate_limits` của acc10 (rollout 15/11, codex-cli 0.169, gói prolite).
 fn that(used: f64, chan: bool) -> serde_json::Value {
@@ -79,7 +79,7 @@ fn rank_all_khong_ep_codex_thanh_khoa() {
     let home = d.path().join("codex-acc10");
     let ngay = home.join("sessions/2026/11/15");
     std::fs::create_dir_all(&ngay).unwrap();
-    std::fs::write(home.join("auth.json"), "{}").unwrap();
+    std::fs::write(home.join("auth.json"), r#"{"auth_mode":"chatgpt","tokens":{"access_token":"test-access","refresh_token":"test-refresh"}}"#).unwrap();
     std::fs::write(
         ngay.join("rollout-x.jsonl"),
         format!(

@@ -450,7 +450,10 @@ pub fn overlay_live(ranked: Vec<Ranked>, usage_accounts: &Value) -> Vec<Ranked> 
         .map(|mut r| {
             // Khoá là quyết định của chủ máy, không phải một con số — số dò sống
             // đẹp tới đâu cũng không được mở lại nó.
-            if r.rank == Rank::Locked {
+            if matches!(
+                r.rank,
+                Rank::Locked | Rank::ApiKey | Rank::NotReady | Rank::Dead
+            ) {
                 return r;
             }
             let row = usage_accounts.get(&r.name);
@@ -1284,6 +1287,20 @@ pub fn rank_all(cfg: &crate::config::Config, now_ms: i64) -> Vec<Ranked> {
                 .claude_accounts_or_ambient()
                 .iter()
                 .any(|a| a.name == q.account && a.is_opencode() && !is_go_plan(a));
+            let codex = cfg
+                .claude_accounts_or_ambient()
+                .iter()
+                .any(|a| a.name == q.account && a.is_codex());
+            let codex_unmeasured = codex
+                && (q.fetched_at_ms.is_none_or(|t| t > now_ms)
+                    || [
+                        (q.week_pct, q.week_resets_at.as_deref()),
+                        (q.hour5_pct, q.hour5_resets_at.as_deref()),
+                    ]
+                    .iter()
+                    .any(|(pct, reset)| {
+                        pct.is_none() || ban_doc_cu(q.fetched_at_ms, *reset, now_ms)
+                    }));
             // codex: xếp bằng hạn mức THẬT (`codex_quota`) như mọi acc gói — trước
             // 15/11 bị ép «khoá» (lý do cũ «huba chưa mở phiên codex»), nên khi các
             // acc Claude khoá hết thì không đường chọn nào còn ai (Quang «acc10 vứt
@@ -1295,6 +1312,10 @@ pub fn rank_all(cfg: &crate::config::Config, now_ms: i64) -> Vec<Ranked> {
                 // Huba không tự chọn tài khoản opencode: key/plan do chủ máy
                 // cấu hình, và không có sổ hạn mức để so. `-a` vẫn mở được.
                 Rank::ApiKey
+            } else if codex_unmeasured {
+                // Unknown vẫn là ứng viên Claude legacy; Codex chưa có bản đo
+                // tươi thì chưa sẵn sàng TỰ chọn, không bịa 0% sau reset.
+                Rank::NotReady
             } else {
                 rank(&q, now_ms)
             };
@@ -1310,6 +1331,7 @@ pub fn rank_all(cfg: &crate::config::Config, now_ms: i64) -> Vec<Ranked> {
                 json!({ "account": q.account, "week_pct": q.week_pct,
                         "week_resets_at": q.week_resets_at, "hour5_pct": q.hour5_pct,
                         "fetched_at_ms": q.fetched_at_ms, "why_unknown": q.why_unknown,
+                        "codex_quota_needs_refresh": codex_unmeasured,
                         "rank": r.say(),
                         // Cùng luật với `can_xac_nhan` ngay dưới: thứ chỉ hiện
                         // trên điện thoại là thứ người đọc log không thấy, và
@@ -1332,8 +1354,43 @@ pub fn dung_api_key(cfg: &crate::config::Config, ten: &str) -> bool {
     cfg.claude_accounts_or_ambient()
         .iter()
         .find(|a| a.name == ten)
-        .and_then(|a| crate::api_key::nhan(&crate::api_key::thu_muc(a)))
-        .is_some()
+        .is_some_and(|a| {
+            if a.is_codex() {
+                matches!(codex_auth(a), Ok(true))
+            } else {
+                crate::api_key::nhan(&crate::api_key::thu_muc(a)).is_some()
+            }
+        })
+}
+
+/// true = API key, false = đăng nhập ChatGPT. Không ghi nội dung auth vào log.
+fn codex_auth(a: &crate::config::ClaudeAccountCfg) -> Result<bool, &'static str> {
+    let text = std::fs::read_to_string(crate::accounts::codex_home(a).join("auth.json"))
+        .map_err(|_| "codex: chưa đọc được đăng nhập — đăng nhập lại bằng /accounts")?;
+    let auth: Value = serde_json::from_str(&text)
+        .map_err(|_| "codex: tệp đăng nhập hỏng — đăng nhập lại bằng /accounts")?;
+    if auth["OPENAI_API_KEY"]
+        .as_str()
+        .is_some_and(|s| !s.is_empty())
+        || matches!(auth["auth_mode"].as_str(), Some("apikey" | "api_key"))
+    {
+        return Ok(true);
+    }
+    match auth["auth_mode"].as_str() {
+        Some("chatgpt")
+            if ["access_token", "refresh_token"].iter().all(|k| {
+                auth["tokens"][k]
+                    .as_str()
+                    .is_some_and(|s| !s.trim().is_empty())
+            }) =>
+        {
+            Ok(false)
+        }
+        Some("chatgpt") => {
+            Err("codex: đăng nhập ChatGPT thiếu token — đăng nhập lại bằng /accounts")
+        }
+        _ => Err("codex: chưa xác định được loại đăng nhập ChatGPT"),
+    }
 }
 
 /// Bản đọc thô của mọi tài khoản, theo đúng thứ tự cấu hình.
@@ -1493,10 +1550,14 @@ pub fn go_quota(
 /// nên khi chủ máy khoá 9 acc Claude thì bàn giao tự động / `/new` không còn ai để chọn
 /// (log 14/11 23:58Z → 15/11 01:01Z: 6 lượt `auto_handover_window_failed`).
 pub fn codex_quota(a: &crate::config::ClaudeAccountCfg) -> Quota {
-    if !crate::accounts::codex_home(a).join("auth.json").is_file() {
-        let mut q = khong_do_duoc(&a.name, "codex: chưa đăng nhập");
-        q.chua_dung_duoc = Some(format!("chưa đăng nhập ChatGPT — /accounts {} -l", a.name));
-        return q;
+    match codex_auth(a) {
+        Ok(false) => {}
+        Ok(true) => return khong_do_duoc(&a.name, "codex: API key — không tự chọn"),
+        Err(why) => {
+            let mut q = khong_do_duoc(&a.name, why);
+            q.chua_dung_duoc = Some(why.to_string());
+            return q;
+        }
     }
     match crate::accounts::codex_rate_limits(a) {
         Ok(Some((rl, ts))) => codex_quota_tu(&a.name, &rl, &ts),
@@ -1524,15 +1585,26 @@ pub fn codex_quota_tu(account: &str, rl: &Value, ts: &str) -> Quota {
     let mut gio5: Option<(i64, Option<String>)> = None;
     for k in ["primary", "secondary"] {
         let w = &rl[k];
-        let Some(pct) = w["used_percent"].as_f64() else {
+        if w.is_null() {
             continue;
+        }
+        let (Some(pct), Some(phut), Some(reset)) = (
+            w["used_percent"].as_f64(),
+            w["window_minutes"].as_i64(),
+            w["resets_at"]
+                .as_i64()
+                .and_then(|s| chrono::DateTime::from_timestamp(s, 0)),
+        ) else {
+            return khong_do_duoc(
+                account,
+                "codex: cửa sổ hạn mức thiếu/hỏng số hoặc mốc reset",
+            );
         };
+        if !(0.0..=100.0).contains(&pct) || phut <= 0 {
+            return khong_do_duoc(account, "codex: số hạn mức/cửa sổ ngoài miền hợp lệ");
+        }
         let pct = if chan { 100 } else { pct.round() as i64 };
-        let moc = w["resets_at"]
-            .as_i64()
-            .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
-            .map(|d| d.to_rfc3339());
-        let phut = w["window_minutes"].as_i64().unwrap_or(0);
+        let moc = Some(reset.to_rfc3339());
         if phut >= 28 * 1440 {
             thang = Some((pct, moc));
         } else if phut >= 1440 {

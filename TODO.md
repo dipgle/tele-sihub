@@ -1,5 +1,7 @@
 # Việc mở huba
 
+- [ ] 15/11 08:46 quản lý acc: đã gộp origin d89947d (merge04d74e2); bản nguồn chọn acc10 thật (Free33, acc3 Free99), chặn auth/token hỏng, quota cũ và API key kể cả overlay; đọc mốc sự kiện thay mtime fork. 199 test liên quan qua (1 ignored), clippy/release0; log `.tmp/{test-accounts-final-20261115,kiem-accounts-host,kiem-chon-acc10}.log`. CHƯA CÀI: thiếu script khởi động ngoài cây, chờ ngoại lệ đã hỏi. QG đang đo; 2 watch fixture Mac trên Linux và 2 tuong_codex thiếu dependency còn đỏ, không khai full xanh.
+
 - [ ] 15/11 07:50: sửa kẹt kết quả huba-run/Codex đã viết/kiểm, CHƯA CÀI. RED4 (ô thật bỏ Enter, 2 schema journal, draft chung tiền tố), GREEN93 test liên quan, clippy -Dwarnings/release build0; smoke terminal thật khối2923ký tự: finish_send tự Enter, journal đúng1/0trùng, `.tmp/probe-codex-missed-enter-fixed.log` GATE0. Retry dùng cùng cửa kiểm journal, không nhận Unverified là gửi xong. Đợi user duyệt 3binary + script chuẩn ở workspace/scripts và bản cài/kem/scripts (blob8166c7ea, selftest14/14); installer `.tmp/cai-codex-send.py` backup/rollback/giữ pane. Chưa nghiệm thu toàn route Telegram sau cài.
 
 - [ ] Phụ thuộc sau gộp origin `f6e5c12` (15/11): Ubuntu thiếu `../scripts/mo-dau-phien.py`. Hai bài `tuong_codex_hai_chieu` và `mo_dau_phien_hien_man_va_vao_ngu_canh` đỏ vì thiếu khâu này; 5 bài cùng nhóm qua, 1 bài ghi tài khoản thật ignored. Không sửa/ghi cây hạ tầng ngoài phiên huba; chưa cài lại bản sau gộp. Cần phiên hạ tầng đồng bộ dependency rồi chạy lại 2 bài, không bỏ kiểm tra.

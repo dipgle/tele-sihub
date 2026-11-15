@@ -589,7 +589,7 @@ pub fn codex_claims(acc: &ClaudeAccountCfg) -> Option<Value> {
 /// bao nhiêu thì khai bấy nhiêu ([`codex_han_muc_say`] in tuổi).
 pub fn codex_rate_limits(acc: &ClaudeAccountCfg) -> Result<Option<(Value, String)>, String> {
     let goc = codex_home(acc).join("sessions");
-    let mut tep: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    let mut tep = Vec::new();
     let mut ngan = vec![goc.clone()];
     while let Some(d) = ngan.pop() {
         let it = match std::fs::read_dir(&d) {
@@ -597,30 +597,39 @@ pub fn codex_rate_limits(acc: &ClaudeAccountCfg) -> Result<Option<(Value, String
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && d == goc => return Ok(None),
             Err(e) => return Err(format!("không đọc được {}: {e}", d.display())),
         };
-        for en in it.flatten() {
+        for en in it {
+            let en = en.map_err(|e| format!("không đọc được {}: {e}", d.display()))?;
             let p = en.path();
-            match en.file_type() {
-                Ok(t) if t.is_dir() => ngan.push(p),
-                Ok(_) if p.extension().and_then(|x| x.to_str()) == Some("jsonl") => {
-                    if let Ok(m) = en.metadata().and_then(|m| m.modified()) {
-                        tep.push((m, p));
-                    }
+            match en
+                .file_type()
+                .map_err(|e| format!("không đọc được {}: {e}", p.display()))?
+            {
+                t if t.is_dir() => ngan.push(p),
+                t if t.is_file() && p.extension().and_then(|x| x.to_str()) == Some("jsonl") => {
+                    tep.push(p);
                 }
                 _ => {}
             }
         }
     }
-    tep.sort_by_key(|t| std::cmp::Reverse(t.0));
-    for (_, p) in tep.iter().take(8) {
-        let text = std::fs::read_to_string(p)
-            .map_err(|e| format!("không đọc được {}: {e}", p.display()))?;
-        for dong in text.lines().rev() {
+    // Fork chép lại sự kiện cũ vào file có mtime mới. So timestamp sự kiện,
+    // trên TẤT CẢ file; giới hạn 8 file theo mtime từng bỏ mất bản đo mới nhất.
+    use std::io::BufRead;
+    let mut newest: Option<(i64, Value, String)> = None;
+    for p in &tep {
+        let file =
+            std::fs::File::open(p).map_err(|e| format!("không đọc được {}: {e}", p.display()))?;
+        for dong in std::io::BufReader::new(file).lines() {
+            let dong = dong.map_err(|e| format!("không đọc được {}: {e}", p.display()))?;
             if !dong.contains("\"rate_limits\"") {
                 continue;
             }
-            let Ok(v) = serde_json::from_str::<Value>(dong) else {
+            let Ok(v) = serde_json::from_str::<Value>(&dong) else {
                 continue;
             };
+            if v.pointer("/payload/type").and_then(Value::as_str) != Some("token_count") {
+                continue;
+            }
             let rl = v
                 .pointer("/payload/rate_limits")
                 .cloned()
@@ -631,11 +640,16 @@ pub fn codex_rate_limits(acc: &ClaudeAccountCfg) -> Result<Option<(Value, String
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
-                return Ok(Some((rl, ts)));
+                let time = chrono::DateTime::parse_from_rfc3339(&ts)
+                    .map_err(|_| format!("mốc đo hạn mức codex hỏng: {}", p.display()))?
+                    .timestamp_millis();
+                if newest.as_ref().is_none_or(|n| time > n.0) {
+                    newest = Some((time, rl, ts));
+                }
             }
         }
     }
-    Ok(None)
+    Ok(newest.map(|(_, rl, ts)| (rl, ts)))
 }
 
 /// Câu hạn mức codex cho người đọc. Hàm THUẦN (`now_ms`, múi giờ máy cho mốc reset).
