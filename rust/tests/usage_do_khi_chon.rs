@@ -328,3 +328,26 @@ fn doi_chung_nguoc_them_mot_cho_do_nen() {
     let src = "fn run_once(db: &Db) {\n    let h = crate::runtime::xep_hang_tai_khoan(\n        cfg,\n        db,\n        Some(crate::runtime::USAGE_CU_MO_PHIEN_MS),\n    );\n}\nfn khac() {\n    let v = usage_cached(cfg, db);\n}\n";
     assert_eq!(cho_di_do(src), ["run_once"]);
 }
+
+/// 🔴 Hà 16/11, ảnh `/accounts`: acc9 vừa đổi Claude+deepseek → opencode+ChatGPT vẫn in
+/// «(dò /usage: CLI trả bảng chi phí … Đăng nhập lại: cờ -l)» — bản ghi dò Claude CŨ
+/// trong sổ, nhận theo TÊN. Sổ ấy còn vào `overlay_live`/`ap_dang_nhap` (chọn acc).
+/// Hàng KHÔNG phải Claude thì sổ `/usage` của Claude không nói gì về nó.
+#[test]
+fn hang_doi_sang_cli_khac_khong_mang_so_do_claude_cu() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, mut cfg) = may(dir.path());
+    usage_lam_moi(&cfg, &db, USAGE_CU_MO_PHIEN_MS);
+    assert_eq!(usage_cached(&cfg, &db)["accounts"]["b"]["week_pct"], 80);
+    let b = cfg
+        .claude_accounts
+        .iter_mut()
+        .find(|a| a.name == "b")
+        .unwrap();
+    b.cli = Some("opencode".into());
+    b.model = Some("openai/gpt-6.1-sol".into());
+    let v = usage_cached(&cfg, &db);
+    assert!(v["accounts"].get("b").is_none(), "{v}");
+    // Đối chứng: hàng Claude cạnh nó GIỮ nguyên số của mình.
+    assert_eq!(v["accounts"]["a"]["week_pct"], 30, "{v}");
+}

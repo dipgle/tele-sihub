@@ -1339,7 +1339,7 @@ pub fn lien_ket_thieu(
         if let Some(id) = session_trong_argv(command) {
             theo_id.entry(id).or_default().push(t.to_string());
         } else if let Some((_, de)) = command.split_once(" --prompt ") {
-            let de = gon(de);
+            let de = gon(&giai_vis_ps(de));
             if !de.is_empty() {
                 theo_de.entry(de).or_default().push(t.to_string());
             }
@@ -1381,6 +1381,41 @@ pub fn lien_ket_thieu(
         }
     }
     out
+}
+
+/// Argv như `ps` của macOS in: ký tự điều khiển thành `\NNN` bát phân (vis), `\` thành
+/// `\\`; chữ UTF-8 để nguyên. Giải ngược về byte thật. Linux (`/proc`) không mã hoá —
+/// chuỗi không có `\` đi qua nguyên vẹn. THUẦN.
+pub fn giai_vis_ps(s: &str) -> String {
+    if !s.contains('\\') {
+        return s.to_string();
+    }
+    let b = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\\' {
+            if b.get(i + 1) == Some(&b'\\') {
+                out.push(b'\\');
+                i += 2;
+                continue;
+            }
+            let so = b
+                .get(i + 1..i + 4)
+                .filter(|d| d.iter().all(|c| (b'0'..=b'7').contains(c)));
+            if let Some(d) = so {
+                let v = d.iter().fold(0u32, |a, c| a * 8 + u32::from(c - b'0'));
+                if let Ok(byte) = u8::try_from(v) {
+                    out.push(byte);
+                    i += 4;
+                    continue;
+                }
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 pub fn bindings_path(acc: &ClaudeAccountCfg) -> PathBuf {
@@ -1897,6 +1932,32 @@ mod tests {
     /// Quang 13/11 «rất nhiều phiên đang chạy acc8 nhưng danh sách phiên lại
     /// không có»: cửa sổ mở trước `--session` (ttys004 · ttys011) — ghép bằng
     /// đề bài ↔ câu user đầu tiên, chỉ khi một-một.
+    /// 🔴 Đo 16/11 mac (chuyển [aihub] sang acc9): đề bài bàn giao NHIỀU DÒNG; `ps` của
+    /// macOS in xuống dòng trong argv thành `\012` (vis), nên so nguyên văn với câu đầu
+    /// trong kho KHÔNG khớp ⟹ phiên mới chỉ hiện `win-<tty>`, Telegram không thấy nó.
+    #[test]
+    fn ghep_de_bai_nhieu_dong_ps_in_bat_phan() {
+        let de = "Tiếp quản phiên trước. BÀN GIAO:\n\n[aihub] **BÀN GIAO**\nđường C:\\tmp";
+        let argv = format!(
+            "/Users/x/.opencode/bin/opencode --standalone --prompt {}",
+            de.replace('\\', "\\\\").replace('\n', "\\012")
+        );
+        let tuis = vec![("ttys020".to_string(), argv)];
+        let mut cau = BTreeMap::new();
+        cau.insert("ses_a".to_string(), de.to_string());
+        assert_eq!(
+            lien_ket_thieu(&tuis, &BTreeMap::new(), &tap(&["ses_a"]), &cau),
+            vec![("ses_a".to_string(), "ttys020".to_string())]
+        );
+        // Đối chứng: đề bài KHÁC vẫn không ghép sau khi giải mã.
+        let mut khac = BTreeMap::new();
+        khac.insert(
+            "ses_a".to_string(),
+            "Tiếp quản phiên trước. BÀN GIAO: khác".to_string(),
+        );
+        assert!(lien_ket_thieu(&tuis, &BTreeMap::new(), &tap(&["ses_a"]), &khac).is_empty());
+    }
+
     #[test]
     fn ghep_cua_so_cu_bang_de_bai() {
         let de =

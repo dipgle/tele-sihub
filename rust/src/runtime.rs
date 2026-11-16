@@ -997,11 +997,40 @@ pub fn usage_cached(cfg: &Config, db: &Db) -> Value {
     let so = doc_so_usage(db);
     let mut accounts = serde_json::Map::new();
     for acc in cfg.claude_accounts_or_ambient() {
-        if let Some(row) = so.get(&acc.name) {
-            accounts.insert(acc.name.clone(), row.clone());
+        let Some(row) = so.get(&acc.name) else {
+            continue;
+        };
+        // 🔴 Sổ nhận theo TÊN, nhưng một hàng đổi CLI được (Hà 16/11, ảnh `/accounts`:
+        // acc9 Claude+deepseek → opencode+ChatGPT vẫn in «dò /usage: CLI trả bảng chi
+        // phí … Đăng nhập lại: cờ -l»). Hàng không phải Claude không bao giờ được dò
+        // (`usage_lam_moi`), nên bản ghi của nó chỉ có thể là của CLI CŨ — và khối này
+        // còn vào `quota::overlay_live` / `ap_dang_nhap`, tức vào luật chọn tài khoản.
+        if !acc.is_claude() {
+            bo_so_usage_cli_cu(&acc.name, acc.cli_name());
+            continue;
         }
+        accounts.insert(acc.name.clone(), row.clone());
     }
     json!({ "accounts": accounts })
+}
+
+/// Ghi MỘT lần mỗi tiến trình cho mỗi hàng: `usage_cached` chạy mỗi vòng, mà bản ghi cũ
+/// nằm trong sổ tới khi hàng ấy được dò lại — tức là không bao giờ.
+fn bo_so_usage_cli_cu(ten: &str, cli: &str) {
+    static DA_BAO: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeSet<String>>> =
+        std::sync::OnceLock::new();
+    let moi = DA_BAO
+        .get_or_init(Default::default)
+        .lock()
+        .map(|mut s| s.insert(ten.to_string()))
+        .unwrap_or(true);
+    if moi {
+        crate::logging::info(
+            "usage_store_row_ignored",
+            json!({ "account": ten, "cli": cli,
+                    "why": "sổ /usage là của Claude CLI — hàng này giờ chạy CLI khác, bản ghi là của cấu hình cũ" }),
+        );
+    }
 }
 
 fn doc_so_usage(db: &Db) -> serde_json::Map<String, Value> {
