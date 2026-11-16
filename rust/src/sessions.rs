@@ -2231,8 +2231,12 @@ pub fn lane_for_session(
     workspace_root: &str,
     head: impl FnOnce() -> Option<String>,
 ) -> String {
-    if let Some((_, lan)) = declared_in_tail(tail, workspace_root) {
-        if !lan.is_empty() {
+    // Project resolution may have rejected the newest prefix as a one-off
+    // mention. Its module must not be attached to the project we retained.
+    let accepted = recall_folder(session_id);
+    let belongs = |project: &str| accepted.as_deref().is_none_or(|p| p == project);
+    if let Some((project, lan)) = declared_in_tail(tail, workspace_root) {
+        if belongs(&project) && !lan.is_empty() {
             return lan;
         }
     }
@@ -2262,6 +2266,7 @@ pub fn lane_for_session(
     // hết: nửa số hàng có làn, nửa không, là thứ phải giải thích được.
     let dau = head()
         .and_then(|h| declared_in_tail(&h, workspace_root))
+        .filter(|(project, _)| belongs(project))
         .map(|(_, lan)| lan)
         .unwrap_or_default();
     if !dau.is_empty() {
@@ -2460,7 +2465,7 @@ pub fn folder_for_session(
     workspace_root: &str,
     census_head: impl FnOnce() -> Option<String>,
 ) -> Option<String> {
-    if let Some((declared, lane, dong_y)) = declared_in_tail_counted(tail, workspace_root) {
+    if let Some((declared, _lane, dong_y)) = declared_in_tail_counted(tail, workspace_root) {
         // 🔴 MỘT LẦN LÀ NHẮC, HAI LẦN MỚI LÀ KHAI — cổng chống LẬT nhãn, thêm
         // 2026-09-16. Xem [`declared_in_tail_counted`] cho ca thật: một phiên
         // dwork nhắc tên `huba` đúng một lần ở đầu lượt nói và bị đổi tên luôn.
@@ -2470,8 +2475,25 @@ pub fn folder_for_session(
         // không tên cho tới lượt nói thứ hai — đổi một cái nhãn sai lấy một cái
         // nhãn trống là đổi ngang, không phải sửa.
         let cu = recall_declared(session_id);
-        let lat = cu.as_deref().is_some_and(|c| c != declared);
-        if lat && dong_y < 2 {
+        let initial = cu
+            .clone()
+            .or_else(|| recall_folder(session_id).filter(|p| p == &declared))
+            .map(|p| (p, recall_lane(session_id)));
+        let mut reducer = identity_reducer::IdentityReducer::new(initial, KHAI_QUET_LUOT);
+        let texts: Vec<String> = tail
+            .lines()
+            .rev()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter_map(|record| assistant_label_text(&record))
+            .take(KHAI_QUET_LUOT)
+            .collect();
+        for text in texts.iter().rev() {
+            reducer.push(declared_parts(text, workspace_root));
+        }
+        let (accepted, module) = reducer
+            .current
+            .expect("a validated declaration must seed identity");
+        if accepted != declared {
             logging::info(
                 "folder_label_flip_refused",
                 json!({ "session": session_id, "dang_giu": cu, "vua_thay": declared,
@@ -2479,10 +2501,9 @@ pub fn folder_for_session(
                         "why": "tên mới chỉ xuất hiện MỘT lần trong cửa sổ đuôi — phiên tự khai ở \
                                 MỌI lượt nói, nên một lần là NHẮC tên dự án khác, không phải tự khai" }),
             );
-            return cu;
         }
-        remember_folder_ranked(session_id, &declared, &lane, true);
-        return Some(declared);
+        remember_folder_ranked(session_id, &accepted, &module, true);
+        return Some(accepted);
     }
     let Some(counted) = folder_from_tail(tail, workspace_root).or_else(census_head) else {
         return recall_folder(session_id);
@@ -2499,7 +2520,12 @@ pub fn folder_for_session(
         }
         return Some(declared);
     }
-    remember_folder_ranked(session_id, &counted, &recall_lane(session_id), false);
+    let module = if recall_folder(session_id).as_deref() == Some(counted.as_str()) {
+        recall_lane(session_id)
+    } else {
+        String::new()
+    };
+    remember_folder_ranked(session_id, &counted, &module, false);
     Some(counted)
 }
 
@@ -5838,6 +5864,127 @@ pub fn is_orphan(s: &LiveSession) -> bool {
 // khỏi khoảng ấy.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Convert one OpenCode source row through the same identity/render contract as
+/// the other CLIs. Kept separate from terminal discovery so regressions exercise
+/// the actual row consumed by `/session`, not just a standalone prefix parser.
+fn opencode_live_session(
+    cfg: &Config,
+    account: &ClaudeAccountCfg,
+    s: crate::opencode::OcSession,
+    tty: String,
+    history_path: &Path,
+) -> LiveSession {
+    let host = if tty.is_empty() {
+        "detached"
+    } else {
+        "terminal"
+    };
+    let last_activity =
+        chrono::DateTime::from_timestamp_millis(s.updated_ms).map(|d| d.to_rfc3339());
+    let working = chrono::Utc::now()
+        .timestamp_millis()
+        .saturating_sub(s.updated_ms)
+        < IDLE_AFTER_SEC * 1000;
+    let ws = cfg.workspace_root.to_string_lossy().to_string();
+    // Only query historical identity when the tail/memo cannot answer. A
+    // per-row cache lets project and module share the same read-only evidence.
+    let history = std::cell::OnceCell::new();
+    let history_error = std::cell::RefCell::new(None);
+    let head = || {
+        history
+            .get_or_init(|| {
+                match identity_history::cached_opencode_head(history_path, &s.id, &ws, s.updated_ms)
+                {
+                    Ok(value) => value,
+                    Err(err) => {
+                        logging::warn(
+                            "opencode_identity_history_unreadable",
+                            json!({
+                                "session": s.id, "account": account.name, "err": err,
+                                "effect": "module may be unknown; not an empty-history verdict"
+                            }),
+                        );
+                        *history_error.borrow_mut() = Some(err);
+                        None
+                    }
+                }
+            })
+            .clone()
+    };
+    // At cold start, historical self-declaration outranks tool-path counts in
+    // the preview. Otherwise a busy tool batch can rename the project as well.
+    if recall_declared(&s.id).is_none() && declared_in_tail(&s.tail, &ws).is_none() {
+        if let Some(evidence) = head() {
+            let _project_seed = folder_for_session(&s.id, &evidence, &ws, || None);
+        }
+    }
+    let folder = folder_for_session(&s.id, &s.tail, &ws, || None)
+        .filter(|f| !f.is_empty())
+        .unwrap_or_else(|| {
+            opencode_project_label(
+                &cfg.workspace_root,
+                s.project_dir.as_deref().unwrap_or(&s.directory),
+            )
+        });
+    // Same paired inference as Claude and Codex, AFTER choosing the project.
+    // No special case for `huba/ui` and no inference from a title/user prompt.
+    let lane = lane_for_session(&s.id, &s.tail, &ws, head);
+    let identity_note = history_error.into_inner().map(|err| {
+        format!(
+            "opencode: chưa đọc được tên module từ lịch sử: {}",
+            truncate(&err, 160)
+        )
+    });
+    LiveSession {
+        account: account.name.clone(),
+        session_id: s.id,
+        name: if s.title.trim().is_empty() {
+            "(không tên)".to_string()
+        } else {
+            s.title
+        },
+        label: String::new(),
+        lane,
+        cwd: s.directory.clone(),
+        folder,
+        kind: "opencode".to_string(),
+        host: host.to_string(),
+        pid: 0,
+        started_at_ms: s.created_ms,
+        last_activity,
+        working: s.busy.unwrap_or(working),
+        status: s.busy.map(|b| if b { "busy" } else { "idle" }.to_string()),
+        state: None,
+        context_tokens: s.context_tokens,
+        context_window: s.model.as_deref().and_then(|m| {
+            crate::opencode::cua_so_tu_khai(account, m, chrono::Utc::now().timestamp_millis())
+        }),
+        model: s.model,
+        tty,
+        asking: pending_question(&s.tail),
+        last_text: s.last_text.clone(),
+        last_role: s.last_role.clone(),
+        note: if identity_note.is_some() {
+            identity_note
+        } else if s.last_text.is_some() {
+            None
+        } else {
+            Some("opencode: chưa có lượt assistant nào đọc được trong kho phiên".into())
+        },
+        ..Default::default()
+    }
+}
+
+#[cfg(test)]
+#[path = "sessions_opencode_identity_tests.rs"]
+mod opencode_identity_tests;
+
+#[path = "session_identity_history.rs"]
+mod identity_history;
+
+#[path = "session_identity_reducer.rs"]
+mod identity_reducer;
+
 pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
     let snap_started = std::time::Instant::now();
     let mut out = SessionsSnapshot::default();
@@ -6461,83 +6608,13 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
                     continue;
                 }
             }
-            let host = if tty.is_empty() {
-                "detached"
-            } else {
-                "terminal"
-            };
-            let last_activity =
-                chrono::DateTime::from_timestamp_millis(s.updated_ms).map(|d| d.to_rfc3339());
-            let working = chrono::Utc::now()
-                .timestamp_millis()
-                .saturating_sub(s.updated_ms)
-                < IDLE_AFTER_SEC * 1000;
-            // CÙNG cửa nhãn với phiên Claude (lời tự khai > đếm đường dẫn > sổ
-            // nhớ), đọc trên đuôi dựng từ kho opencode (`opencode::fill_tails_v2`).
-            // Thư mục mở phiên chỉ là đường LUI: phiên mở ở gốc workspace rồi
-            // làm việc trong `aihub` phải đọc ra `[aihub]`, như phiên Claude.
-            let ws = cfg.workspace_root.to_string_lossy().to_string();
-            let folder = folder_for_session(&s.id, &s.tail, &ws, || None)
-                .filter(|f| !f.is_empty())
-                .unwrap_or_else(|| {
-                    opencode_project_label(
-                        &cfg.workspace_root,
-                        s.project_dir.as_deref().unwrap_or(&s.directory),
-                    )
-                });
-            out.sessions.push(LiveSession {
-                account: account.name.clone(),
-                session_id: s.id,
-                name: if s.title.trim().is_empty() {
-                    "(không tên)".to_string()
-                } else {
-                    s.title
-                },
-                label: String::new(),
-                lane: String::new(),
-                cwd: s.directory.clone(),
-                // 🔴 NHÃN PHẢI LÀ DỰ ÁN, không phải tiêu đề phiên — Hà 2026-11-12,
-                // ảnh danh sách: ba hàng acc8 đọc ra `Đọc CLAUDE.md trướ…`,
-                // `Exact OK reply request…`, không hàng nào nói dự án. Gốc: nhánh
-                // này lấy `folder` từ THƯ MỤC PHIÊN, mà phiên opencode mở ở gốc
-                // workspace thì `folder_from_dir` trả RỖNG ⇒ `label_sessions` rơi
-                // về `s.name` (tiêu đề). Nguồn đúng là `project.worktree` trong
-                // sổ của chính opencode. Từ 12/11 nguồn ấy là đường LUI, sau
-                // `folder_for_session` (ngay trên vòng `push`).
-                folder,
-                kind: "opencode".to_string(),
-                host: host.to_string(),
-                pid: 0,
-                started_at_ms: s.created_ms,
-                last_activity,
-                // Kho khai bận ⟹ tin kho; không khai thì giữ `working` (mốc ghi).
-                working: s.busy.unwrap_or(working),
-                status: s.busy.map(|b| if b { "busy" } else { "idle" }.to_string()),
-                state: None,
-                context_tokens: s.context_tokens,
-                // Số dịch vụ opencode TỰ KHAI cho đúng provider/model thắng bảng đoán
-                // (`opencode::cua_so_tu_khai`; Hà 15/11: TUI 19 % mà huba in 59 %).
-                context_window: s.model.as_deref().and_then(|m| {
-                    crate::opencode::cua_so_tu_khai(
-                        account,
-                        m,
-                        chrono::Utc::now().timestamp_millis(),
-                    )
-                }),
-                model: s.model,
+            out.sessions.push(opencode_live_session(
+                cfg,
+                account,
+                s,
                 tty,
-                // Bảng hỏi opencode (công cụ `question`) đã được dịch sang khuôn
-                // `AskUserQuestion` trong đuôi — `opencode::cau_hoi_treo_kieu_claude`.
-                asking: pending_question(&s.tail),
-                last_text: s.last_text.clone(),
-                last_role: s.last_role.clone(),
-                note: if s.last_text.is_some() {
-                    None
-                } else {
-                    Some("opencode: chưa có lượt assistant nào đọc được trong kho phiên".into())
-                },
-                ..Default::default()
-            });
+                &crate::opencode::db_path(account),
+            ));
         }
         // Cửa sổ `/new` không đề bài: id đặt trước, kho chưa có hàng (opencode
         // sinh phiên ở câu đầu). Dựng hàng từ liên kết để con trỏ, `/type`,
