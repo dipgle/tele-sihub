@@ -9174,6 +9174,59 @@ pub fn should_close_old_window(new_session_appeared: bool) -> bool {
     new_session_appeared
 }
 
+/// Chỉ nhận phiên mới đang sống trên ĐÚNG tty vừa mở và đúng tài khoản.
+/// Hai ứng viên hoặc dữ liệu cũ/mù đều không đủ bằng chứng để đóng tiền nhiệm.
+pub fn codex_successor_on_tty<'a>(
+    sessions: &'a [LiveSession],
+    tty: &str,
+    account: &str,
+    old_id: &str,
+    opened_ms: i64,
+) -> Option<&'a str> {
+    let mut found = sessions.iter().filter(|s| {
+        s.kind == "codex"
+            && is_real_tty(&s.tty)
+            && s.tty.trim_start_matches("/dev/") == tty.trim_start_matches("/dev/")
+            && s.account == account
+            && !s.session_id.is_empty()
+            && s.session_id != old_id
+            && s.started_at_ms >= opened_ms
+    });
+    let id = found.next()?.session_id.as_str();
+    found.next().is_none().then_some(id)
+}
+
+fn wait_for_codex_session_id(
+    cfg: &Config,
+    tty: &str,
+    account: &str,
+    old_id: &str,
+    opened_at: std::time::SystemTime,
+) -> Option<String> {
+    let opened_ms = opened_at
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as i64;
+    for _ in 0..20 {
+        // Chỉ dò TUI trên tty vừa mở; không quét Terminal hay mọi account Claude.
+        let mut procs = Procs::read();
+        procs
+            .by_pid
+            .retain(|_, p| p.tty.trim_start_matches("/dev/") == tty.trim_start_matches("/dev/"));
+        let mut live = SessionsSnapshot::default();
+        codex_rows(cfg, &procs, &mut live);
+        if let Some(id) = codex_successor_on_tty(&live.sessions, tty, account, old_id, opened_ms) {
+            logging::info(
+                "new_session_matched_by_tty",
+                json!({ "session": id, "tty": tty, "cli": "codex" }),
+            );
+            return Some(id.to_string());
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    None
+}
+
 /// Một lượt phiên TỰ mở kế nhiệm bằng `acc-mo-vai.sh <cây> <brief>`, đọc từ chính
 /// nhật ký của nó. `at_ms` là mốc lệnh được gõ — phiên kế nhiệm sinh SAU mốc ấy.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9413,59 +9466,60 @@ pub fn start_fresh_after_handover(
     // 🤖 Phiên kế nhiệm trên acc CODEX (Quang 15/11 «acc10 vứt cho chó gặm à»): phiên
     // sau bàn giao trắng ngữ cảnh, chỉ mang bản bàn giao làm đề bài ⟹ CLI nào cũng nhận
     // được. Đi ĐÚNG cửa `/new <acc codex>` ([`open_codex_window`]: tường + đoạn mở đầu
-    // bắt buộc KIỂM trước). id phiên codex không ghép được theo nhật ký Claude ⟹ GIỮ cửa
-    // sổ cũ (cùng kết cục an toàn với nhánh «id rỗng» bên dưới).
-    if let Some(row) = account_row(cfg, Some(dung_acc)).filter(|a| a.is_codex()) {
+    // bắt buộc KIỂM trước). Ghép bằng TUI/rollout trên tty như /session, rồi đi
+    // CHUNG cửa đóng cũ. Không được trả new_id=None cố định cho mọi phiên Codex.
+    let (tty_short, new_id) = if let Some(row) =
+        account_row(cfg, Some(dung_acc)).filter(|a| a.is_codex())
+    {
         if row.locked && !allow_locked {
             ensure_account_usable(cfg, Some(dung_acc))?;
         }
+        let opened_at = std::time::SystemTime::now();
         let (_w, tty_short, tuong) = open_codex_window(cfg, &row, cwd, &task)?;
+        let new_id =
+            wait_for_codex_session_id(cfg, &tty_short, dung_acc, &session.session_id, opened_at);
         logging::info(
             "handover_window_opened",
-            json!({ "tty": tty_short, "session": "", "fresh": true, "cli": "codex",
+            json!({ "tty": tty_short, "session": new_id.clone().unwrap_or_default(), "fresh": true, "cli": "codex",
                     "acc_cu": session.account, "acc_moi": dung_acc, "doi_acc": true,
-                    "tuong": tuong, "old_window": "giữ nguyên" }),
+                    "tuong": tuong }),
         );
-        return Ok(FreshWindow {
-            tty: tty_short,
-            new_id: None,
-            closed_err: None,
-            old_kept: true,
-            asking: Vec::new(),
-        });
-    }
-    if allow_locked {
-        logging::info(
-            "account_locked_open_allowed",
-            json!({ "account": dung_acc, "why": "chủ máy xác nhận cho lượt bàn giao này" }),
-        );
+        (tty_short, new_id)
     } else {
-        ensure_account_usable(cfg, Some(dung_acc))?;
-    }
-    let cmd = window_command(cfg, Some(dung_acc), cwd, Some(&task), None);
-    let opened_at = std::time::SystemTime::now();
-    let (_window, tty) = crate::keys::open_window(&cmd)?;
-    let tty_short = tty.trim_start_matches("/dev/").to_string();
-    // MỘT chỗ cho cả `/new` lẫn đường này — xem `wait_for_new_session_id`.
-    // `exclude` là phần riêng có thật của lượt bàn giao: phiên CŨ vẫn đang ghi
-    // tiếp nhật ký, nên "tệp nào vừa đổi" bao gồm cả nó, và bản cũ đã ghép
-    // trúng id phiên đang bị đóng sổ (`handover_window_opened session:0a109818…`).
-    // `deep = false`: ở đây không có id nghĩa là GIỮ NGUYÊN cửa sổ cũ — một kết
-    // cục an toàn, không đáng trả thêm 40 giây hỏi `claude agents`.
-    let new_id = wait_for_new_session_id(
-        cfg,
-        cwd,
-        opened_at,
-        &tty_short,
-        Some(&session.session_id),
-        false,
-    );
-    logging::info(
-        "handover_window_opened",
-        json!({ "tty": tty_short, "session": new_id.clone().unwrap_or_default(), "fresh": true,
+        if allow_locked {
+            logging::info(
+                "account_locked_open_allowed",
+                json!({ "account": dung_acc, "why": "chủ máy xác nhận cho lượt bàn giao này" }),
+            );
+        } else {
+            ensure_account_usable(cfg, Some(dung_acc))?;
+        }
+        let cmd = window_command(cfg, Some(dung_acc), cwd, Some(&task), None);
+        let opened_at = std::time::SystemTime::now();
+        let (_window, tty) = crate::keys::open_window(&cmd)?;
+        let tty_short = tty.trim_start_matches("/dev/").to_string();
+        // MỘT chỗ cho cả `/new` lẫn đường này — xem `wait_for_new_session_id`.
+        // `exclude` là phần riêng có thật của lượt bàn giao: phiên CŨ vẫn đang ghi
+        // tiếp nhật ký, nên "tệp nào vừa đổi" bao gồm cả nó, và bản cũ đã ghép
+        // trúng id phiên đang bị đóng sổ (`handover_window_opened session:0a109818…`).
+        // `deep = false`: ở đây không có id nghĩa là GIỮ NGUYÊN cửa sổ cũ — một kết
+        // cục an toàn, không đáng trả thêm 40 giây hỏi `claude agents`.
+        let new_id = wait_for_new_session_id(
+            cfg,
+            cwd,
+            opened_at,
+            &tty_short,
+            Some(&session.session_id),
+            false,
+        );
+        logging::info(
+            "handover_window_opened",
+            json!({ "tty": tty_short, "session": new_id.clone().unwrap_or_default(), "fresh": true,
                 "acc_cu": session.account, "acc_moi": dung_acc,
                 "doi_acc": dung_acc != session.account }),
-    );
+        );
+        (tty_short, new_id)
+    };
 
     // 🔴 KHÔNG ĐÓNG CỬA SỔ CŨ KHI PHIÊN MỚI CHƯA CHỨNG MINH NÓ CHÀO ĐỜI.
     //
@@ -9673,8 +9727,8 @@ pub fn is_opencode_session_id(id: &str) -> bool {
 
 /// `/new <acc codex> [-s dự án] [đề bài]` — mở codex trong một cửa sổ THẬT, sau
 /// tường đã KIỂM ([`crate::accounts::ensure_codex_wall`]). Trả (cửa sổ, tty, câu
-/// tường). huba chưa đọc nhật ký phiên codex ⟹ cửa sổ đi như một cửa sổ shell
-/// (`win-<tty>`): gõ chữ, `/shot` đều dùng được; `/session` chưa liệt kê nó.
+/// tường). `/session` ghép TUI với rollout đang mở bằng tty/fd; bàn giao dùng
+/// cùng phép đo để xác nhận phiên mới trước khi đóng phiên cũ.
 pub fn open_codex_window(
     cfg: &Config,
     acc: &ClaudeAccountCfg,
@@ -9938,7 +9992,12 @@ pub fn window_command(
 /// `Build · DeepSeek V4.1 Flash … OpenCode Go` không `· high`, `model.json` giữ
 /// `"variant": … "default"`. Gốc: `lenh-mo` chỉ IN `window_command`, bỏ bước này.
 pub fn chuan_bi_mo_opencode(acc: &ClaudeAccountCfg) {
-    crate::opencode::don_dich_vu_lech(acc);
+    // Máy chủ riêng hoặc --server do chủ máy chỉ định: không nối vào dịch vụ
+    // nền cũ, nên cũng không cần tắt dịch vụ mà các cửa sổ khác có thể đang dùng.
+    logging::info(
+        "opencode_server_mode",
+        json!({ "account": acc.name, "standalone": crate::accounts::opencode_private_server(acc) }),
+    );
     if let Some(m) = acc.model.as_deref().filter(|m| !m.trim().is_empty()) {
         let muc = acc
             .effort

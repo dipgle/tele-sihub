@@ -1,5 +1,9 @@
 # Việc mở huba
 
+- [ ] 🔴 **Chuyển phiên SANG acc opencode không chờ phiên mới** (đo 16/11 mac, 3 lượt sang acc9): `sessions::start_fresh_after_handover` có nhánh codex (`open_codex_window` + `wait_for_codex_session_id`) nhưng opencode rơi vào nhánh Claude (`wait_for_new_session_id`) ⟹ luôn `handover_new_session_never_appeared` ⟹ GIỮ cửa sổ cũ (hai phiên cùng module). Sửa: nhánh opencode dùng lại khối `/new` (`chuan_bi_mo_opencode` + `wait_opencode_session` + `write_binding`). Chưa sửa vì hàm ấy đang có mã dở chưa commit của 01a1dcde. Tạm: đo phiên acc9 mới lên danh sách rồi SIGTERM phiên cũ.
+- [ ] **Phiên ma khác tài khoản cùng tty**: 16/11 `/session` hiện acc8 `ses_e349d2d1` ở ttys025 — liên kết `~/.opencode-acc8/huba/windows.json` từ 11/11 (window …947418) bám tty đã dùng lại cho acc9 `ses_e1e048d4` (window …852058). `tty_cua_lien_ket_moi_nhat` chỉ xét trong MỘT tài khoản; cần so cả window id. Chỉ hiển thị, không có tiến trình.
+- [ ] acc9 `--standalone` đang ở `extra_args` của hàng acc9 (cấu hình theo máy) — thay bằng mã khi bản 01a1dcde (`opencode_private_server`) vào main. Máy chủ riêng ⟹ không có `state/opencode/service.json` ⟹ `opencode_context_windows_unreadable`, % ngữ cảnh rơi về bảng đoán.
+
 - [ ] Hạ tầng nhắc chuyển phiên OpenCode 15/11 21:05: UI đo live346177/628000=55.1%, không có nhắc50%; process123358 NHAC_CHUYEN_PHIEN/NHAC_NGUONG unset, plugin khai chỉ `/home/user1/huba/kem/scripts/cong-bao-mat-plugin`, hash khớp workspace. Plugin setup(index.js116–154) chỉ gate quyền/prompt, không nối nhắc; accounts.rs374–386 mới nối hook Claude/Codex. Chưa sửa hạ tầng ngoài cây; cần phiên lõi/hạ tầng bổ sung và đo RED/GREEN. UI làm gọn/tự chuyển, không đổi cờ kiểm.
 - [ ] Gom UI theo lệnh Hà: bộ kiểm mang theo Git tại docs/ui/tests và docs/flows/review.cjs, Python9/9/Playwright3/3/13sơđồ GATE0. QGgom fmt/clippy0 nhưng ngắt130 ở cargo test --no-run để chuyển phiên, KHÔNG toàn kho xanh; log `.tmp/qg-ui-commit.log`. Chỉ commit docs/UI/TODO/sổ UI/brief, loại config và exec.rs của lõi; push qua hòm thư huba, cần đọc lại remote trước khai đã đẩy. Brief `.tmp/brief-huba-ui-ke-nhiem-20261115-2105.md`.
 
@@ -18,6 +22,31 @@
 - [ ] 15/11 07:50: sửa kẹt kết quả huba-run/Codex đã viết/kiểm, CHƯA CÀI. RED4 (ô thật bỏ Enter, 2 schema journal, draft chung tiền tố), GREEN93 test liên quan, clippy -Dwarnings/release build0; smoke terminal thật khối2923ký tự: finish_send tự Enter, journal đúng1/0trùng, `.tmp/probe-codex-missed-enter-fixed.log` GATE0. Retry dùng cùng cửa kiểm journal, không nhận Unverified là gửi xong. Đợi user duyệt 3binary + script chuẩn ở workspace/scripts và bản cài/kem/scripts (blob8166c7ea, selftest14/14); installer `.tmp/cai-codex-send.py` backup/rollback/giữ pane. Chưa nghiệm thu toàn route Telegram sau cài.
 
 - [ ] Phụ thuộc sau gộp origin `f6e5c12` (15/11): Ubuntu thiếu `../scripts/mo-dau-phien.py`. Hai bài `tuong_codex_hai_chieu` và `mo_dau_phien_hien_man_va_vao_ngu_canh` đỏ vì thiếu khâu này; 5 bài cùng nhóm qua, 1 bài ghi tài khoản thật ignored. Không sửa/ghi cây hạ tầng ngoài phiên huba; chưa cài lại bản sau gộp. Cần phiên hạ tầng đồng bộ dependency rồi chạy lại 2 bài, không bỏ kiểm tra.
+
+- [ ] **Mac 15/11: cài bản sửa Enter chỉ Codex/đóng cũ/port opencode** — trước299/20
+  binary; thu hẹp theo Quang203/8, Claude giữ cũ; fmt/clippy/release mã0. Cài mã1: chặn ghi
+  `hubd.new`; daemon CHƯA nhận sửa. Hai ca mở rộng cần ps/socket bị chặn.
+  Chi tiết `docs/loi-phien-enter-opencode-20261115.md`; cần nghiệm thu thực tế
+  tin Tele/kết quả huba → gửi đi, bàn giao → cũ đóng, acc8/9 mở độc lập.
+- [ ] **acc9 = opencode + ChatGPT (theo `docs/kiem-tra-them-tai-khoan-va-nguon-model.md` §C2)** —
+  Mac 15/11 21:0x: hàng acc9 `cli:"opencode"`, model `openai/gpt-6.1-sol`, bỏ env_file/api_key_env,
+  MỞ khoá; acc10 KHOÁ. Bản `4517401` đã cài (tự cài GATE_EXIT=0). CHƯA đăng nhập ChatGPT
+  (`~/.opencode-acc9/` chưa có) ⟹ Quang gõ `/accounts acc9 -l` + mã thiết bị; chưa mở TUI acc9 thật.
+- [ ] **Các tiền nhiệm còn tồn** — xác minh từng cặp/việc nền trước đóng; bản vá
+  ghép Codex đã chuẩn bị, không đoán theo tên dự án hay tắt hàng loạt.
+
+- [ ] **Mac 15/11: cài và nghiệm thu đọc gộp tab** — 3 đường trong `keys.rs`
+  đã sửa; 229 kiểm liên quan + fmt/clippy/release xanh. CHƯA chạy Terminal thật,
+  chưa cài (sandbox chặn XPC; `--verify` trả 1). Số đo:
+  `docs/kiem-doc-gop-tab-20261115.md`. Không coi test mô phỏng là nghiệm thu UI.
+- [x] **Kế nhiệm Mac: 45dac16e/ttys005 đã đóng** — log `close_done` 08:58 +07
+  (`logs/huba.log:117504`), sau lượt trước chưa đo được; không khai phiên này tự đóng.
+- [ ] **iOS: kết quả chạy lại 3550/3551/3555** — đã báo inbox tfl5 tin 3 về sửa
+  nhận diện Mac `7bf441f`; chưa nhận kết quả thực, không tự chạy trên cây iOS.
+- [x] **Kiểm log Mac `/accounts` + bộ chọn acc10** — `/accounts` thật 08:41,
+  4.397 ký tự, ack gửi thành công; log chuyển acc6 → acc10 08:21 (31%).
+  Đây là đối chiếu log, chưa nhìn tin Telegram.
+
 - [ ] 🔴 **Ubuntu: cập nhật lên `bc3b516`** — phiên AI Ubuntu làm (brief `.tmp/brief-huba-ubuntu-cap-nhat-20261115.md`) (Quang 15/11: «ghi chú luôn thì tôi đỡ phải nhắc»). Mac đã làm + đẩy; Ubuntu làm ĐỦ 3 bước, theo thứ tự:
   1. Kéo **CẢ HAI** kho: huba **và** kho chung `/mnt/data/projects` (`workspace-infra`, cần ≥ `4997f88` — mang `scripts/mo-dau-phien.py` + `acc-mo-vai.sh`). Thiếu kho chung ⟹ đúng lỗi mục cũ dưới đây.
   2. Chạy lại 2 bài từng đỏ: `cd rust && cargo test --offline --test tuong_codex --test codex_duoc_chon` ⟹ phải XANH (đỏ ⟹ ghi lại đây, KHÔNG bỏ kiểm).

@@ -17545,7 +17545,11 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                                             );
                                             break;
                                         }
-                                        if let Err(e) = crate::keys::press(w, "enter") {
+                                        let enter = view.as_ref().map_or_else(
+                                            || Err(anyhow::anyhow!("chưa đọc được ô nhập để gửi Enter")),
+                                            |(body, _)| crate::keys::enter_after_text(w, body),
+                                        );
+                                        if let Err(e) = enter {
                                             logging::warn(
                                                 "keys_enter_failed",
                                                 json!({ "session": s.session_id,

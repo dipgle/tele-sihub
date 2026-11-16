@@ -1281,6 +1281,13 @@ pub fn launch_line(cfg: &Config, acc: Option<&ClaudeAccountCfg>) -> String {
     parts.join(" ")
 }
 
+/// Mặc định dùng máy chủ riêng; giữ --server mà chủ máy chỉ định.
+pub fn opencode_private_server(acc: &ClaudeAccountCfg) -> bool {
+    !acc.extra_args
+        .iter()
+        .any(|a| a == "--server" || a.starts_with("--server="))
+}
+
 /// Dòng lệnh của một tài khoản `opencode` — mỗi tài khoản MỘT phân vùng.
 ///
 /// Không có tệp cấu hình tĩnh: mọi thứ thay đổi được (khoá, model, provider)
@@ -1324,6 +1331,12 @@ fn opencode_launch_line(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
         parts.push(assign(k, v));
     }
     parts.push(path_token(&cfg.opencode_cli));
+    // XDG tách dữ liệu, KHÔNG tách cổng dịch vụ: opencode 2.2.7 dùng 49374
+    // cho mọi profile. Máy chủ riêng cũng nhận đúng cấu hình/quyền của lượt mở,
+    // không nối vào server dựng từ cấu hình cũ. --server do chủ máy khai thì giữ.
+    if opencode_private_server(acc) && !acc.extra_args.iter().any(|a| a == "--standalone") {
+        parts.push("--standalone".to_string());
+    }
     for a in &acc.extra_args {
         parts.push(value_token(a));
     }
@@ -1437,6 +1450,9 @@ fn opencode_launch_line_ps(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
         pre.push(format!("$env:{k} = {}", ps_quote(v)));
     }
     let mut call = format!("& {}", ps_quote(&cfg.opencode_cli));
+    if opencode_private_server(acc) && !acc.extra_args.iter().any(|a| a == "--standalone") {
+        call.push_str(" --standalone");
+    }
     for a in &acc.extra_args {
         call.push(' ');
         call.push_str(&ps_quote(a));
