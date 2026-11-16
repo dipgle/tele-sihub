@@ -1339,7 +1339,7 @@ pub fn lien_ket_thieu(
         if let Some(id) = session_trong_argv(command) {
             theo_id.entry(id).or_default().push(t.to_string());
         } else if let Some((_, de)) = command.split_once(" --prompt ") {
-            let de = gon(&giai_vis_ps(de));
+            let de = gon(de);
             if !de.is_empty() {
                 theo_de.entry(de).or_default().push(t.to_string());
             }
@@ -1366,7 +1366,14 @@ pub fn lien_ket_thieu(
     let mut phien_theo_de: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (id, cau) in cau_dau {
         if kho_ids.contains(id) && !bindings.contains_key(id) {
-            phien_theo_de.entry(gon(cau)).or_default().push(id.clone());
+            // Hai khoá cho một câu: nguyên văn (Linux `/proc` giữ xuống dòng thật) và
+            // dạng `ps` của macOS in ra ([`vis_ps`]). Trùng nhau thì chỉ một.
+            let tho = gon(cau);
+            let vis = gon(&vis_ps(cau));
+            if vis != tho {
+                phien_theo_de.entry(vis).or_default().push(id.clone());
+            }
+            phien_theo_de.entry(tho).or_default().push(id.clone());
         }
     }
     for (de, ttys) in theo_de {
@@ -1383,39 +1390,22 @@ pub fn lien_ket_thieu(
     out
 }
 
-/// Argv như `ps` của macOS in: ký tự điều khiển thành `\NNN` bát phân (vis), `\` thành
-/// `\\`; chữ UTF-8 để nguyên. Giải ngược về byte thật. Linux (`/proc`) không mã hoá —
-/// chuỗi không có `\` đi qua nguyên vẹn. THUẦN.
-pub fn giai_vis_ps(s: &str) -> String {
-    if !s.contains('\\') {
-        return s.to_string();
-    }
-    let b = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'\\' {
-            if b.get(i + 1) == Some(&b'\\') {
-                out.push(b'\\');
-                i += 2;
-                continue;
-            }
-            let so = b
-                .get(i + 1..i + 4)
-                .filter(|d| d.iter().all(|c| (b'0'..=b'7').contains(c)));
-            if let Some(d) = so {
-                let v = d.iter().fold(0u32, |a, c| a * 8 + u32::from(c - b'0'));
-                if let Ok(byte) = u8::try_from(v) {
-                    out.push(byte);
-                    i += 4;
-                    continue;
-                }
-            }
+/// Một chuỗi như `ps -ww -o command=` của macOS IN nó trong argv. Đo 16/11 (macOS 26,
+/// `perl -e 'sleep 4' …`): xuống dòng ⟹ `\012`, tab ⟹ `\011`, CR ⟹ `^M`; dấu `\` thật
+/// GIỮ NGUYÊN (không nhân đôi) — nên `\012` chữ và xuống dòng KHÔNG phân biệt được từ
+/// argv, phải mã hoá phía kho chứ không giải mã phía argv. Ký tự điều khiển khác chưa
+/// đo ⟹ để nguyên (lệch thì không ghép — an toàn). THUẦN.
+pub fn vis_ps(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\n' => out.push_str("\\012"),
+            '\t' => out.push_str("\\011"),
+            '\r' => out.push_str("^M"),
+            _ => out.push(c),
         }
-        out.push(b[i]);
-        i += 1;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    out
 }
 
 pub fn bindings_path(acc: &ClaudeAccountCfg) -> PathBuf {
@@ -1929,35 +1919,53 @@ mod tests {
         assert!(lien_ket_thieu(&mu, &trong, &kho, &BTreeMap::new()).is_empty());
     }
 
-    /// Quang 13/11 «rất nhiều phiên đang chạy acc8 nhưng danh sách phiên lại
-    /// không có»: cửa sổ mở trước `--session` (ttys004 · ttys011) — ghép bằng
-    /// đề bài ↔ câu user đầu tiên, chỉ khi một-một.
     /// 🔴 Đo 16/11 mac (chuyển [aihub] sang acc9): đề bài bàn giao NHIỀU DÒNG; `ps` của
-    /// macOS in xuống dòng trong argv thành `\012` (vis), nên so nguyên văn với câu đầu
-    /// trong kho KHÔNG khớp ⟹ phiên mới chỉ hiện `win-<tty>`, Telegram không thấy nó.
+    /// macOS in xuống dòng thành `\012`, tab `\011`, CR `^M`, và KHÔNG nhân đôi `\` thật
+    /// ⟹ so nguyên văn với câu đầu trong kho không khớp ⟹ phiên mới chỉ hiện
+    /// `win-<tty>`, Telegram không thấy nó. Ca thứ hai là đúng lượt vấp tiếp theo: bàn
+    /// giao của phiên [huba] mang CHỮ `\012` (giải argv thành xuống dòng là ghép hỏng).
     #[test]
     fn ghep_de_bai_nhieu_dong_ps_in_bat_phan() {
-        let de = "Tiếp quản phiên trước. BÀN GIAO:\n\n[aihub] **BÀN GIAO**\nđường C:\\tmp";
-        let argv = format!(
-            "/Users/x/.opencode/bin/opencode --standalone --prompt {}",
-            de.replace('\\', "\\\\").replace('\n', "\\012")
-        );
-        let tuis = vec![("ttys020".to_string(), argv)];
-        let mut cau = BTreeMap::new();
-        cau.insert("ses_a".to_string(), de.to_string());
-        assert_eq!(
-            lien_ket_thieu(&tuis, &BTreeMap::new(), &tap(&["ses_a"]), &cau),
-            vec![("ses_a".to_string(), "ttys020".to_string())]
-        );
-        // Đối chứng: đề bài KHÁC vẫn không ghép sau khi giải mã.
+        let ps_in = |s: &str| {
+            s.replace('\n', "\\012")
+                .replace('\t', "\\011")
+                .replace('\r', "^M")
+        };
+        for de in [
+            "Tiếp quản phiên trước. BÀN GIAO:\n\n[aihub] **BÀN GIAO**\n\t- việc kế\r\n",
+            "BÀN GIAO:\n- `giai_vis_ps`: giải `\\012` để ghép được phiên.\nđường C:\\tmp",
+        ] {
+            let mut cau = BTreeMap::new();
+            cau.insert("ses_a".to_string(), de.to_string());
+            // macOS (`ps` mã hoá) và Linux (`/proc` giữ nguyên) đều ghép.
+            for argv in [ps_in(de), de.to_string()] {
+                let tuis = vec![(
+                    "ttys020".to_string(),
+                    format!("/Users/x/.opencode/bin/opencode --standalone --prompt {argv}"),
+                )];
+                assert_eq!(
+                    lien_ket_thieu(&tuis, &BTreeMap::new(), &tap(&["ses_a"]), &cau),
+                    vec![("ses_a".to_string(), "ttys020".to_string())],
+                    "{de:?}"
+                );
+            }
+        }
+        // Đối chứng: đề bài KHÁC vẫn không ghép.
+        let tuis = vec![(
+            "ttys020".to_string(),
+            format!(
+                "/Users/x/.opencode/bin/opencode --prompt {}",
+                ps_in("BÀN GIAO:\nmột")
+            ),
+        )];
         let mut khac = BTreeMap::new();
-        khac.insert(
-            "ses_a".to_string(),
-            "Tiếp quản phiên trước. BÀN GIAO: khác".to_string(),
-        );
+        khac.insert("ses_a".to_string(), "BÀN GIAO:\nhai".to_string());
         assert!(lien_ket_thieu(&tuis, &BTreeMap::new(), &tap(&["ses_a"]), &khac).is_empty());
     }
 
+    /// Quang 13/11 «rất nhiều phiên đang chạy acc8 nhưng danh sách phiên lại
+    /// không có»: cửa sổ mở trước `--session` (ttys004 · ttys011) — ghép bằng
+    /// đề bài ↔ câu user đầu tiên, chỉ khi một-một.
     #[test]
     fn ghep_cua_so_cu_bang_de_bai() {
         let de =
