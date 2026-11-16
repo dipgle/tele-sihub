@@ -224,9 +224,15 @@ const NGUON: &str = include_str!("../src/pipeline.rs");
 
 /// Số chỗ đặt con trỏ CÒN LẠI trong `pipeline.rs`, khai MẪU SỐ (§13③).
 ///
-/// 10 chỗ, và cả 10 đều đi sau một lệnh của chủ máy: `/new` · `/term run` ·
+/// 11 chỗ, và cả 11 đều đi sau một lệnh của chủ máy: `/new` · `/term run` ·
 /// `/handover -a` (hai nhánh) · `/terminal` trần · `shot_<id>` · `/follow` bỏ
-/// theo · `/follow <id>` · `s_<id>` · **nâng cấp con trỏ cửa-sổ→phiên**.
+/// theo · `/follow <id>` · `s_<id>` · **nâng cấp con trỏ cửa-sổ→phiên** ·
+/// **`/new <acc codex>`**.
+///
+/// 🔴 Chỗ thứ 11 thêm 2026-11-14 (`9d7b1ce`, nhánh codex của `/new`: mở cửa sổ
+/// codex xong thì trỏ vào phiên vừa mở — y như `/new` của Claude). Xuất phát từ
+/// lệnh `/new` chủ máy gõ. Cổng đỏ từ đó tới 16/11 mà không ai sửa số: QG gom
+/// 16/11 mới bắt được.
 ///
 /// 🔴 Chỗ thứ 10 thêm 2026-09-12, và cổng này bắt được nó đúng như thiết kế —
 /// nó ĐỎ trên full suite trước khi ai kịp nói "xong" (`10 ≠ 9`). Trả lời đúng
@@ -244,7 +250,7 @@ const NGUON: &str = include_str!("../src/pipeline.rs");
 /// Con số này là một CỔNG, không phải trang trí: thêm một đường đặt con trỏ mà
 /// không sửa số ⟹ đỏ, và người sửa phải nói ra đường mới ấy xuất phát từ lệnh
 /// nào của chủ máy. Đó đúng là câu hỏi Hà đặt ra ngày 03/09.
-const SO_CHO_DAT_CON_TRO: usize = 10;
+const SO_CHO_DAT_CON_TRO: usize = 11;
 
 /// Cắt thân một hàm cấp cao nhất: từ dòng khai báo tới dấu `}` ở cột 0.
 ///

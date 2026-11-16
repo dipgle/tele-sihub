@@ -7,6 +7,10 @@
 //! Hai chiều, cùng một hàm: cổng THẬT (`~/projects/scripts/cong_bao_mat.py` của
 //! cây này) ⟹ dựng được tường, `hooks.json` trỏ đúng cổng; cổng GIẢ luôn cho qua
 //! ⟹ PHẢI từ chối mở (một tường không chặn được gì không phải tường).
+//!
+//! Chỉ unix: cổng và MCP giả là script shell có quyền chạy (`PermissionsExt`) — bản dựng
+//! Windows của `gate.sh` (WIN_EXIT) không biên dịch được tệp này từ 14/11 (`f6e5c12`).
+#![cfg(unix)]
 
 use huba::config::ClaudeAccountCfg;
 
