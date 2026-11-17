@@ -1142,6 +1142,20 @@ pub fn opencode_config_content(acc: &ClaudeAccountCfg) -> Value {
             }
         }
     }
+    // 🔴 Quang 17/11: *"chỉnh tệp luật của opencode cho giống claude đi đừng hỏi quyền
+    // nữa"* · *"dù là cli nào đi chăng nữa vẫn cùng một nội dung"*. Trước đây chỉ các
+    // DENY vào `permission.bash` ⟹ lệnh không khớp luật nào rơi về mặc định «ask» của
+    // opencode ⟹ màn đứng chờ một cú bấm không ai ngồi. Nay mặc định CHO (`bash "*"`,
+    // `edit`); thứ CẤM vẫn do policy chung quyết (các deny trên + plugin
+    // `cong-bao-mat-plugin` kiểm TỪNG lệnh ở `permission.hook("evaluate")`). Tài khoản
+    // khai chặt hơn trong `opencode_config` (đã có `bash."*"` / `edit`) thì giữ.
+    if let Some(bash) = allow.get_mut("bash").and_then(Value::as_object_mut) {
+        bash.entry("*".to_string())
+            .or_insert_with(|| json!("allow"));
+    }
+    allow
+        .entry("edit".to_string())
+        .or_insert_with(|| json!("allow"));
     // `external_directory`: mặc định KHÔNG hỏi lại khi đụng thư mục ngoài
     // project đang mở, cho đúng cây workspace + vùng tạm. Đây là quyền ĐỌC/ĐI
     // thư mục; quyền GHI vẫn do cổng bảo mật (`cong_bao_mat.py`) quyết.
@@ -1152,10 +1166,20 @@ pub fn opencode_config_content(acc: &ClaudeAccountCfg) -> Value {
             if let Some(p) = perm.as_object_mut() {
                 if !p.contains_key("external_directory") {
                     let ws = h.join("projects");
-                    let ws_s = ws.to_string_lossy().to_string();
                     let mut m = serde_json::Map::new();
-                    m.insert(ws_s.clone(), json!("allow"));
-                    m.insert(format!("{ws_s}/*"), json!("allow"));
+                    // Cả đường symlink lẫn đường THẬT: Ubuntu `~/projects` → `/mnt/data/projects`,
+                    // và `cwd` của tiến trình là đường đã giải symlink (đo 17/11).
+                    let mut goc = vec![ws.to_string_lossy().to_string()];
+                    if let Ok(that) = std::fs::canonicalize(&ws) {
+                        let that = that.to_string_lossy().to_string();
+                        if !goc.contains(&that) {
+                            goc.push(that);
+                        }
+                    }
+                    for ws_s in goc {
+                        m.insert(ws_s.clone(), json!("allow"));
+                        m.insert(format!("{ws_s}/*"), json!("allow"));
+                    }
                     m.insert("/tmp/*".to_string(), json!("allow"));
                     m.insert("/private/tmp/*".to_string(), json!("allow"));
                     m.insert("/private/var/folders/*".to_string(), json!("allow"));
@@ -3487,6 +3511,20 @@ mod tests {
             "phải cho cây workspace: {ext:?}"
         );
         assert_eq!(ext.get("/tmp/*"), Some(&json!("allow")));
+        // Quang 17/11 «đừng hỏi quyền nữa»: mặc định CHO, cấm vẫn từ policy.
+        assert_eq!(c.pointer("/permission/bash/*"), Some(&json!("allow")));
+        assert_eq!(c.pointer("/permission/edit"), Some(&json!("allow")));
+        assert_eq!(
+            c.pointer("/permission/bash/git push *"),
+            Some(&json!("deny"))
+        );
+        // Đối chứng: tài khoản khai CHẶT hơn thì huba không mở rộng hộ.
+        let mut chat = a.clone();
+        chat.opencode_config = Some(json!({"permission":{"bash":{"*":"ask"},"edit":"ask"}}));
+        let c3 = opencode_config_content(&chat);
+        assert_eq!(c3.pointer("/permission/bash/*"), Some(&json!("ask")));
+        assert_eq!(c3.pointer("/permission/edit"), Some(&json!("ask")));
+        assert_eq!(c3.pointer("/permission/bash/rm *"), Some(&json!("deny")));
         let claude = acc("acc3");
         assert!(!claude.is_opencode());
         assert!(!launch_line(&cfg(), Some(&claude)).contains("OPENCODE"));
