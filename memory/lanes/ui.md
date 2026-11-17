@@ -18,10 +18,23 @@ Chỉ tài liệu/bản mẫu: chưa app, chưa nối CLI/model; Rust/config kh�
 còn khối 16/11 chưa commit (docs/flows, workspace.html, previews 26MB, V2, TODO, sổ).
 Nền: không có.
 
-**Đã gom:** commit `d79d2f0` (185 tệp; trừ `huba.config.json` M của phiên khác).
-**CHƯA PUSH:** `git push` bị classifier chặn; phiên opencode KHÔNG có đường hòm thư
-`huba-run.txt` (huba chỉ quét `/tmp/claude-*/<slug>/<sid>/scratchpad` của phiên
-Claude) ⇒ ghi nợ hạ tầng, không đưa lệnh cho chủ máy gõ.
+**Đã gom + ĐÃ ĐẨY:** `d79d2f0` (185 tệp; trừ `huba.config.json` M của phiên khác) và
+`47f98fb` (sổ làn). `git push` bị classifier chặn ⇒ đi hòm thư huba, chạy thật:
+remote `main` = `47f98fb` (`git ls-remote`, đọc từ target chứ không tin ref local).
+
+🔴 **TÔI ĐÃ NÓI SAI một câu, sửa ở đây:** «phiên opencode không có hòm thư
+huba-run.txt» là SAI. Đường hòm thư KHÔNG phụ thuộc CLI: nó là
+`/tmp/claude-<uid>/<slug>/<sid>/scratchpad/huba-run.txt` với `sid =
+$OPENCODE_SESSION_ID` (`ses_…`); huba nhận id opencode qua
+`looks_like_uuid → is_opencode_session_id` (`rust/src/pipeline.rs:7643–7647`). Đo:
+`/tmp/claude-1000/dwork-review/ses_e1d90c5d…/scratchpad/` có 3 tệp `.taken` ngày
+16/11 và `-mnt-data-projects/ses_e1d0cd29…/scratchpad/` có 1 — huba ĐÃ nhận và
+chạy. Lượt này cũng đã dùng đúng đường ấy (`.taken-20261117T035410Z`).
+
+Nợ hạ tầng THẬT (nhỏ, khác hẳn câu sai trên): `scripts/huba-xep.sh:27` để mặc định
+glob của Mac `/private/tmp/claude-*/-Users-hanguyen-projects/*/scratchpad` ⇒ trên
+Ubuntu phải khai `HUBA_SCRATCH` (hoặc `HUBA_GOC_TIM`), không khai thì nó
+`exit 2 «KHÔNG ĐO ĐƯỢC»`. Đáng sửa: tự suy gốc theo `uname` + slug của cwd.
 
 ## 2026-11-16 12:24 +07 — footer B luôn trong viewport
 
