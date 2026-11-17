@@ -1,5 +1,29 @@
 # huba/ui
 
+## 2026-11-17 11:05 +07 — hòm thư huba: đường nào, ai dựng, vì sao tên tuỳ tiện
+
+Hà hỏi «sao lại có đường `/tmp/claude-1000/dwork-review/ses_e1d90c5d…`». Đo, không suy:
+
+**Nó là gì.** Thư mục tạm của MỘT phiên = `scratchpad`; huba đọc
+`…/scratchpad/huba-run.txt` và **lấy id phiên từ chính đường dẫn** (không ai gõ id ⇒
+không gửi nhầm phiên) — `rust/src/pipeline.rs:7620–7630`, dò ở `7650–7693`. Đã dùng
+thật: 4 tệp `.taken` của hai thư mục đó (16/11 12:43/12:52/13:10/13:48) đều là lệnh
+`python3 -c …` ghi devlog dwork; huba đã chạy.
+
+**Ai dựng cây.** Claude Code TỰ dựng `/tmp/claude-<uid>/<slug-cwd>/<uuid>/{tasks,scratchpad}`
+(đo: `-mnt-data-projects/{0ee0bd99,50eecab4,58f6076b,8e07ad0d,9e273b02…}` đều có
+`tasks`+`scratchpad`). opencode **KHÔNG**: `/proc/563477/environ` không có `TMPDIR`,
+`XDG_CACHE_HOME=~/.opencode-acc8/cache` ⇒ phiên opencode muốn dùng hòm thư phải tự
+`mkdir`. Vì tự đặt tên nên đoạn giữa tuỳ tiện: phiên dwork-review đặt tên **làn**
+(`dwork-review`), lượt này của tôi đặt **slug cwd** (`-mnt-data-projects`). Không có
+quy ước nào bắt đoạn giữa — đó là toàn bộ lý do đường trông lạ.
+
+**Nợ + cách sửa (chưa làm, cần Hà cho chạm `~/projects/scripts/`):** đường hòm thư
+phải SUY RA ĐƯỢC, không để phiên tự đặt tên. Helper `huba-hop-thu` tính
+`<gốc theo hệ>` + slug cwd + `$OPENCODE_SESSION_ID` (opencode) / id phiên Claude;
+`huba-xep.sh:27` gọi helper thay cho glob Mac `/private/tmp/claude-*/-Users-hanguyen-projects/*/scratchpad`
+(hiện trên Ubuntu phải khai `HUBA_SCRATCH`, không thì `exit 2 «KHÔNG ĐO ĐƯỢC»`).
+
 ## 2026-11-17 09:55 +07 — lấp lỗ đo: index.html sinh lại 12:23 chưa từng kiểm browser
 
 Quét ra lỗ: `index.html` bị sinh lại 12:23 (nhúng W0 mới) nhưng chỉ có unit +
