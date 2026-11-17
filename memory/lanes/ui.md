@@ -18,6 +18,11 @@ Chỉ tài liệu/bản mẫu: chưa app, chưa nối CLI/model; Rust/config kh�
 còn khối 16/11 chưa commit (docs/flows, workspace.html, previews 26MB, V2, TODO, sổ).
 Nền: không có.
 
+**Đã gom:** commit `d79d2f0` (185 tệp; trừ `huba.config.json` M của phiên khác).
+**CHƯA PUSH:** `git push` bị classifier chặn; phiên opencode KHÔNG có đường hòm thư
+`huba-run.txt` (huba chỉ quét `/tmp/claude-*/<slug>/<sid>/scratchpad` của phiên
+Claude) ⇒ ghi nợ hạ tầng, không đưa lệnh cho chủ máy gõ.
+
 ## 2026-11-16 12:24 +07 — footer B luôn trong viewport
 
 Chốt mới “B luôn hiện, chỉ cuộn A”. Mẫu độc lập100dvh/flex, khôngminheightđẩyB ra ngoài; A cuộn nội bộ, header/menu/rightgiữchỗ. RED1280×720 B720…843/page856; soảnhthêmRED600px A/detailtrànB→gridrowminmax0. GREEN Chromium+WebKit 3cỡ900/720/600 cao:page=viewport,scrollY0,Bgiữvịtrí,Acuộn,khônglấnB; cấyoversizeđỏ→lành. Unit17/17, hai pinlogexit0/console0/remote0; khôngrerunfull19flow/khôngkhaiđãkiểmapp.
