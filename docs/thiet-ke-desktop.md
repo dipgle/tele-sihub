@@ -1,5 +1,11 @@
 # Thiết kế huba desktop — giao diện, luồng và kiến trúc đa nền tảng
 
+> **Cập nhật 16/11:** bản tổng thể mới ở [thiet-ke-tong-the-v2.md](thiet-ke-tong-the-v2.md)
+> và [bản vẽ V2 có đánh dấu vấn đề](flows/index.html). Phần bàn hai vùng, nhiều view,
+> danh tính và đề xuất runtime trong V2 thay các phần tương ứng của bản15/11 dưới đây.
+> Đây vẫn là thiết kế để bàn, chưa triển khai. Prototype `ui/index.html` là mẫu cũ,
+> chưa được chuyển sang bố cục hai vùng.
+
 Ngày: 15/11/2026. Trạng thái: **đề xuất để xem xét, chưa triển khai sản phẩm**.
 
 Yêu cầu: chat trực tiếp trên PC; có trang quản lý; nối Telegram và có đường mở rộng kênh; đóng gói cài được; thiết kế trước khi viết sản phẩm; sửa ít mã nhất khi chạy Windows, macOS, Linux. Bản mẫu đi kèm: [ui/index.html](ui/index.html). Dữ liệu trong bản mẫu đều là minh họa.

@@ -1,15 +1,35 @@
 {
-  "title": "huba — Luồng UC · dữ liệu · context / input / output",
-  "status": "BẢN THIẾT KẾ ĐỂ DUYỆT. Các service/collector/kho raw/transport desktop trong bản này là đề xuất, chưa triển khai và chưa nghiệm thu trên ứng dụng thật.",
+  "title": "huba V2 — Bàn làm việc nhiều phiên · kiến trúc · luồng chi tiết",
+  "date": "16/11/2026",
+  "status": "THIẾT KẾ V2 ĐỂ BÀN. Không phải sản phẩm đã triển khai. Đỏ = lỗi có bằng chứng; cam = khoảng chưa đo; tím = cần chốt; vàng = rủi ro cần kiểm. Đánh dấu không có nghĩa đã sửa.",
   "intro": "huba là cầu nối tới phiên CLI thật. Chủ máy thao tác qua Desktop, Telegram hoặc terminal; CLI vẫn sở hữu vòng gọi model và lắp context. huba chuyển lệnh, kiểm nhận, thu nguồn được CLI cung cấp và trình bày lại — không tạo thêm một agent suy luận đứng giữa.",
   "principles": [
     "Ba lớp dùng chung ID để lần từ UC → command → phiên/lượt → request model → raw record → nội dung hiển thị. ID không có từ nguồn phải để chưa xác định, không ghép bằng thời gian gần nhau.",
-    "Đọc sơ đồ từ trên xuống. Hàng vàng/hồng/tím là nhánh có điều kiện, không phải mọi hàng đều chạy nối tiếp; UC có thể dừng ở nhánh lỗi. Mũi tên chỉ bên gửi → bên nhận, không biểu thị thời gian đo thực tế.",
+    "Đọc sơ đồ từ trên xuống. Hàng vàng/hồng/tím có điều kiện, không phải mọi hàng chạy nối tiếp. Nhánh lỗi thay thế đường chính tại bước đó, không chạy sau thành công; các hàng lỗi liền nhau cùng báo đủ rồi dừng thao tác. Mermaid tách alt/else/break; phục hồi là tương tác mới khi đủ điều kiện. Mũi tên không biểu thị thời gian đo thực tế.",
     "Desktop và Telegram gọi cùng nghiệp vụ tại hubad; terminal đi thẳng CLI rồi collector quan sát lại. Không có poller Telegram thứ hai, không đẩy mọi sự kiện về mọi kênh nếu chưa được chọn theo dõi.",
     "Ba thứ khác nhau: chữ người dùng nhập; nhật ký CLI ghi; payload request/response thực gửi tới model. Bản gốc phải mang đúng nhãn nguồn và độ đầy đủ.",
     "Context model ≠ lịch sử đang hiển thị trên UI ≠ kho raw ≠ tổng token sử dụng. Mở màn/xem raw/lọc báo cáo không tự gọi model hoặc nạp lại prompt.",
     "Hàng rào quyền chạy ở core và lớp thực thi, không dựa vào model nhớ lời dặn. Nội dung model/tool/raw luôn được coi là dữ liệu không đáng tin khi render; không chạy HTML/JS hay lệnh do nó chứa.",
-    "Chuẩn thiết kế mong muốn có thể chặt hơn mã hiện tại. Nguồn hiện có và khoảng chưa chứng minh được ghi cuối trang; đây không phải bản đồ phụ thuộc máy trích từ code/traces."
+    "Chuẩn thiết kế mong muốn có thể chặt hơn mã hiện tại. Nguồn hiện có và khoảng chưa chứng minh được ghi cuối trang; đây không phải bản đồ phụ thuộc máy trích từ code/traces.",
+    "Một phiên có khóa bất biến; dự án/module được giao, tiêu đề hội thoại và thư mục đang đứng là ba trường riêng. Chưa giao dự án thì hiện Phiên chung + ID; đường dẫn trong log không quyết định danh tính.",
+    "Hai vùng dùng cùng phạm vi máy/tài khoản: A là phiên có panel trực tiếp trên bàn này, B là phiên mở còn lại. A giao B rỗng; A hợp B bằng tổng phiên mở đã xác minh. Bộ lọc không được che mất tổng chưa lọc; nguồn mù phải công bố mẫu số chưa xác minh.",
+    "Nhiều cửa sổ có view ID và subscription riêng. Đóng panel không đóng CLI; đóng app không đồng nghĩa tắt dịch vụ. Mọi lệnh mang session key + generation, không dùng focus toàn cục làm đích ngầm.",
+    "B luôn hiện ở đáy khung nhìn; chỉ A cuộn danh sách ô chat. App co theo chiều cao cửa sổ và dành chỗ cố định cho footer, không có chiều cao tối thiểu đẩy B ra ngoài màn hình. Bản thuyết minh dài vẫn là tài liệu; workspace.html mới là bản mẫu khung app để kiểm hành vi này.",
+    "Mục tiêu là không cần mở cửa sổ terminal riêng cho việc thường ngày; không phải bỏ CLI, PTY hay đường tiếp quản. Runtime không có cửa sổ chỉ là đề xuất cần duyệt và đo đủ capability, không tự thay chế độ đang chạy."
+  ],
+  "issues": [
+    {"id":"P01","state":"bug","title":"Tên phiên nhiễm đường dẫn trong log","evidence":"Đã đối chiếu ca kiểm tra máy: daemonlog72701→72820 [projects]→[zkey], cùng ID; CLI sau đó [scripts]. sessions.rs2104–2159,2508–2529; báo cáo docs/ra-soat-ten-phien-goc-20261116.md.","proposal":"Giữ Phiên chung nếu chưa được giao dự án; tách scope, topic, identity và nguồn xác nhận. Không lấy path census làm danh tính.","discuss":"Cách giao dự án qua lời nói cần gợi ý/xác nhận rõ; sửa nhãn không tự đổi quyền/cwd/context. P01 đánh dấu seam suy diễn path; bước D6 đang vẽ là hướng chặn lỗi, không phải chọn dự án là sai.","points":[["D6",3]]},
+    {"id":"P02","state":"gap","title":"Báo dừng có đường chờ vòng dò dài","evidence":"Thăm dò cũ16/11: poll120s,278cycle/277khoảng; đây là nhịp vòng, chưa đo latency đầu-cuối. Số đo tại .tmp/do-tre-thong-bao-20261116.md; chưa khẳng định binary hiện tại đã sửa.","proposal":"Sự kiện lifecycle đánh thức nhánh trạng thái nhẹ; polling chỉ đối soát. Ghi mốc nguồn→ingest→fanout→UI/ACK Telegram.","discuss":"Chốt mục tiêu độ trễ theo capability sau đo; mất nguồn giữ unknown, không suy idle hoặc chết.","points":[["D5",2],["D1",8],["U5",5]]},
+    {"id":"P03","state":"gap","title":"Preview không phải timeline đầy đủ","evidence":"opencode.rs274–276,305–329:40hàng/6000ký tự. request-trace.md24–41 mới thăm dò một lượt lịch sử OpenCode, không chứng minh live/đủ3CLI.","proposal":"Collector riêng có cursor nguồn, revision bản ghi mutable, raw/gap. Preview chỉ phục vụ danh sách.","discuss":"Lịch sử đến đâu, giữ raw bao lâu, dung lượng và migration; không tự coi thiếu dữ liệu là không có hoạt động.","points":[["D1",1],["C5",3],["D3",4]]},
+    {"id":"P04","state":"decision","title":"Ô chat làm việc + footer phiên; mật độ còn bàn","evidence":"Phản hồi16/11 đã chỉ rõ: A phải thấy từng phiên chạy gì và chat riêng; focus đổi chi tiết cột phải; B chỉ cần footer full ngang phía dưới. Hướng bố cục này không còn là câu hỏi chưa chọn.","proposal":"A giữ hội thoại/input/trạng thái/việc đang làm ở mọi ô; focus chỉ đổi chi tiết. B ở dưới toàn bộ menu+A+chi tiết, có icon chạy/việc đang làm/tin mới, cập nhật không phụ thuộc focus.","discuss":"Còn bàn mật độ, số ô và co giãn theo màn; cùng phiên ở nhiều bàn chỉ đếm một lần mỗi scope. Bản mẫu tương tác không phải sản phẩm đã kết nối CLI.","points":[["U5",3],["U6",2]]},
+    {"id":"P05","state":"risk","title":"Nhiều cửa cùng điều khiển nhầm hoặc đúp","evidence":"pipeline.rs913–925: thiếu target thì dùng focus:session chung; screenshot explicit cũng có đường đổi focus16120–16143. Chưa tái hiện race desktop V2, không bê con trỏ này sang nhiều view.","proposal":"Lệnh mang target+generation+command ID; một dispatcher/phiên, control lease cho thao tác terminal thô; nhận diện lại trước side effect.","discuss":"Cho gửi thêm khi đang chạy chỉ nếu adapter đã đo; lease hết hạn không replay lệnh mơ hồ. Cùng chữ khác command ID vẫn là hai ý định.","points":[["U6",5],["D2",6],["U7",7]]},
+    {"id":"P06","state":"decision","title":"Không cửa sổ terminal riêng ≠ không CLI","evidence":"Luật hiện hành CLAUDE.md24–44 đòi đường chủ máy tiếp quản; thiết kế cũ §4.3 còn mở terminal thật. Chưa nghiệm thu runtime không cửa sổ thay thế trên3OS.","proposal":"UI là nơi làm việc chính. Giữ CLI runtime/PTY khi cần, terminal nhúng và nút mở terminal gốc; chỉ bật chế độ mới khi capability đủ.","discuss":"Đề xuất chỉ mở terminal gốc khi cần, chưa duyệt bỏ yêu cầu cửa sổ hiện hành hoặc tự chuyển phiên đang chạy.","points":[["U7",3],["U1",7],["U4",14]]},
+    {"id":"P07","state":"decision","title":"Cần journal gốc hay cả payload model?","evidence":"thiet-ke-desktop.md54–80; MCP không tự quan sát mọi request. Chưa có phép đo payload đầy đủ từngCLI/provider/version.","proposal":"Nguồn J: journal; nguồn P: model body chỉ khi hook hỗ trợ. Raw có provenance/completeness; phần ẩn ghi không cung cấp.","discuss":"Chốt mức bắt buộc; không MITM/đổi thuê bao sang API tính phí chỉ để có P.","points":[["C4",4],["C5",5],["X0",6]]},
+    {"id":"P08","state":"gap","title":"Child/job có thể còn chạy khi cha idle","evidence":"Thăm dò lịch sử08:53 ghi memory/active-context.md:5lượt subagent+8job mẫu; tool completed là ACK khởi chạy, jobexit1 vẫn có thể statecompleted. Chưa đo live/recovery/3CLI.","proposal":"Graph cha-con/job theo nativeID; launch ACK, runtime và kết quả là ba trục riêng. Sau ngắt/đóng vẫn nêu job còn sống.","discuss":"Khi cha kết thúc có dừng job không phải policy được công bố; child không làm tăng số phiên người dùng.","points":[["C5",7],["D5",5],["U2",15]]},
+    {"id":"P09","state":"gap","title":"Giao lệnh/permission/attachment cần parity từng adapter","evidence":"pipeline.rs8214–8227: thiếu journal thì Codex chưa xác nhận nhưng non-Codex còn trả DaGui theo màn; bất nhất đọc từ mã, chưa tái hiện giao lỗi thật. Asking/Question sessions.rs4244–4288 chưa có revision/toolID; multi-question/multi-select đã có, không phủ nhận tính năng cũ.","proposal":"Đã nhận ở huba khác CLI-accepted; revision cho câu hỏi; attachment có manifest và receipt theo nguồn. Không hỗ trợ thì nêu rõ và có takeover.","discuss":"Không bật nút giả; không nhận spawn0/composer mất chữ là chắc đã giao. Không nâng quyền để đạt parity.","points":[["D2",7],["U2",10],["U7",5]]},
+    {"id":"P10","state":"gap","title":"Usage từng request chưa là báo cáo toàn kỳ","evidence":"Thiết kế cũ §9 và request-trace.md: metric ngữ cảnh/quota không phải tổng token; prototype dùng fixture, chưa collector toàn kỳ.","proposal":"Canonical usage theo semantics/cache/counter generation; child rollup tránh cộng đôi; chart/CSV cùng filter và coverage.","discuss":"Không có nguồn thì chưa đo; không thêm billing/tracker hoặc model để ước lượng.","points":[["D4",3],["C4",7]]},
+    {"id":"P11","state":"decision","title":"Vỏ desktop, transport và quyền trên ba OS","evidence":"thiet-ke-desktop.md7–52: Tauri/local IPC là đề xuất; kiểm HTML Chromium không chứng minh WebView2/WebKit/native ACL hay bộ cài.","proposal":"Frontend chung; core kiểm principal/scopes; host/CLI/channel adapter riêng. Chạy spike trên Windows/macOS/Linux trước chọn vỏ cuối.","discuss":"Không mở LAN mặc định; secrets ngoài DOM; lựa chọn framework/vỏ theo thử thật, chưa là quyết định đã triển khai.","points":[["U1",2],["U3",8],["U6",1]]},
+    {"id":"P12","state":"risk","title":"Crash/reconnect/retention có thể làm mất hoặc lặp","evidence":"Nguy cơ của thiết kế streaming/command mới, chưa khẳng định lỗi runtime cụ thể. Nguồn mutable/cursor/history thiếu đã có bằng chứng giới hạn.","proposal":"Raw+ingest cursor commit cùng transaction; projection và view cursors riêng; command uncertain hòa giải, không replay side effect.","discuss":"Chốt retention/export theo quyền và audit; gap phải thấy rõ, quyền bị thu hồi thì xử lý cache nhạy cảm của client theo policy.","points":[["U4",3],["D1",4],["U6",8]]}
   ],
   "layer_notes": {
     "DATA": "Theo dấu dữ liệu, không theo màn hình: tách ý định người dùng, trạng thái giao lệnh, bản ghi CLI, payload model tùy khả năng, projection và usage. Giữ nguồn trước khi chuẩn hóa.",
@@ -19,7 +39,7 @@
     ["UC-01", "Chủ máy mở app / kết nối dịch vụ", "Danh tính OS, bản app/core, workspace", "Vào màn chính hoặc lỗi đúng bước", ["U1", "D2"], "Core lệch phiên bản, không quyền, probe lỗi không được biến thành danh sách rỗng"],
     ["UC-02", "Chọn / thêm dự án", "Folder thật, cấu hình mặc định, revision", "Dự án đã lưu; luật được nhận diện", ["U3", "C1"], "Folder mất/quyền thiếu → không lưu thành sẵn sàng; không tự mở rộng quyền ghi"],
     ["UC-03", "Thêm account / đăng nhập / đổi model", "CLI, account, model, lần login", "Trạng thái xác thực và phạm vi áp dụng", ["U3", "C1"], "Mã hết hạn/lần login cũ không được gửi sang cửa sổ khác; khóa account không xóa lịch sử"],
-    ["UC-04", "Mở phiên", "Dự án, account hoặc auto, model/effort, việc tùy chọn", "Phiên CLI có ID và terminal thật", ["U1", "C1"], "Mở được pane chưa phải CLI sẵn sàng; thiếu luật/quyền phải có trạng thái rõ"],
+    ["UC-04", "Mở phiên", "Phiên chung hoặc dự án đã giao; account/model; runtime mode đã hỗ trợ", "SessionKey, readiness và đường tiếp quản rõ ràng", ["U1", "C1", "U7"], "Mở được process/pane chưa phải CLI sẵn sàng; không tự đổi mode hoặc bịa tên dự án"],
     ["UC-05", "Gửi tin / nhận phản hồi", "Nội dung, attachment refs, session ID, command ID", "Đã nhận / chưa xác định / phản hồi nguồn", ["U2", "D2", "C2"], "Double-click/mất ACK không được gõ lại mù; attachment chưa đọc không được nhận đã gửi đủ"],
     ["UC-06", "Trả lời bảng hỏi nhiều câu", "Question ID/revision, các đáp án", "CLI ghi nhận lựa chọn, tiếp tục lượt", ["U2", "D2"], "Câu hỏi đổi, phiên chết, thiếu đáp án → làm mới/giữ lựa chọn, không bấm bảng cũ"],
     ["UC-07", "Xem hoạt động tool / subagent", "Phiên, lượt, tool-call ID, parent-child refs", "Hoạt động đang chạy/kết quả/lỗi có nguồn", ["D1", "C2"], "Tool lỗi hoặc child chưa kết thúc không được hiện hoàn thành; không gộp output child thành parent gốc"],
@@ -31,7 +51,13 @@
     ["UC-13", "Xem báo cáo token / CSV", "Khoảng ngày/múi giờ/account/model/dự án", "KPI/chart/bảng/CSV cùng phạm vi", ["D4", "C4"], "Usage thiếu không thành0; stream/final, parent-child và cache không cộng đôi"],
     ["UC-14", "Mất kết nối / restart / đọc lịch sử", "Cursor, command đang treo, revision", "Draft giữ nguyên; khôi phục trạng thái có bằng chứng", ["U4", "D1", "D2"], "Không tự gửi lại command đã có khả năng thực thi; cursor mất → báo gap, không giả liên tục"],
     ["UC-15", "Sửa cấu hình / quyền", "Giá trị mới, expected revision, actor", "Revision + audit + thời điểm áp dụng", ["U3", "C1"], "Xung đột revision → đối chiếu lại, không ghi đè; model không được tự cấp quyền"],
-    ["UC-16", "Xuất dữ liệu / chẩn đoán", "Phạm vi, quyền xuất, xác nhận chủ máy", "Manifest export và nhãn raw/derivative", ["D3", "D4"], "Không tự phát tán raw nhạy cảm; secret transport của huba không vào log hay bản chẩn đoán"]
+    ["UC-16", "Xuất dữ liệu / chẩn đoán", "Phạm vi, quyền xuất, xác nhận chủ máy", "Manifest export và nhãn raw/derivative", ["D3", "D4"], "Không tự phát tán raw nhạy cảm; secret transport của huba không vào log hay bản chẩn đoán"],
+    ["UC-17", "Sắp ô chat và footer phiên", "Scope máy/account, layout, tập session keys", "A có chat riêng luôn thấy hoạt động; focus đổi cột phải; B footer full ngang", ["U5"], "Không focus vẫn cập nhật trạng thái/tin/việc đang làm; chưa đủ nguồn thì báo chưa xác minh"],
+    ["UC-18", "Nhiều cửa sổ cùng theo dõi/điều khiển", "ViewID, subscription, command target", "Fanout có cursor; command đúng phiên, không lặp", ["U6", "D2"], "Không dùng focusglobal làm target; takeover phải có control lease"],
+    ["UC-19", "Nhận trạng thái mới và mất nguồn", "Lifecycle event hoặc kết quả đối soát", "Trạng thái có bằng chứng và mốc mới nhất", ["D5"], "Mất nguồn không biến thành idle/closed; notification chỉ chuyển trạng thái"],
+    ["UC-20", "Giao dự án / sửa tên hiển thị", "User choice, confirmed assignment, expected revision", "Topic/scope/assignment riêng, identity key giữ nguyên", ["D6"], "Tên nhắc trong log không được giao dự án; đổi tên không cấp quyền hay tự đổi cwd"],
+    ["UC-21", "Xem vòng xử lý và child/job", "Turn/request/tool/child/job refs + revision", "Live hoặc xem lại cùng graph và coverage", ["C5"], "Tool khởi chạy completed không chứng minh job xong; không bịa HTTPrequest từ assistantrow"],
+    ["UC-22", "Tiếp quản khi không mở terminal riêng", "Runtime mode, capabilities, lease, binding", "Terminal nhúng/gốc cùng phiên hoặc từ chối rõ", ["U7"], "Không mở phiên mới giả takeover; chưa có driver attach thì giữ terminal gốc"]
   ],
   "front_tables": [
     {
@@ -42,7 +68,7 @@
         ["A01", "Chủ máy", "Mục tiêu, câu hỏi, xác nhận, tệp → ý định thao tác", "Mọi UC; không thay quyết định người dùng bằng model đoán"],
         ["A02", "Khung chat Desktop", "Draft + session đích → send/answer/action; event → timeline", "Chat local; draft/UI state không tự vào model"],
         ["A03", "Telegram client + adapter", "Owner text/callback/file → route/command; event → tin/nút", "Kênh tùy chọn; một collector Telegram; gate chat/user đúng loại update"],
-        ["A04", "Terminal / TUI", "Gõ trực tiếp → CLI; CLI → chữ màn hình/PTY", "Chủ máy tiếp quản phiên thật; không bắt gõ terminal phải vòng qua huba"],
+        ["A04", "Terminal nhúng / cửa sổ gốc", "Control lease + binding → tiếp quản cùng CLI; capture/PTY → màn", "Cứu hộ/tương tác chưa có API; không cần cửa sổ riêng thường xuyên là mục tiêu, chưa là capability đã đo"],
         ["A05", "Vỏ Desktop / IPC client", "UI command → local transport đã ghép; stream → UI", "Đề xuất Tauri; không cho frontend chạy shell/đọc DB CLI tùy ý"],
         ["A06", "Gate danh tính và scope", "OS peer/pairing hoặc owner chat → quyền thao tác", "Mọi cửa core; không tin actor/scope client tự khai"],
         ["A07", "Router / application service", "Phân loại quản lý hay chat → handler chung", "help/list/config có thể dừng tại huba, không đi model"],
@@ -141,18 +167,18 @@
       "id": "U1", "layer": "UC", "title": "Mở app → chọn dự án → mở phiên thật",
       "purpose": "Đường vào chính, có cả máy đã cài và lần đầu. Có thể mở phiên chưa nhập việc; huba không tạo phiên headless thay thế một cách âm thầm.",
       "input": "OS user, phiên bản app/core, workspace/project ref, account ref hoặc auto, model/effort, việc tùy chọn.",
-      "output": "Session ref + terminal binding có bằng chứng; UI hiển thị sẵn sàng hoặc trạng thái chưa xác định/lỗi đúng bước.",
+      "output": "SessionKey + runtime binding có bằng chứng và đường tiếp quản; UI hiển thị sẵn sàng hoặc trạng thái chưa xác định/lỗi đúng bước.",
       "invariant": "Danh sách không đọc được khác danh sách0 phiên. Pane mở được khác CLI sẵn sàng. Chưa có câu đầu thì ghi chờ câu đầu, không bịa phản hồi.",
-      "actors": ["Chủ máy", "Desktop UI", "hubad / core", "Host / terminal", "CLI"],
+      "actors": ["Chủ máy", "Desktop UI", "hubad / core", "Host / runtime", "CLI"],
       "events": [
         [0, 1, "Mở ứng dụng", "Bắt đầu UC-01", "normal"],
         [1, 2, "Ghép client, kiểm quyền và version", "Trước mọi thao tác", "normal"],
         [2, 1, "Báo lỗi; không cho chạy lệnh", "Nếu core mất / version không khớp / không quyền: dừng", "error"],
-        [0, 1, "Chọn hoặc thêm dự án, account", "Nếu chưa cấu hình: qua U3 rồi quay lại", "branch"],
+        [0, 1, "Chọn Phiên chung hoặc dự án đã giao", "Account/model có thể theo mặc định đã kiểm", "branch"],
         [1, 2, "Yêu cầu Mở phiên + request ID", "UC-04: chủ máy bấm Mở", "normal"],
-        [2, 2, "Kiểm cấu hình, luật, capability", "Từ chối rõ nếu điều kiện không đủ", "normal"],
-        [2, 3, "Mở terminal với profile đã chọn", "Không đổi sang nguồn model khác âm thầm", "normal"],
-        [3, 4, "Khởi động CLI có hàng rào", "Terminal thật để chủ máy tiếp quản", "normal"],
+        [2, 2, "Kiểm assignment, luật và capability", "Thiếu danh tính dự án giữ Phiên chung", "normal"],
+        [2, 3, "Mở runtime theo mode đã chọn", "Chưa đủ mode mới thì giữ terminal gốc", "normal"],
+        [3, 4, "Khởi động CLI có hàng rào", "Có đường tiếp quản; không tự headless hóa", "normal"],
         [4, 2, "Nhận diện phiên, PID / binding", "Xác nhận danh tính, không chỉ exit0", "normal"],
         [2, 1, "Chờ câu đầu / đang chạy / sẵn sàng", "Chỉ công bố mức đã chứng minh", "normal"],
         [2, 1, "Giữ trạng thái chờ; mở chẩn đoán", "Nếu đã mở cửa sổ nhưng chưa nhận diện CLI", "error"],
@@ -408,9 +434,193 @@
         [1, 3, "Tin mới / attachment theo quyền", "Lúc này nội dung mới có thể vào context", "branch"],
         [1, 0, "Coverage lịch sử và nguồn bị thiếu", "Không lấy hash khớp1 record chứng minh thu đủ", "normal"]
       ]
+    },
+    {
+      "id":"U5", "layer":"UC", "title":"A nhiều ô chat — focus cột phải — B footer đầy ngang",
+      "purpose":"A là các khung chat có hội thoại, input, trạng thái và việc đang làm luôn nhìn thấy. Focus ô nào thì cột phải hiện chi tiết ô đó. B là footer dưới cả menu+A+chi tiết, không còn bảng lớn trong vùng làm việc; vẫn nhận tin và hoạt động khi không focus.",
+      "input":"Scope host/account, view ID, layout đã lưu, session census có freshness/generation; layout không quyết định phiên sống hay chết.",
+      "output":"Mỗi ô A có chat/input/status/activity riêng; cột phải theo focus; footer B có icon chạy/chữ trạng thái/việc đang làm/tin gần nhất; root count và phần chưa xác minh, child/job riêng.",
+      "invariant":"A=O∩Panels(view), B=O trừ A, với O là tập root mở đã xác minh cùng scope. Panel unverified/out-of-scope có nhãn riêng, ngoài A/B. Filter hiển thị không đổi tổng scope; đổi scope thì tính lại O. Đóng panel cuối mới trả về B; tổng nhiều view dùng hợp khóa, không cộng tổng. Có nguồn mù thì tổng toàn bộ chưa xác minh.",
+      "actors":["Chủ máy", "Bàn / ViewID", "Session registry", "Subscriptions", "CLI sources"],
+      "events":[
+        [0,1,"Mở bàn, chọn scope máy/account","Không mặc định có quản lý máy xa", "normal"],
+        [1,2,"Xin snapshot + revision + freshness","Bàn lưu layout, không tự tạo phiên", "normal"],
+        [2,1,"Ô chat A + footer B + tổng theo khóa","Focus chỉ đổi chi tiết cột phải", "normal"],
+        [0,1,"Mở panel của một phiên trong B","Chỉ thay layout, không gọi Mở CLI", "normal"],
+        [1,3,"Timeline A + activity/latest cho footer B","Không focus vẫn nhận cập nhật", "normal"],
+        [3,4,"Thu nguồn một lần theo adapter","Nhiều panel không nhân bản collector", "normal"],
+        [3,1,"Chat/activity A và icon/tin/việc tại B","Không giành focus hoặc làm mất draft", "normal"],
+        [0,1,"Đóng panel cuối, phiên trở về B","Trong view này; không ngắt hoặc đóng CLI", "branch"],
+        [2,1,"Nguồn mất: giữ ảnh cũ và nhãn unknown","Không loại hàng như thể phiên đã chết", "error"],
+        [1,1,"Đối soát A/B/tổng và phần chưa rõ","Lọc/tìm có số đang hiện trên tổng", "normal"]
+      ]
+    },
+    {
+      "id":"U6", "layer":"UC", "title":"Nhiều cửa sổ — subscription riêng, command đích rõ",
+      "purpose":"Nhiều view có thể cùng xem một phiên hoặc khác phiên. Desktop/Telegram dùng chung service nhưng không giành lựa chọn, draft hoặc con trỏ đọc của nhau.",
+      "input":"Client identity/scopes, ViewID, session key, binding generation, subscription filter, snapshot/event cursor, command ID.",
+      "output":"Mỗi view nhận snapshot+delta đúng scope; lệnh serialize theo session và không bị chuyển đích khi cửa khác chọn phiên.",
+      "invariant":"View focus không phải command target. Subscription chỉ đọc không giữ control lease. Core kiểm quyền mỗi lần, bounded queue báo gap/resync; không hứa exactly-once trên CLI không hỗ trợ.",
+      "actors":["View A / View B", "IPC / gate", "Query + fanout", "Command dispatcher", "CLI / driver"],
+      "events":[
+        [0,1,"Ghép client + cấp scopes theo quyền","Không tin user ID client tự khai", "normal"],
+        [0,2,"Subscribe ViewID + scope + cursor","Mỗi cửa giữ layout/draft riêng", "normal"],
+        [2,0,"Snapshot watermark rồi delta có revision","Khoảng giữa snapshot/delta không mất event", "normal"],
+        [0,1,"Gửi command ID + SessionKey + generation","Chọn phiên tại cửa khác không đổi đích", "normal"],
+        [1,3,"Gate quyền và nhận intent một lần","Retry cùng key trả trạng thái cũ", "normal"],
+        [3,4,"Serialize tác động tới đúng phiên","Đọc lại binding trước khi gửi", "normal"],
+        [4,2,"Nguồn ghi ACK/trạng thái/nội dung mới","Kết quả fanout cho view có quyền", "normal"],
+        [2,0,"Gap hoặc cursor cũ: yêu cầu snapshot","Queue đầy không làm rơi event im lặng", "error"],
+        [0,2,"Unsubscribe hoặc đóng một cửa","Không đóng CLI hay view khác", "branch"],
+        [1,0,"Scope bị thu hồi: ngừng stream/action","Xử lý cache nhạy cảm theo policy", "error"]
+      ]
+    },
+    {
+      "id":"D5", "layer":"DATA", "title":"Lifecycle — nguồn thật → registry → panel/list/Telegram",
+      "purpose":"Trạng thái phiên, lượt model, tool và job không được gộp thành một cờ busy. Sự kiện đánh thức nhánh nhẹ, polling đối soát phần nguồn không phát sự kiện.",
+      "input":"Runtime/source events có timestamp/revision/generation và kết quả probe; scope nguồn và mức độ tin cậy; graph child/job.",
+      "output":"Session lifecycle + turn state + job state + source health, các mốc quan sát và notification chuyển trạng thái có dedup.",
+      "invariant":"Idle khác closed; ended turn khác nghiệp vụ được nghiệm thu; lỗi probe khác danh sách rỗng. Mất kết nối không tự giết phiên hay khép mọi job.",
+      "actors":["CLI / runtime", "Adapter observer", "Registry / graph", "Event delivery", "UI / Telegram"],
+      "events":[
+        [0,1,"Busy/idle/question/exit hoặc revision mới","Nguồn mutable cũng phải được cập nhật", "normal"],
+        [1,2,"Wake nhánh nhẹ + observation có nguồn","Polling định kỳ chỉ để đối soát", "normal"],
+        [2,2,"Kiểm generation và thứ tự bằng chứng","Mốc cũ không ghi đè trạng thái mới", "normal"],
+        [2,3,"Event chuẩn + source health + watermark","Đo t_source/t_ingest/t_fanout riêng", "normal"],
+        [2,3,"Child/job còn chạy hoặc kết quả lỗi","ACK khởi chạy không khép runtime job", "branch"],
+        [3,4,"Panel live + summary list + notice theo dõi","Một lần theo transition, không báo mỗi poll", "normal"],
+        [1,2,"Probe lỗi / disconnect / schema chưa biết","Giữ ảnh cũ, đánh dấu chưa xác minh", "error"],
+        [2,4,"Cũ/unknown và mốc cuối đã xác minh","Không chuyển unknown thành idle/closed", "error"],
+        [1,2,"Resync từ snapshot có generation","Khôi phục không phát lại notice hàng loạt", "branch"],
+        [4,4,"Render/ACK transport và đo latency","ACK Telegram không chứng minh đã thấy trên điện thoại", "normal"]
+      ]
+    },
+    {
+      "id":"D6", "layer":"DATA", "title":"Danh tính — SessionKey khác topic, cwd và dự án được giao",
+      "purpose":"Dẹp việc một phiên hỏi chung bị đổi tên sang ứng dụng trong log. Cho phép đặt tên dễ đọc nhưng không để nhãn làm thay quyền, scope hay đích lệnh.",
+      "input":"SessionKey từ host/CLI/namespace native; account attribution riêng; assignment user chọn/xác nhận, topic/cwd riêng, expected revision và actor.",
+      "output":"Phiên chung + ID hoặc dự án/module đã giao; provenance cho assignment và audit. Đổi tên không thay khóa phiên.",
+      "invariant":"Không có assignment không có nghĩa là không có phiên. Path census/prefix model chỉ có thể là gợi ý, không tự xác lập danh tính. Giao dự án không tự cấp quyền ghi hay đổi luật/context.",
+      "actors":["Chủ máy", "UI / lời giao việc", "Identity service", "Registry / audit", "CLI / nguồn"],
+      "events":[
+        [4,2,"Native ID + namespace + host + CLI","Account attribution và binding riêng", "normal"],
+        [2,3,"Chưa giao dự án: assignment null","Không ép root phải thuộc một ứng dụng", "normal"],
+        [4,2,"Path trong log / prefix assistant / cwd","Lưu provenance; không dùng làm assignment", "normal"],
+        [2,1,"Hiện Phiên chung · ID + topic riêng","Topic tự sinh có nhãn, không đổi scope", "normal"],
+        [0,1,"Chọn dự án/module hoặc xác nhận gợi ý","Ngôn ngữ tự nhiên mơ hồ thì chưa nhận giao", "branch"],
+        [1,2,"Assignment request + expected revision","Không đổi tên từ thao tác xem log", "branch"],
+        [2,3,"Kiểm folder/quyền, lưu actor và nguồn","Xung đột revision phải đối chiếu lại", "branch"],
+        [3,1,"Nhãn đã xác nhận, khóa phiên giữ nguyên","Đổi scope/runtime là UC riêng", "normal"],
+        [0,2,"Sửa tên hoặc bỏ assignment","Có audit; không phục hồi nhãn đoán cũ", "branch"]
+      ]
+    },
+    {
+      "id":"C5", "layer":"CONTEXT", "title":"Cây lượt xử lý — vòng assistant, model, tool, child và job",
+      "purpose":"Cùng graph phục vụ xem trực tiếp và xem lại. Các ID nguồn có đến đâu hiện đến đó; không lấy số hàng assistant làm số HTTP request khi thiếu ánh xạ.",
+      "input":"Command/delivery refs nếu có; turn/assistant/request/tool/child/job IDs, mutable revision, trạng thái và raw refs theo capability.",
+      "output":"Timeline/cây cha-con có input/output/tool result/errors/usage/source links; live và lịch sử chung semantics, có nhãn thiếu correlation.",
+      "invariant":"Tool returned/completed cho launch chỉ chứng minh lời gọi khởi chạy trả về. Child/job outcome và runtime terminal là bằng chứng riêng; exit1 không thành thành công vì metadata completed.",
+      "actors":["CLI / provider", "Collector", "Graph / raw", "UI trace", "Child / job"],
+      "events":[
+        [0,1,"Lượt bắt đầu hoặc assistant event","Turn ref chỉ khi có liên hệ chắc chắn", "normal"],
+        [1,2,"Lưu event gốc + source revision","Không dựng graph từ preview cắt ngắn", "normal"],
+        [0,1,"Cập nhật hàng cũ hoặc tool state","Đọc revision, không chỉ seq tăng", "normal"],
+        [2,3,"Vòng assistant quan sát được + refs","Không bịa request HTTP từ số hàng", "normal"],
+        [0,1,"Model request/response nếu hook xuất","Có capability mới hiện payload/source P", "optional"],
+        [0,2,"Tool-call → permission → result/error","Giữ toolID; gắn raw input/output", "branch"],
+        [0,4,"Launch child/job + nhận ACK ID","ACK khởi chạy không phải job kết thúc", "branch"],
+        [4,1,"Running/exit/result/error theo nguồn","Theo IDcon/job, không ghép bằng giờ gần", "branch"],
+        [2,3,"Cập nhật graph + coverage + usage","Usage parent/child không cộng trùng", "normal"],
+        [0,1,"Idle/abort/error + job còn mở","Kết thúc lượt không phải nghiệmthu côngviệc", "normal"],
+        [2,3,"Live hoặc replay cùng dữ liệu có nguồn","Chưa có ID thì hiện chưa ghép, không giấu", "normal"]
+      ]
+    },
+    {
+      "id":"U7", "layer":"UC", "title":"UI thay cửa sổ thường ngày — runtime và terminal tiếp quản",
+      "purpose":"Giảm cửa sổ terminal riêng mà không biến phiên thành agent nền không thể tiếp quản. Chỉ đề xuất mode mới; chưa sửa quy tắc hoặc runtime đang dùng.",
+      "input":"CLI/OS/version capability matrix, runtime mode người dùng đã duyệt, attach handle/generation, control lease và scope thao tác.",
+      "output":"Chat/trace/questions trong UI; khi cần thì cùng phiên mở terminal nhúng hoặc terminal gốc có bằng chứng, không sinh phiên thay thế.",
+      "invariant":"Cửa sổ đồ họa, PTY/console và tiến trình CLI là ba lớp khác nhau. Không đủ attach/receive/permission/interrupt/close/reconnect thì không công bố terminal-free. Takeover phải qua barrier cho cả structured và raw input, fence writer bằng lease epoch; còn command uncertain thì chưa nhập terminal.",
+      "actors":["Chủ máy / UI", "Capability / core", "Runtime / Host", "CLI / PTY", "Terminal viewer"],
+      "events":[
+        [0,1,"Xem capability theo OS/CLI/version","Tauri không tự cung cấp mọi driver", "normal"],
+        [1,0,"Hiện mode hiện hành và giới hạn","Chưa đo thì chưa hỗ trợ, không ẩn lỗi", "normal"],
+        [0,1,"Chọn mode UI-first nếu đủ điều kiện","Cần duyệt trước thay luật cửa sổ hiện hành", "branch"],
+        [1,2,"Runtime giữ CLI và kênh điều khiển","Không gọi mode mới là bỏ CLI", "branch"],
+        [0,1,"Chat/hỏi/quyền/tệp bằng UI cấu trúc","Chỉ bật thao tác có capability đã đo", "normal"],
+        [0,1,"Yêu cầu tiếp quản cùng phiên","Đăng nhập/cứu hộ/tương tác chưa có UI", "branch"],
+        [1,2,"Barrier + drain/fence rồi cấp lease","Chặn structured/raw input; kiểm composer", "branch"],
+        [2,4,"Attach PTY hoặc mở viewer gốc","Nếu không attach được: báo, không mở phiên mới", "branch"],
+        [4,3,"Input terminal tới cùng CLI","Input ngoài huba ghi nguồn terminal nếu biết", "branch"],
+        [0,1,"Trả lease qua barrier, giữ CLI","Reconcile input/draft rồi mở gửi cấu trúc", "branch"],
+        [1,0,"Thiếu driver / OS dialog cần tay người","Giữ đường terminal gốc, không hứa tự động hết", "error"]
+      ]
     }
   ],
   "tables": [
+    {
+      "title":"Sổ màn hình V2 — đầy đủ thao tác và trạng thái phải vẽ",
+      "note":"Đây là yêu cầu thiết kế, không phải checklist đã kiểm sản phẩm. Header toàn ngang; logo/tên trái, tài khoản chủ máy phải; nút thu menu ở đầu menu trái. Bảng có STT xuyên trang, nền xen kẽ, tìm toàn tập và phân trang.",
+      "headers":["Màn / vùng", "Nội dung và thao tác", "Empty/error/unknown bắt buộc", "Điểm vướng"],
+      "rows":[
+        ["Bàn làm việc", "A: nhiều chat/input riêng, luôn thấy việc đang làm; focus đổi cột phải. B: footer full ngang icon/status/việc/tin mới; lưu layout", "Không focus vẫn cập nhật; draft riêng; mất nguồn giữ ảnh cũ và nhãn unknown; tổng chưa xác minh", "P02/P04/P05"],
+        ["Panel phiên", "Danh tính/topic/account/model; hội thoại; gửi/tệp/ngắt; bảng hỏi/quyền; job; raw", "Draft riêng; ACK chưa rõ; câu hỏi cũ; tệp mất; chỉ có preview; chưa hỗ trợ thao tác", "P01/P03/P08/P09"],
+        ["Trace một lượt", "Cây lượt → vòng assistant/request nếu biết → tool → child/job; input/result/raw; live/xem lại", "Chưa ghép được; thiếu một phần; bị từ chối/lỗi; còn job sau idle; không có payload", "P03/P07/P08"],
+        ["Phiên và lịch sử", "Root mở, chưa xác minh và đã đóng tách nhóm; tìm toàn tập; mở panel/resume/fork/bàn giao", "Mất nguồn khác 0 phiên; resume chưa hỗ trợ; job mồ côi; lịch sử có khoảng thiếu", "P03/P06/P12"],
+        ["Mở phiên", "Chung/dự án rõ; account/model/effort; mode/capability; xem luật/quyền; việc tùy chọn", "Thiếu CLI/login; đang chờ binding; thiếu luật; mode chưa đủ; không tự mở pane thay thế", "P01/P06/P11"],
+        ["Tài khoản & model", "Thêm/sửa/khóa; lần đăng nhập; catalog model; quota có thời điểm và nguồn", "Challenge hết hạn; account khóa; model chưa xác minh; quota chưa đo; revision xung đột", "P09/P11"],
+        ["Kết nối", "Desktop IPC, Telegram, MCP pairing/scopes; kiểm nhận/gửi hai chiều; thu hồi client", "Sai owner/secret; poller trùng; mất mạng; nguồn lỗi; getMe không chứng minh hai chiều", "P05/P11/P12"],
+        ["Dự án / danh tính", "Folder thực; defaults; assignment có nguồn; topic riêng; xem luật; sửa tên nhưng giữ key", "Chưa gán; folder mất; thiếu quyền; xung đột; không đổi cwd/quyền theo nhãn", "P01"],
+        ["Báo cáo token", "ECharts từ usage CLI/plugin; lọc ngày/múi giờ/CLI/account/model; drill-down; CSV", "Chưa đo khác 0; cache không cộng đôi; độ phủ; counter reset; child rollup; cũ/offline", "P10"],
+        ["Hoạt động & chẩn đoán", "Command/attempt/audit, mốc latency và nguồn; export theo quyền", "Không đưa raw nhạy cảm vào log; thiếu receipt; crash chưa rõ kết quả; schema lạ", "P02/P09/P12"],
+        ["Cài đặt / bản cài", "Layout, thông báo, retention, cấu hình động có quyền/revision/audit; update/rollback", "Mặc định an toàn có nhãn; hết đĩa; migration lỗi; bundle lệch version; không tự tải/chạy", "P11/P12"],
+        ["Terminal tiếp quản", "Nhúng/gốc cùng binding; lease quyền nhập; chỉ xem khi không có quyền điều khiển", "Attach lỗi; tty tái sử dụng; dialog OS; lease cũ; mode chưa đo; không tạo phiên khác", "P05/P06/P09"]
+      ]
+    },
+    {
+      "title":"State model — không gộp mọi thứ thành đang chạy / xong",
+      "note":"Các trục độc lập. Tên hiển thị theo bằng chứng nguồn; unknown có lý do và lần cuối xác minh. Kết thúc lượt không chứng minh nghiệp vụ hoàn thành đúng.",
+      "headers":["Trục", "Trạng thái thiết kế", "Nguồn / điều kiện", "Hành vi UI"],
+      "rows":[
+        ["Session lifecycle", "starting / open / closing / closed / unverified", "Process/native session binding; snapshot và generation", "Idle vẫn open; mất nguồn giữ known row unverified, không loại nhưclosed"],
+        ["Turn", "idle / queued nếu hỗ trợ / processing / waiting-input / waiting-permission / ended / aborted / error / unknown", "Lifecycle CLI + turn refs khi có; không chỉ lấy text cuối", "Hiện outcome nguồn; job con vẫn độc lập; phần thiếu phải thấy"],
+        ["Command delivery", "received / dispatching / CLI-accepted / in-composer / rejected / uncertain", "Sổ intent + attempt + bằng chứng giao; command ID không thay native ACK", "Uncertain không tự gửi lại; giữ bản tin chờ đối chiếu"],
+        ["Tool call", "requested / permission-pending / running / returned / denied / error / unknown", "tool-callID, args, result hoặc error", "returned của launch chưa phải child/job ended; status metadata≠exit outcome"],
+        ["Child/job", "launching / running / ended(exit/outcome) / aborted / unknown", "Native child/job ID; liên hệ parent; runtime và kết quả", "Tách khỏi số root; parent đóng không tự khép job"],
+        ["Source health", "fresh / stale / disconnected / parse-error / unsupported / gap", "Tách content_changed/read_ok/inventory_complete/binding_verified; mỗi nguồn và child/job riêng", "Nguồn im lặng nhưng kiểm thành công không tự stale/ended; inventory kỳ vọng có phần chưa đo"],
+        ["Control", "structured / terminal-lease / transitioning / unavailable", "Core cấp lease theo actor + target generation + expiry", "Mọi view xem theo quyền; chỉ chủ lease gửi raw keys; không trộn composer"],
+        ["Assignment", "unassigned / confirmed(project,module,actor,revision) / conflict", "User chọn hoặc giao rõ được xác nhận; không đếm đường dẫn", "Topic/cwd riêng; đổi nhãn không đổi session key/context/quyền"]
+      ]
+    },
+    {
+      "title":"Contract bổ sung cho nhiều view và runtime",
+      "note":"Tên contract dự kiến, không khẳng định là API đang có. Localhost không tự có quyền. HostID là khóa local ổn định; hỗ trợ máy xa là mở rộng riêng, không mở LAN trong thiết kế này.",
+      "headers":["Đối tượng", "Khóa / trường tối thiểu", "Bất biến", "Phục hồi / lỗi"],
+      "rows":[
+        ["SessionKey", "host_id, cli_kind, source_namespace_ref, native_session_id", "Namespace native đã xác minh; account attribution riêng. Alias nhiều account không nhân đôi logical session", "Native ID chưa có: giữ pending_launch_id; nhiều runtime cùng session có binding riêng và phải giải mơ hồ"],
+        ["RuntimeBinding", "SessionKey, process/pane/console handle, binding_generation, driver_version", "Thay viewer/binding không tự đổi danh tính; kiểm generation trước tác động", "Handle cũ/tty dùng lại: từ chối hoặc đối soát, không gửi gần đúng"],
+        ["View / Panel", "client_instance_id, view_id, panel_id, selected_session, layout_revision", "Draft theo panel/session; focus view không đổi focus Tele; đóng panel không đóng CLI", "Khôi phục layout nhưng xác minh phiên còn sống; không tự launch"],
+        ["Subscription", "subscription_id, view_id, scopes, SessionKeys/filter, cursor, snapshot_watermark", "Thu nguồn một lần; kiểm quyền tại core; replay event không replay command", "Queue có giới hạn cấu hình; vượt giới hạn báo gap/resnapshot"],
+        ["Assignment", "SessionKey, project_ref?, module?, origin, actor, revision, confirmed_at", "Không assignment vẫn có Phiên chung; gợi ý khác xác nhận", "Nhãn đoán cũ giữ provenance/unconfirmed, không nâng thành lựa chọn user"],
+        ["ControlLease", "lease_id, lease_epoch, SessionKey, binding_generation, owner_client, expiry, mode", "Barrier chặn structured/raw mới; drain hoặc hòa giải đang bay; fence writer cũ tại side effect rồi attach", "Uncertain thì chưa cấp nhập; trả mode cũng qua barrier/composer; không phát lại phím; terminal ngoài không fence được phải báo giới hạn"],
+        ["Command", "command_id, actor đã xác minh, target, generation, expected_revision, payload_ref", "Idempotency theo ý định/phạm vi; payload khác cùng key phải từ chối", "Ghi sổ trước hiệu ứng; uncertain hòa giải theo bằng chứng"],
+        ["Capability", "OS, CLI, version, runtime_mode, feature, evidence_ref, verified_at", "supported / unsupported / unmeasured là ba trạng thái; không đoán parity", "Version đổi thì kiểm lại bằng chứng phù hợp; tắt action có giải thích"]
+      ]
+    },
+    {
+      "title":"Ma trận giảm terminal — điều kiện phải đo trước khi bật mode UI-first",
+      "note":"Dấu chưa đo là trạng thái hiện tại của thiết kế mới, không phủ nhận thao tác cũ đã có. Không chọn bỏ terminal hiện hành chỉ vì vẽ được UI.",
+      "headers":["Khả năng", "Trong UI mong muốn", "Đường runtime / fallback", "Điều kiện mở mode mới"],
+      "rows":[
+        ["Mở/attach/resume", "Một session key đúng, không cửa sổ riêng thường trực", "CLI + PTY/console khi cần; Linux tmux tách viewer; driver macOS/Windows riêng", "Attach/resume/restart/identity trên OS + CLI/version thật"],
+        ["Chat và giao nhận", "Text/Unicode/đa dòng, draft, receipt đúng mức", "API hỗ trợ hoặc PTY driver; không ACK chỉ theo chữ màn hình", "Mất ACK/double-click/crash/nhiều view; nguồn không chắc thì uncertain"],
+        ["Hỏi / quyền / input", "Đủ câu/multi-select/mô tả/free-text; revision; gate quyền", "Nguồn cấu trúc + driver chính thức; terminal nếu thiếu", "Không trả lời bảng cũ; giữ từ chối; không nới cổng"],
+        ["Tệp / ảnh / output", "Manifest/ref/bytes, code/text an toàn, bản gốc có nguồn", "Khả năng attachment CLI/provider; ref mất báo lỗi", "Phân biệt byte/ref/receipt; không nói model nhận bytes khi chỉ có path"],
+        ["Ngắt/đóng/job", "Năm thao tác: đóng view, ngắt lượt, dừng job, đóng CLI, tắt dịch vụ", "Driver/process group theo hỗ trợ; không giết bừa mọi job", "Đọc nguồn sau tác động; nêu job sống/unknown; xác nhận ảnh hưởng"],
+        ["Tiếp quản", "Terminal nhúng hoặc mở viewer gốc cùng phiên", "Control lease + cùng binding; dialog OS có thể cần tay người", "UI → terminal → UI giữ session ID/nội dung/draft, không mở phiên thay thế"],
+        ["Login / khôi phục", "Wizard đúng account/lần login; offline/reconnect", "URL/OTP/dialog OS theo yêu cầu; không tự mở browser", "Đo hết hạn/mã cũ/tắt app/tắt viewer/daemon crash, giữ đường cứu hộ"]
+      ]
+    },
     {
       "title": "Một kết quả tương tác đầy đủ gồm những phần nào?",
       "note": "Đầy đủ nghĩa là phân loại được mọi phần theo nguồn và có cờ thiếu/không áp dụng; không có nghĩa bắt provider phải xuất thinking hoặc payload ẩn. UI có thể gom tab, nhưng không làm mất loại dữ liệu.",
@@ -436,7 +646,7 @@
       "headers": ["Đối tượng", "Khóa / quan hệ", "Nguồn thật / bên sở hữu", "Quy tắc"],
       "rows": [
         ["Account / project config", "account_ref, project_ref, config_revision", "Chủ máy cấu hình qua core; provider auth riêng", "Không suy account từ thư mục symlink; revision/audit; model mặc định chỉ áp dụng đúng phạm vi"],
-        ["CLI session", "cli_kind + profile_ref + native_session_id + generation", "CLI tạo/khôi phục; huba ghi binding", "Huba ID và native ID là hai trường riêng; pending binding không được bịa native session đã tồn tại"],
+        ["CLI session", "host_id + cli_kind + source_namespace_ref + native_session_id; binding_generation riêng", "CLI tạo/khôi phục; huba ghi binding và account attribution có nguồn", "Namespace chung nhiều account không nhân đôi; generation không nằm trong SessionKey; pending launch không phải native session đã tồn tại"],
         ["Command intent", "command_id + principal + scope; source_message_id nếu có", "UI/Telegram → core", "Idempotency key theo yêu cầu, không theo nội dung: hai tin cùng chữ vẫn có thể là hai ý định thật"],
         ["Delivery attempt", "attempt_id → command_id + target_generation", "Driver thực thi", "Ghi trước/sau side effect; ambiguous không được replay tự động; khóa session không khóa cả app"],
         ["Turn / model request", "turn_id → request_id → attempt_id nếu nguồn cấp", "CLI/provider events", "Một user turn có nhiều request và retry; không có native ID thì local observation ID phải mang nhãn chưa ghép"],
@@ -495,8 +705,8 @@
       ]
     },
     {
-      "title": "Nguồn hiện có đã đọc trong lượt vẽ",
-      "note": "Mốc khảo sát là cây làm việc đang có sửa song song ngày15/11/2026, không phải khẳng định các dòng này cố định hoặc bản cài đã có thiết kế mới.",
+      "title": "Nguồn khảo sát bản15/11 — đối chiếu lịch sử",
+      "note": "Các số dòng dưới đây giữ mốc15/11, không được coi là vị trí mã hiện tại. Bằng chứng đọc lại ở lượt V2 nằm trong P01–P12 và đặc tả thiet-ke-tong-the-v2.md. Không phải bản đồ phụ thuộc runtime đã đo.",
       "headers": ["Nguồn mã / thiết kế", "Điều quan sát được", "Không suy rộng thành"],
       "rows": [
         ["rust/src/accounts.rs:889–919,941–1084,1087–1107", "Nguồn luật gốc, cấu hình OpenCode, plugin quyền/MCP/model", "Context payload đầy đủ hoặc collector usage đa CLI đã triển khai"],
@@ -527,7 +737,7 @@
       "items": [
         "Mức gốc cần nghiệm thu: J = journal CLI giữ nguyên theo nguồn; P = body request/response model nếu CLI có điểm mở rộng đã đo. Thiết kế chứa cả hai đường, không nhận P sẵn có.",
         "Ưu tiên Claude CLI + OpenCode theo thiết kế trước; không tự xóa/chuyển Codex đang tích hợp. Tích hợp khác model/provider không được mặc định dùng chung thuê bao hoặc mọi tính năng.",
-        "Tauri là đề xuất vỏ đa OS; cần spike WebView/IPC/capability và native packaging trên máy thật. Chưa có app để nghiệm thu UC01–16 xuyên ba hệ.",
+        "Tauri là đề xuất vỏ đa OS; cần spike WebView/IPC/capability và native packaging trên máy thật. Chưa có app V2 để nghiệm thu UC01–22 xuyên ba hệ.",
         "Thời hạn lưu/raw nhạy cảm/dung lượng, quyền export, danh mục model và ngưỡng vận hành phải cấu hình bằng dữ liệu có quyền quản trị + audit; bí mật vẫn ở secret store/env.",
         "Hiện có thể duyệt luồng và nội dung bản vẽ. Browser kiểm tài liệu chỉ chứng minh tài liệu hiển thị, không thay cho UI→core→CLI→model→nguồn thật của sản phẩm."
       ]

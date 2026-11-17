@@ -1,0 +1,138 @@
+<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>huba — Ô chat riêng và footer phiên (bản mẫu)</title><style>
+.desk-viewport{overflow:auto;border:1px solid #b9c8de;border-radius:12px;background:#edf2f8}
+.desk-panels{grid-auto-rows:minmax(290px,1fr);overflow:auto;overscroll-behavior:contain}
+.desk-shell{font-family:system-ui,sans-serif;min-width:1120px;height:930px;display:flex;flex-direction:column;color:#172b47;background:#edf2f8;font-size:13px;line-height:1.45}
+.desk-shell *{box-sizing:border-box}.desk-shell button,.desk-shell textarea{font:inherit}.desk-shell button{cursor:pointer}.desk-shell button:focus-visible,.desk-shell textarea:focus-visible{outline:3px solid #2b73dc;outline-offset:2px}
+.desk-header{min-height:55px;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:10px 18px;background:#122c4d;color:white}.desk-logo{font-size:19px;font-weight:750;white-space:nowrap}.desk-search{color:#d4e5ff;font-size:12px}.desk-owner{white-space:nowrap}.desk-body{display:grid;grid-template-columns:132px minmax(0,1fr) 266px;flex:1;min-height:0}
+.desk-menu{padding:12px 9px;background:#e5edf8;border-right:1px solid #cdd9e9;display:flex;flex-direction:column;gap:5px}.desk-menu span{padding:9px;border-radius:7px}.desk-menu .desk-menu-current{background:#d0e1fc;color:#154c9d;font-weight:700}
+.desk-main{padding:12px;display:flex;flex-direction:column;min-height:0;min-width:0;gap:10px}.desk-toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;min-height:32px}.desk-toolbar small{color:#64748b}.desk-panels{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;flex:1;min-height:0}
+.desk-panel{background:white;border:1px solid #bdcce0;border-radius:9px;display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;box-shadow:0 2px 8px #21385808}.desk-panel[data-selected="true"]{border:2px solid #3275d8;box-shadow:0 0 0 2px #3275d817}.desk-panel-head{display:flex;align-items:flex-start;justify-content:space-between;padding:10px 11px 6px;gap:8px}.desk-focus{border:0;padding:0;background:none;color:#172b47;text-align:left;min-width:0;font-weight:750}.desk-focus small{display:block;font-size:10px;color:#6a7c92;font-weight:400;margin-top:2px}.desk-minimize{border:0;background:#eef3fa;color:#52677f;border-radius:5px;min-width:28px;min-height:26px;font-size:16px!important}
+.desk-activity{margin:0 10px 7px;padding:7px 9px;border-radius:6px;background:#f3f6fb;font-size:11px;flex-shrink:0}.desk-state-line{display:flex;align-items:center;gap:6px;font-weight:700}.desk-current-task{display:block;margin-top:3px;color:#405771;overflow-wrap:anywhere}.desk-source{font-size:10px;color:#6a7c92;display:block;margin-top:3px}
+.desk-icon{display:inline-block;width:10px;height:10px;border-radius:50%;background:#64748b;flex:0 0 10px}.desk-icon[data-state="running"]{background:transparent;border:2px solid #c5d8f5;border-top-color:#2263bd;animation:desk-spin 1s linear infinite}.desk-icon[data-state="waiting"]{background:#bf7a13}.desk-icon[data-state="permission"]{background:#8b48c4}.desk-icon[data-state="error"],.desk-icon[data-state="unknown"]{background:#b63f4a}.desk-icon[data-state="idle"]{background:#7890a8}
+@keyframes desk-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.desk-icon[data-state="running"]{animation:none;border-top-color:#2263bd;border-right-color:#2263bd}}
+.desk-chat{flex:1;min-height:46px;overflow:auto;padding:0 11px 5px;display:flex;flex-direction:column;gap:6px;overscroll-behavior:contain}.desk-message{padding:6px 8px;border-radius:6px;background:#f1f5fa;font-size:11px;overflow-wrap:anywhere}.desk-message[data-role="Bạn"]{background:#e9f1ff}.desk-message b{font-size:10px;color:#5c718e;display:block;margin-bottom:2px}.desk-message[data-role="Hoạt động"],.desk-message[data-role="Job J04"]{background:#f3f5f8;color:#596b80}.desk-message[data-role="Câu hỏi"]{background:#fff5e5}
+.desk-composer{border-top:1px solid #e1e8f2;padding:7px 9px;background:white;flex-shrink:0}.desk-input{display:block;resize:none;width:100%;height:38px;min-height:38px;border:1px solid #c6d3e4;border-radius:6px;padding:7px;color:#172b47;background:#fcfdff;font-size:11px!important}.desk-compose-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:5px}.desk-compose-actions small{font-size:9px;color:#687e96}.desk-send{padding:4px 9px;border-radius:5px;background:#eaf2ff;color:#155bb8;border:1px solid #bcd2f1;font-size:10px!important}.desk-send:disabled{opacity:.45;cursor:default}.desk-sample-notice{color:#7f570f;font-size:10px;min-height:0;margin-top:2px}
+.desk-detail{background:#f8fafd;border-left:1px solid #c8d5e7;padding:14px;overflow:auto;min-height:0}.desk-detail-caption{color:#657b94;font-size:10px;letter-spacing:.06em;text-transform:uppercase}.desk-detail h3{font-size:18px;margin:5px 0 3px;overflow-wrap:anywhere}.desk-detail-topic{font-size:12px;color:#657b94}.desk-detail-block{border-top:1px solid #dce4ef;padding-top:12px;margin-top:12px}.desk-detail-block strong{font-size:11px;display:block;color:#516b8a;margin-bottom:5px}.desk-detail-block p{font-size:12px;margin:4px 0;overflow-wrap:anywhere}.desk-detail-block code{font-size:10px;white-space:normal;overflow-wrap:anywhere}.desk-detail-note{background:#fff5e5;padding:9px;border-radius:6px;font-size:10px;color:#7a591b;margin-top:12px}
+.desk-footer{flex:0 0 123px;min-height:123px;width:100%;background:#e4ebf6;border-top:1px solid #b8c8df;padding:9px 12px;display:flex;flex-direction:column;gap:7px}.desk-footer-head{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px}.desk-footer-head span{color:#536d8b;font-size:10px}.desk-footer-cards{display:flex;gap:9px;overflow-x:auto;min-height:0;align-items:stretch;flex:1;overscroll-behavior:contain}.desk-footer-card{flex:1 0 260px;min-width:260px;max-width:520px;border:1px solid #b9cbe2;background:#f8fbff;border-radius:7px;padding:7px 10px;text-align:left;color:#172b47;display:grid;grid-template-columns:minmax(0,1fr);gap:3px}.desk-footer-card:hover{background:white;border-color:#4f85d1}.desk-footer-title{display:flex;justify-content:space-between;align-items:center;gap:7px;font-size:11px}.desk-footer-title>strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.desk-footer-state{display:flex;align-items:center;gap:5px;color:#526b87;white-space:nowrap;font-size:10px}.desk-footer-task{font-size:11px;color:#344e6c;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.desk-footer-latest{font-size:10px;color:#6b7f97;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.desk-empty-footer{font-size:12px;color:#536b86;align-self:center}
+.desk-demo-controls{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:10px 0;font-size:12px}.desk-demo-controls button{border:1px solid #b8c8dd;border-radius:6px;background:#f1f6ff;padding:6px 10px;color:#244f8c;font:inherit;cursor:pointer}.desk-demo-warning{font-size:12px;color:#8a5b13}.desk-demo-controls output{font-size:11px;color:#57718e}
+.workspace-standalone{margin:0;font-family:system-ui,sans-serif;background:#edf2f8;color:#172b47;height:100dvh;overflow:hidden}.workspace-standalone,.workspace-standalone *{box-sizing:border-box}.workspace-standalone #workspace{margin:0;padding:12px;border:0;border-radius:0;background:none;height:100dvh;min-height:0;display:flex;flex-direction:column}.workspace-standalone #workspace>h2{font-size:18px;margin:0 0 4px;flex-shrink:0}.workspace-standalone .desk-intro{font-size:12px;margin:0;flex-shrink:0}.workspace-standalone [data-desk-demo]{display:flex;flex-direction:column;flex:1;min-height:0}.workspace-standalone .desk-shell{height:100%;min-height:0}.workspace-standalone .desk-final-note{display:none}.workspace-standalone .desk-demo-controls{margin:7px 0;flex-shrink:0}.workspace-standalone .desk-viewport{border-radius:9px;flex:1;min-height:0;overflow-y:hidden}
+.workspace-standalone .desk-body{grid-template-rows:minmax(0,1fr);overflow:hidden}.workspace-standalone .desk-main{overflow:hidden}
+@media(max-height:700px){.workspace-standalone .desk-menu{gap:1px;padding:6px 7px}.workspace-standalone .desk-menu span{padding:5px 7px;font-size:11px}}
+@media(max-width:700px){.desk-demo-controls{align-items:flex-start}.desk-shell{min-width:1120px}.workspace-standalone #workspace{padding:8px}.desk-final-note{font-size:12px}}
+</style></head><body class="workspace-standalone"><section id="workspace"><h2>W0 · Bàn làm việc: nhiều ô chat luôn nhìn thấy + footer phiên</h2>
+<p class="desk-intro">A có chat riêng, cuộn độc lập; focus đổi chi tiết bên phải. B luôn hiện ở đáy khung làm việc, đầy ngang dưới menu, chat và cột chi tiết. <strong>Dữ liệu mẫu, chưa kết nối CLI.</strong></p>
+<div data-desk-demo>
+<div class="desk-demo-controls"><button type="button" data-simulate>Mô phỏng tin mới ở A và footer B</button><span class="desk-demo-warning">Chỉ tương tác bản mẫu</span><output data-demo-tick>Chưa phát cập nhật mẫu</output></div>
+<div class="desk-viewport"><div class="desk-shell">
+<div class="desk-header"><strong class="desk-logo">huba <span style="font-weight:400;font-size:12px">/ Bàn làm việc</span></strong><span class="desk-search">Tìm phiên · Scope: máy này / tất cả account</span><span class="desk-owner">Chủ máy · Cài đặt</span></div>
+<div class="desk-body"><aside class="desk-menu" aria-label="Menu minh họa"><span>☰ Thu menu</span><span class="desk-menu-current">Bàn làm việc</span><span>Phiên / lịch sử</span><span>Báo cáo token</span><span>Tài khoản/model</span><span>Kết nối</span><span>Dự án</span><span>Hoạt động</span></aside>
+<div class="desk-main"><div class="desk-toolbar"><strong data-panel-count>A · 4 ô chat đang mở</strong><small>Chia ô · Mỗi ô có chat và draft riêng</small></div><div class="desk-panels" data-panels></div></div>
+<aside class="desk-detail" data-detail aria-label="Chi tiết phiên đang focus"></aside></div>
+<div class="desk-footer" role="region" aria-label="B · Footer các phiên còn lại"><div class="desk-footer-head"><strong data-footer-count>B · 3 phiên còn lại</strong><span data-total-count>7 phiên = A 4 + B 3 · dữ liệu mẫu</span></div><div class="desk-footer-cards" data-footer-cards></div></div>
+</div></div>
+<script type="application/json" data-fixtures>[{"id": "S01", "name": "huba/ui", "topic": "Chỉnh bàn làm việc nhiều phiên", "account": "acc9 · OpenCode", "state": "running", "status": "Đang chạy", "activity": "Đọc bố cục và dựng lại các ô chat", "tool": "read · docs/flows/workspace_mockup.py", "children": "0 subagent · 1 tác vụ giao diện", "latest": "Tôi đang giữ chat, việc đang làm và trạng thái ngay trên từng ô.", "messages": [["Bạn", "Mỗi phiên phải nhìn thấy luôn nó đang chạy gì."], ["Phiên", "Đang chỉnh bố cục. Cột phải chỉ đi theo phiên được focus."], ["Hoạt động", "read → workspace_mockup.py · đang thực hiện"]]}, {"id": "S02", "name": "dwork/review", "topic": "Đối chiếu thay đổi màn hình", "account": "acc3 · Claude", "state": "waiting", "status": "Chờ bạn trả lời", "activity": "Đang chờ lựa chọn cách kiểm tra", "tool": "AskUserQuestion · chưa có đáp án", "children": "0 subagent · không có job nền", "latest": "Kiểm cả màn rộng và màn hẹp, hay chỉ phần vừa đổi?", "messages": [["Bạn", "Soát phần giao diện vừa đổi."], ["Phiên", "Đã đọc diff. Chưa chạy kiểm tra khi chưa rõ phạm vi."], ["Câu hỏi", "Kiểm cả màn rộng + hẹp, hay chỉ phần vừa đổi?"]]}, {"id": "S03", "name": "Phiên chung · S03", "topic": "Kiểm tra máy tắt đột ngột", "account": "acc9 · OpenCode", "state": "idle", "status": "Đang dừng · chờ việc", "activity": "Lượt đã kết thúc; chưa có tác vụ mới", "tool": "Không có tool đang chạy", "children": "0 subagent · không có job nền", "latest": "Chưa đủ bằng chứng kết luận nguyên nhân mất nguồn.", "messages": [["Bạn", "Kiểm tra tại sao máy bị tắt đột ngột."], ["Phiên", "Log bị đứt, chưa đủ bằng chứng kết luận nguyên nhân."], ["Trạng thái", "CLI đang rảnh. Không tự nhận công việc đã được nghiệm thu."]]}, {"id": "S04", "name": "remote", "topic": "Theo dõi kết nối thử nghiệm", "account": "acc6 · Claude", "state": "running", "status": "Đang chạy", "activity": "Chờ kết quả tác vụ shell nền", "tool": "shell job J04 · running", "children": "1 subagent · 1 job nền đang chạy", "latest": "Job đã khởi chạy; chưa nhận kết quả cuối.", "messages": [["Bạn", "Theo dõi kết nối và báo kết quả."], ["Phiên", "Đã khởi chạy tác vụ kiểm tra; đang chờ kết quả."], ["Job J04", "running · ACK khởi chạy không phải kết thúc job"]]}, {"id": "S05", "name": "zkey", "topic": "Đối chiếu bộ gõ", "account": "acc3 · Claude", "state": "running", "status": "Đang chạy", "activity": "Chạy kiểm tra nhập tiếng Việt", "tool": "test input · running", "children": "0 subagent · 1 job kiểm tra", "latest": "Đang kiểm tra chuỗi nhập nhiều dòng.", "messages": []}, {"id": "S06", "name": "huba/accounts", "topic": "Đọc hạn mức tài khoản", "account": "acc9 · OpenCode", "state": "idle", "status": "Đang dừng", "activity": "Đã đọc nguồn; chờ yêu cầu tiếp", "tool": "Không có tool đang chạy", "children": "0 subagent · không có job nền", "latest": "Đã đối chiếu thời điểm cập nhật của nguồn quota.", "messages": []}, {"id": "S07", "name": "dwork/dci", "topic": "Đối chiếu phiên bản nguồn", "account": "acc3 · Claude", "state": "permission", "status": "Chờ quyền", "activity": "Chưa thực thi thao tác cần duyệt", "tool": "permission pending · không tự cấp quyền", "children": "0 subagent · không có job nền", "latest": "Cần chủ máy xác nhận trước khi tiếp tục thao tác.", "messages": []}]</script></div>
+<p class="desk-final-note">A∩B rỗng; A∪B là tổng root mở đã xác minh trong scope. Panel chưa xác minh/ngoài scope có nhãn riêng. Icon chạy không phụ thuộc focus; nếu nguồn không có việc/tin mới thì ghi chưa có, không bịa. Thu ô chat xuống footer không đóng CLI.</p>
+<script data-workspace-script>
+(()=>{
+ 'use strict';
+ const root=document.querySelector('[data-desk-demo]');
+ if(!root) return;
+ const sessions=JSON.parse(root.querySelector('[data-fixtures]').textContent);
+ const byId=new Map(sessions.map(s=>[s.id,s]));
+ let opened=['S01','S02','S03','S04'],selected='S01',tick=0;
+ const drafts=new Map(),notices=new Map();
+ const panels=root.querySelector('[data-panels]'),footer=root.querySelector('[data-footer-cards]');
+ const node=(tag,cls,text)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e;};
+ const icon=s=>{const e=node('span','desk-icon');e.dataset.state=s.state;e.setAttribute('aria-hidden','true');return e;};
+ function activity(s){
+  const box=node('div','desk-activity');box.dataset.activity=s.id;
+  const line=node('div','desk-state-line');line.append(icon(s),node('span','',s.status));
+  const task=node('span','desk-current-task',s.activity);
+  box.append(line,task,node('small','desk-source','Nguồn: dữ liệu mẫu · cập nhật #'+tick));return box;
+ }
+ function conversation(s){
+  const box=node('div','desk-chat');box.dataset.chat=s.id;box.setAttribute('aria-label','Hội thoại '+s.id);
+  for(const [role,text]of s.messages){const m=node('div','desk-message');m.dataset.role=role;m.append(node('b','',role),node('span','',text));box.append(m);}
+  if(!s.messages.length)box.append(node('div','desk-message','Tin mới nhất: '+s.latest));
+  return box;
+ }
+ function drawPanels(){
+  panels.replaceChildren();
+  for(const id of opened){
+   const s=byId.get(id),panel=node('article','desk-panel');panel.dataset.session=id;panel.tabIndex=0;panel.setAttribute('aria-label','Ô chat '+id);
+   const head=node('div','desk-panel-head'),focus=node('button','desk-focus',s.name);focus.type='button';focus.dataset.focus=id;focus.append(node('small','',id+' · '+s.account));
+   const min=node('button','desk-minimize','−');min.type='button';min.dataset.minimize=id;min.setAttribute('aria-label','Thu '+id+' xuống footer');head.append(focus,min);
+   const form=node('form','desk-composer');form.dataset.compose=id;
+   const input=node('textarea','desk-input');input.dataset.draft=id;input.setAttribute('aria-label','Soạn tin '+id);input.placeholder='Chat riêng với '+s.name;input.value=drafts.get(id)||'';
+   const actions=node('div','desk-compose-actions');actions.append(node('small','','Bản mẫu · chưa nối CLI'));
+   const send=node('button','desk-send','Gửi thử mẫu');send.type='submit';send.disabled=!input.value.trim();actions.append(send);
+   const notice=node('div','desk-sample-notice',notices.get(id)||'');notice.dataset.notice=id;form.append(input,actions,notice);
+   panel.append(head,activity(s),conversation(s),form);panels.append(panel);
+  }
+  for(const chat of panels.querySelectorAll('[data-chat]'))chat.scrollTop=chat.scrollHeight;
+  if(!opened.includes(selected))selected=opened[0]||null;
+  drawFocus();
+ }
+ function drawFooter(){
+  footer.replaceChildren();
+  const rest=sessions.filter(s=>!opened.includes(s.id));
+  root.querySelector('[data-footer-count]').textContent='B · '+rest.length+' phiên còn lại';
+  root.querySelector('[data-total-count]').textContent=sessions.length+' phiên = A '+opened.length+' + B '+rest.length+' · dữ liệu mẫu';
+  root.querySelector('[data-panel-count]').textContent='A · '+opened.length+' ô chat đang mở';
+  for(const s of rest){
+   const card=node('button','desk-footer-card');card.type='button';card.dataset.open=s.id;card.setAttribute('aria-label','Mở '+s.id+' lên vùng A');
+   const title=node('div','desk-footer-title');title.append(node('strong','',s.name+' · '+s.id));
+   const state=node('span','desk-footer-state');state.append(icon(s),node('span','',s.status));title.append(state);
+   const task=node('div','desk-footer-task',s.activity),last=node('div','desk-footer-latest',s.latest?'Tin mới: '+s.latest:'Chưa có tin mới');task.title=s.activity;last.title=s.latest;
+   card.append(title,task,last);footer.append(card);
+  }
+  if(!rest.length)footer.append(node('div','desk-empty-footer','Mọi phiên đã có ô chat trong A.'));
+ }
+ function drawFocus(){
+  for(const p of panels.children){const yes=p.dataset.session===selected;p.dataset.selected=String(yes);p.querySelector('[data-focus]').setAttribute('aria-pressed',String(yes));}
+  const detail=root.querySelector('[data-detail]');detail.dataset.detailSession=selected||'';detail.replaceChildren();
+  detail.append(node('div','desk-detail-caption','Chi tiết ô đang focus'));
+  if(!selected){detail.append(node('h3','','Chưa chọn ô chat'));return;}
+  const s=byId.get(selected);detail.append(node('h3','',s.name),node('div','desk-detail-topic',s.id+' · '+s.topic));
+  for(const [label,lines]of [
+   ['Trạng thái ngay lúc này',[s.status,s.activity]],
+   ['Tool / vòng xử lý',[s.tool,s.children]],
+   ['Tin mới nhất',[s.latest||'Nguồn chưa có tin mới']],
+   ['Nguồn / định danh',[s.account,'SessionKey: demo/'+s.id,'Chỉ dữ liệu minh họa, không phải nguồn CLI thật']],
+   ['Giao nhận / kiểm nhận',['Focus chỉ đổi cột chi tiết, không gửi lệnh.','Gửi thử mẫu chỉ lưu trong trang, không báo CLI đã nhận.']]
+  ]){const block=node('div','desk-detail-block');block.append(node('strong','',label));for(const text of lines)block.append(node('p','',text));detail.append(block);}
+  detail.append(node('div','desk-detail-note','Các ô khác và footer vẫn cập nhật khi bạn đang focus ô này. Bản mẫu dùng nút mô phỏng, không giả dữ liệu realtime.'));
+ }
+ function focus(id){if(!opened.includes(id)||selected===id)return;selected=id;drawFocus();}
+ root.addEventListener('focusin',e=>{const p=e.target.closest('[data-session]');if(p)focus(p.dataset.session);});
+ root.addEventListener('input',e=>{const id=e.target.dataset.draft;if(!id)return;drafts.set(id,e.target.value);e.target.closest('form').querySelector('button').disabled=!e.target.value.trim();});
+ root.addEventListener('click',e=>{
+  const min=e.target.closest('[data-minimize]');
+  if(min){opened=opened.filter(id=>id!==min.dataset.minimize);drawPanels();drawFooter();return;}
+  const open=e.target.closest('[data-open]');
+  if(open){const id=open.dataset.open;if(!opened.includes(id))opened.push(id);selected=id;drawPanels();drawFooter();root.querySelector('[data-focus="'+id+'"]').focus();return;}
+  const p=e.target.closest('[data-session]');if(p)focus(p.dataset.session);
+ });
+ root.addEventListener('submit',e=>{
+  const form=e.target.closest('[data-compose]');if(!form)return;e.preventDefault();
+  const id=form.dataset.compose,input=form.querySelector('textarea'),text=input.value.trim();if(!text)return;
+  byId.get(id).messages.push(['Bạn · mẫu cục bộ',text]);drafts.set(id,'');input.value='';form.querySelector('button').disabled=true;
+  const message='Chỉ lưu tin mẫu trong trang — chưa gửi CLI.';notices.set(id,message);root.querySelector('[data-notice="'+id+'"]').textContent=message;
+  const old=root.querySelector('[data-chat="'+id+'"]'),fresh=conversation(byId.get(id));old.replaceWith(fresh);fresh.scrollTop=fresh.scrollHeight;
+ });
+ root.querySelector('[data-simulate]').addEventListener('click',()=>{
+  tick++;
+  const a=byId.get('S01'),b=byId.get('S05');
+  a.activity='Đang đối chiếu bố cục và ô nhập · mẫu #'+tick;a.latest='Đã cập nhật hoạt động của ô không cần focus · mẫu #'+tick;
+  b.activity='Kiểm tra nhập nhiều dòng · bước mẫu #'+tick;b.latest='Đã nhận kết quả kiểm tra mẫu #'+tick+'; vẫn đang chạy.';
+  a.messages.push(['Phiên',a.latest]);
+  for(const s of [a,b]){
+   const old=root.querySelector('[data-activity="'+s.id+'"]');if(old)old.replaceWith(activity(s));
+   const chat=root.querySelector('[data-chat="'+s.id+'"]');
+   if(chat){const top=chat.scrollTop,follow=chat.scrollHeight-top-chat.clientHeight<12,fresh=conversation(s);chat.replaceWith(fresh);fresh.scrollTop=follow?fresh.scrollHeight:top;}
+  }
+  drawFooter();drawFocus();root.querySelector('[data-demo-tick]').textContent='Đã mô phỏng cập nhật #'+tick+' · không gọi CLI/model';
+ });
+ drawPanels();drawFooter();
+})();
+</script></section></body></html>

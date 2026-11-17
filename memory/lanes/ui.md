@@ -1,5 +1,49 @@
 # huba/ui
 
+## 2026-11-17 09:55 +07 — lấp lỗ đo: index.html sinh lại 12:23 chưa từng kiểm browser
+
+Quét ra lỗ: `index.html` bị sinh lại 12:23 (nhúng W0 mới) nhưng chỉ có unit +
+`pin_review` trên bản riêng; 19 sơ đồ/12 link issue của TỆP HIỆN TẠI chưa đo bằng
+browser. Chạy `docs/flows/review.cjs` qua cong-node, Chromium+WebKit, trên tệp đang
+có: `GATE_EXIT=0` cả hai, cùng `artifact_sha256 328d0c35…`, `standalone e5f5f5e8…`,
+19flow/30 thành phần/22UC/12 issue, console-page-request0/remote0, hẹp390/390.
+Log `.tmp/verify-index-{chromium,webkit}-20261117.log`; unit17/17 mã0.
+
+Đối chứng ngược cổng ghim B: bản sao `.tmp/counterproof-pin-20261117/` cấy lại
+`min-height:740px` (đúng gốc lỗi cũ) ⟹ `pin_review` ĐỎ `GATE_EXIT=1`, câu «B must
+be visible without page scrolling», B y720…843 ngoài viewport; tệp thật không đụng.
+REVIEW ghi mục 17/11 + đánh dấu số 336969B/7e2f3ce3… là lịch sử.
+
+Chỉ tài liệu/bản mẫu: chưa app, chưa nối CLI/model; Rust/config không đổi. Cây vẫn
+còn khối 16/11 chưa commit (docs/flows, workspace.html, previews 26MB, V2, TODO, sổ).
+Nền: không có.
+
+## 2026-11-16 12:24 +07 — footer B luôn trong viewport
+
+Chốt mới “B luôn hiện, chỉ cuộn A”. Mẫu độc lập100dvh/flex, khôngminheightđẩyB ra ngoài; A cuộn nội bộ, header/menu/rightgiữchỗ. RED1280×720 B720…843/page856; soảnhthêmRED600px A/detailtrànB→gridrowminmax0. GREEN Chromium+WebKit 3cỡ900/720/600 cao:page=viewport,scrollY0,Bgiữvịtrí,Acuộn,khônglấnB; cấyoversizeđỏ→lành. Unit17/17, hai pinlogexit0/console0/remote0; khôngrerunfull19flow/khôngkhaiđãkiểmapp.
+
+Nguồn workspace_mockup.py; file `docs/flows/workspace.html`hash e5f5f5e8…; `.tmp/pinned-B-{chromium,webkit}-green.log`; REVIEW+spec+JSONghi nhận. Đãmởảnh600Chromium/720WebKit. Config/Rustgiữ, chưa cài/commit/push; nềnkhôngcó.
+
+## 2026-11-16 10:42 +07 — sửa mẫu theo ý ô chat + footer
+
+A mỗiô giữ hội thoại/input/status/activity; focus click/keyboard chỉ đổi chi tiết phải, hover không giành. B footer full ngang dưới menu+A+detail, luôn có icon/việc/tin mới theo nguồn; không là bảng trongA. Bảnriêng `docs/flows/workspace.html`22422B/hash827aa9ca…; nguồnworkspace_mockup.py, nhúngW0. Fixture/script chỉcục bộ, khôngCLI/model hay storage/mạng.
+
+Unit17/17; Chromium+WebKit kiểm cảnhúng+riêng,4chat/4draft, updateA/Bkhôngfocus, keepdraft, sendescape,chuyểnA/B; footergeometrycấy saiđỏ→trảlành. Mỗi log `.tmp/review-layout-v3-{chromium,webkit}.log` GATE0/console0/remote0;19flow/22UC/12Pxxvẫnđủ. Đã xem ảnhdesktop/focusupdated hai engine; READMEQA ởREVIEW. HTMLtổng336969B/hash7e2f3ce3…; config/Rust khôngđổi, chưaappthật/cài/commit/push, nềnkhôngcó.
+
+User hỏi ai mở: /newTelegramacc9 09:35, log72862–72914, taskđầukiểmnhãn; khôngbiết tênngườibấm. Việckế: bàn mậtđộ/tỉlệ, không hỏi lại bố cục đã chỉ rõ; chưa duyệt runtimeUI-first.
+
+## 2026-11-16 10:17 +07 — thiết kế tổng thể V2 và mã vấn đề
+
+User yêu cầu vẽ lại toàn bộ, đánh dấu chỗ cần bàn và hỏi giảm terminal. Bản `docs/thiet-ke-tong-the-v2.md` + HTML offline `docs/flows/index.html`:19flow/22UC/30thành phần/12Pxx, W0hai vùng/nhiềuview, danh tính, lifecycle, graph/tool/job, takeover. Đề xuất UI-first không bỏ CLI/PTY, không tự duyệt headless/Tauri/xóaCodex hoặc đổi runtime đang chạy. Đã tách namespace/account/binding, A=O∩Panels và unknown, leasebarrier/fence, erroralt/break.
+
+Unit15/15 exit0; Chromium/WebKit mỗi engine19flow+12issue links/console0/remote0/bboxchồng0, cấy chồng đỏ rồi lành0. RED hẹp450/390 do slash dàiU7→wrap→GREEN390/390. HTML318004B/hash49236e25… khớp hai log `.tmp/review-flows-v2-{chromium,webkit}-final.log`; ảnh `docs/flows/previews/v2-20261116/`. REVIEW ghi rõ chỉ tài liệu, chưa app/UCthật. ConfigM3158B11:34/Rust giữ, chưa commit/push/cài. Việc kế: bànP04/P06/P07 và spike capabilities trước triển khai. Nềnkhôngcó.
+
+## 2026-11-16 09:38 +07 — rà nhãn phiên gốc, xác nhận false positive thật
+
+User hỏi mở ở gốc/câu không thuộc dự án mà bị đặt tên app. Đối chiếu read-only DB+daemonlog: phiên kiểm tra máy ses_e1dcda77… không giao dự án/cwd+worktree gốc, assistant `[projects]`; log72701 `[projects]`→72820/72853 `[zkey]`, CLI hiện tại exit0/mẫu5 trả `[scripts]`. Bộ đếm path nhận raw log/công cụ (opencode.rs325–329; sessions.rs2104–2159,2508–2529); đây là sai quy tắc danh tính. Một prefix assistant cũng đủ gieo tên lần đầu2468–2476. Test census hiện có khóa hành vi sai trong ca này; không chạy test/chưa sửa Rust/cài/nhận nghiệmthu Telegram.
+
+Báo cáo `docs/ra-soat-ten-phien-goc-20261116.md`. Hướng sửa: chưa giao dự án→neutral, tách scope/topic/identity; đường dẫn trong log không tự đổi danh tính. Nợ mở: contract+regression root/câu chung/log nhiều path/prefix sai/giao thật/3CLI/warm-cold. Trước sửa phải đồng bộ5commit origin; không tự merge/đụng configM3158B11:34. Nền của lượt này:khôngcó.
+
 ## 2026-11-15 23:43 +07 — nhận lệnh commit/push đúng9tệp
 
 Lõi chuyển lệnh Hà, HEAD/originf366361 đã đối chiếu; indextrống. Chạy lại `.tmp/run-ui-identity-tests.py precommit`:21/21 mã0, khôngcòn3đỏcũ. Hash4nguồnkhớpmanifestbảncài; config3158B11:34/hash267b436b…giữ, khôngstage. Chỉ9tệpđượcgiao:4Rust+report+TODO+sổUI+READMEUI+REVIEWflows.

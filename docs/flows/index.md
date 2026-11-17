@@ -1,17 +1,22 @@
-# huba — Luồng UC · dữ liệu · context / input / output
+# huba V2 — Bàn làm việc nhiều phiên · kiến trúc · luồng chi tiết
 
-BẢN THIẾT KẾ ĐỂ DUYỆT. Các service/collector/kho raw/transport desktop trong bản này là đề xuất, chưa triển khai và chưa nghiệm thu trên ứng dụng thật.
+THIẾT KẾ V2 ĐỂ BÀN. Không phải sản phẩm đã triển khai. Đỏ = lỗi có bằng chứng; cam = khoảng chưa đo; tím = cần chốt; vàng = rủi ro cần kiểm. Đánh dấu không có nghĩa đã sửa.
 
 huba là cầu nối tới phiên CLI thật. Chủ máy thao tác qua Desktop, Telegram hoặc terminal; CLI vẫn sở hữu vòng gọi model và lắp context. huba chuyển lệnh, kiểm nhận, thu nguồn được CLI cung cấp và trình bày lại — không tạo thêm một agent suy luận đứng giữa.
 
 ## Quy tắc đọc
 - Ba lớp dùng chung ID để lần từ UC → command → phiên/lượt → request model → raw record → nội dung hiển thị. ID không có từ nguồn phải để chưa xác định, không ghép bằng thời gian gần nhau.
-- Đọc sơ đồ từ trên xuống. Hàng vàng/hồng/tím là nhánh có điều kiện, không phải mọi hàng đều chạy nối tiếp; UC có thể dừng ở nhánh lỗi. Mũi tên chỉ bên gửi → bên nhận, không biểu thị thời gian đo thực tế.
+- Đọc sơ đồ từ trên xuống. Hàng vàng/hồng/tím có điều kiện, không phải mọi hàng chạy nối tiếp. Nhánh lỗi thay thế đường chính tại bước đó, không chạy sau thành công; các hàng lỗi liền nhau cùng báo đủ rồi dừng thao tác. Mermaid tách alt/else/break; phục hồi là tương tác mới khi đủ điều kiện. Mũi tên không biểu thị thời gian đo thực tế.
 - Desktop và Telegram gọi cùng nghiệp vụ tại hubad; terminal đi thẳng CLI rồi collector quan sát lại. Không có poller Telegram thứ hai, không đẩy mọi sự kiện về mọi kênh nếu chưa được chọn theo dõi.
 - Ba thứ khác nhau: chữ người dùng nhập; nhật ký CLI ghi; payload request/response thực gửi tới model. Bản gốc phải mang đúng nhãn nguồn và độ đầy đủ.
 - Context model ≠ lịch sử đang hiển thị trên UI ≠ kho raw ≠ tổng token sử dụng. Mở màn/xem raw/lọc báo cáo không tự gọi model hoặc nạp lại prompt.
 - Hàng rào quyền chạy ở core và lớp thực thi, không dựa vào model nhớ lời dặn. Nội dung model/tool/raw luôn được coi là dữ liệu không đáng tin khi render; không chạy HTML/JS hay lệnh do nó chứa.
 - Chuẩn thiết kế mong muốn có thể chặt hơn mã hiện tại. Nguồn hiện có và khoảng chưa chứng minh được ghi cuối trang; đây không phải bản đồ phụ thuộc máy trích từ code/traces.
+- Một phiên có khóa bất biến; dự án/module được giao, tiêu đề hội thoại và thư mục đang đứng là ba trường riêng. Chưa giao dự án thì hiện Phiên chung + ID; đường dẫn trong log không quyết định danh tính.
+- Hai vùng dùng cùng phạm vi máy/tài khoản: A là phiên có panel trực tiếp trên bàn này, B là phiên mở còn lại. A giao B rỗng; A hợp B bằng tổng phiên mở đã xác minh. Bộ lọc không được che mất tổng chưa lọc; nguồn mù phải công bố mẫu số chưa xác minh.
+- Nhiều cửa sổ có view ID và subscription riêng. Đóng panel không đóng CLI; đóng app không đồng nghĩa tắt dịch vụ. Mọi lệnh mang session key + generation, không dùng focus toàn cục làm đích ngầm.
+- B luôn hiện ở đáy khung nhìn; chỉ A cuộn danh sách ô chat. App co theo chiều cao cửa sổ và dành chỗ cố định cho footer, không có chiều cao tối thiểu đẩy B ra ngoài màn hình. Bản thuyết minh dài vẫn là tài liệu; workspace.html mới là bản mẫu khung app để kiểm hành vi này.
+- Mục tiêu là không cần mở cửa sổ terminal riêng cho việc thường ngày; không phải bỏ CLI, PTY hay đường tiếp quản. Runtime không có cửa sổ chỉ là đề xuất cần duyệt và đo đủ capability, không tự thay chế độ đang chạy.
 
 ## Danh mục UC
 | UC | Người dùng / mục tiêu | Input | Output nhìn thấy | Sơ đồ | Điều kiện lỗi / nghiệm thu dự kiến |
@@ -19,7 +24,7 @@ huba là cầu nối tới phiên CLI thật. Chủ máy thao tác qua Desktop, 
 | UC-01 | Chủ máy mở app / kết nối dịch vụ | Danh tính OS, bản app/core, workspace | Vào màn chính hoặc lỗi đúng bước | U1, D2 | Core lệch phiên bản, không quyền, probe lỗi không được biến thành danh sách rỗng |
 | UC-02 | Chọn / thêm dự án | Folder thật, cấu hình mặc định, revision | Dự án đã lưu; luật được nhận diện | U3, C1 | Folder mất/quyền thiếu → không lưu thành sẵn sàng; không tự mở rộng quyền ghi |
 | UC-03 | Thêm account / đăng nhập / đổi model | CLI, account, model, lần login | Trạng thái xác thực và phạm vi áp dụng | U3, C1 | Mã hết hạn/lần login cũ không được gửi sang cửa sổ khác; khóa account không xóa lịch sử |
-| UC-04 | Mở phiên | Dự án, account hoặc auto, model/effort, việc tùy chọn | Phiên CLI có ID và terminal thật | U1, C1 | Mở được pane chưa phải CLI sẵn sàng; thiếu luật/quyền phải có trạng thái rõ |
+| UC-04 | Mở phiên | Phiên chung hoặc dự án đã giao; account/model; runtime mode đã hỗ trợ | SessionKey, readiness và đường tiếp quản rõ ràng | U1, C1, U7 | Mở được process/pane chưa phải CLI sẵn sàng; không tự đổi mode hoặc bịa tên dự án |
 | UC-05 | Gửi tin / nhận phản hồi | Nội dung, attachment refs, session ID, command ID | Đã nhận / chưa xác định / phản hồi nguồn | U2, D2, C2 | Double-click/mất ACK không được gõ lại mù; attachment chưa đọc không được nhận đã gửi đủ |
 | UC-06 | Trả lời bảng hỏi nhiều câu | Question ID/revision, các đáp án | CLI ghi nhận lựa chọn, tiếp tục lượt | U2, D2 | Câu hỏi đổi, phiên chết, thiếu đáp án → làm mới/giữ lựa chọn, không bấm bảng cũ |
 | UC-07 | Xem hoạt động tool / subagent | Phiên, lượt, tool-call ID, parent-child refs | Hoạt động đang chạy/kết quả/lỗi có nguồn | D1, C2 | Tool lỗi hoặc child chưa kết thúc không được hiện hoàn thành; không gộp output child thành parent gốc |
@@ -32,6 +37,138 @@ huba là cầu nối tới phiên CLI thật. Chủ máy thao tác qua Desktop, 
 | UC-14 | Mất kết nối / restart / đọc lịch sử | Cursor, command đang treo, revision | Draft giữ nguyên; khôi phục trạng thái có bằng chứng | U4, D1, D2 | Không tự gửi lại command đã có khả năng thực thi; cursor mất → báo gap, không giả liên tục |
 | UC-15 | Sửa cấu hình / quyền | Giá trị mới, expected revision, actor | Revision + audit + thời điểm áp dụng | U3, C1 | Xung đột revision → đối chiếu lại, không ghi đè; model không được tự cấp quyền |
 | UC-16 | Xuất dữ liệu / chẩn đoán | Phạm vi, quyền xuất, xác nhận chủ máy | Manifest export và nhãn raw/derivative | D3, D4 | Không tự phát tán raw nhạy cảm; secret transport của huba không vào log hay bản chẩn đoán |
+| UC-17 | Sắp ô chat và footer phiên | Scope máy/account, layout, tập session keys | A có chat riêng luôn thấy hoạt động; focus đổi cột phải; B footer full ngang | U5 | Không focus vẫn cập nhật trạng thái/tin/việc đang làm; chưa đủ nguồn thì báo chưa xác minh |
+| UC-18 | Nhiều cửa sổ cùng theo dõi/điều khiển | ViewID, subscription, command target | Fanout có cursor; command đúng phiên, không lặp | U6, D2 | Không dùng focusglobal làm target; takeover phải có control lease |
+| UC-19 | Nhận trạng thái mới và mất nguồn | Lifecycle event hoặc kết quả đối soát | Trạng thái có bằng chứng và mốc mới nhất | D5 | Mất nguồn không biến thành idle/closed; notification chỉ chuyển trạng thái |
+| UC-20 | Giao dự án / sửa tên hiển thị | User choice, confirmed assignment, expected revision | Topic/scope/assignment riêng, identity key giữ nguyên | D6 | Tên nhắc trong log không được giao dự án; đổi tên không cấp quyền hay tự đổi cwd |
+| UC-21 | Xem vòng xử lý và child/job | Turn/request/tool/child/job refs + revision | Live hoặc xem lại cùng graph và coverage | C5 | Tool khởi chạy completed không chứng minh job xong; không bịa HTTPrequest từ assistantrow |
+| UC-22 | Tiếp quản khi không mở terminal riêng | Runtime mode, capabilities, lease, binding | Terminal nhúng/gốc cùng phiên hoặc từ chối rõ | U7 | Không mở phiên mới giả takeover; chưa có driver attach thì giữ terminal gốc |
+
+## Tổng thể V2
+
+Xem HTML: W0 bàn hai vùng, T0 terminal và các Pxx liên kết tới từng bước. Đặc tả tổng: ../thiet-ke-tong-the-v2.md. Khung W0 là minh họa, không nối dữ liệu thật.
+
+## Vấn đề đánh dấu
+
+### P01 · Tên phiên nhiễm đường dẫn trong log — LỖI ĐÃ XÁC NHẬN
+
+**Bằng chứng/phạm vi:** Đã đối chiếu ca kiểm tra máy: daemonlog72701→72820 [projects]→[zkey], cùng ID; CLI sau đó [scripts]. sessions.rs2104–2159,2508–2529; báo cáo docs/ra-soat-ten-phien-goc-20261116.md.
+
+**Đề xuất:** Giữ Phiên chung nếu chưa được giao dự án; tách scope, topic, identity và nguồn xác nhận. Không lấy path census làm danh tính.
+
+**Bàn tiếp:** Cách giao dự án qua lời nói cần gợi ý/xác nhận rõ; sửa nhãn không tự đổi quyền/cwd/context. P01 đánh dấu seam suy diễn path; bước D6 đang vẽ là hướng chặn lỗi, không phải chọn dự án là sai.
+
+**Tại:** D6/bước3
+
+### P02 · Báo dừng có đường chờ vòng dò dài — CHƯA ĐO / CHƯA ĐỦ
+
+**Bằng chứng/phạm vi:** Thăm dò cũ16/11: poll120s,278cycle/277khoảng; đây là nhịp vòng, chưa đo latency đầu-cuối. Số đo tại .tmp/do-tre-thong-bao-20261116.md; chưa khẳng định binary hiện tại đã sửa.
+
+**Đề xuất:** Sự kiện lifecycle đánh thức nhánh trạng thái nhẹ; polling chỉ đối soát. Ghi mốc nguồn→ingest→fanout→UI/ACK Telegram.
+
+**Bàn tiếp:** Chốt mục tiêu độ trễ theo capability sau đo; mất nguồn giữ unknown, không suy idle hoặc chết.
+
+**Tại:** D5/bước2, D1/bước8, U5/bước5
+
+### P03 · Preview không phải timeline đầy đủ — CHƯA ĐO / CHƯA ĐỦ
+
+**Bằng chứng/phạm vi:** opencode.rs274–276,305–329:40hàng/6000ký tự. request-trace.md24–41 mới thăm dò một lượt lịch sử OpenCode, không chứng minh live/đủ3CLI.
+
+**Đề xuất:** Collector riêng có cursor nguồn, revision bản ghi mutable, raw/gap. Preview chỉ phục vụ danh sách.
+
+**Bàn tiếp:** Lịch sử đến đâu, giữ raw bao lâu, dung lượng và migration; không tự coi thiếu dữ liệu là không có hoạt động.
+
+**Tại:** D1/bước1, C5/bước3, D3/bước4
+
+### P04 · Ô chat làm việc + footer phiên; mật độ còn bàn — CẦN BÀN / CHỐT
+
+**Bằng chứng/phạm vi:** Phản hồi16/11 đã chỉ rõ: A phải thấy từng phiên chạy gì và chat riêng; focus đổi chi tiết cột phải; B chỉ cần footer full ngang phía dưới. Hướng bố cục này không còn là câu hỏi chưa chọn.
+
+**Đề xuất:** A giữ hội thoại/input/trạng thái/việc đang làm ở mọi ô; focus chỉ đổi chi tiết. B ở dưới toàn bộ menu+A+chi tiết, có icon chạy/việc đang làm/tin mới, cập nhật không phụ thuộc focus.
+
+**Bàn tiếp:** Còn bàn mật độ, số ô và co giãn theo màn; cùng phiên ở nhiều bàn chỉ đếm một lần mỗi scope. Bản mẫu tương tác không phải sản phẩm đã kết nối CLI.
+
+**Tại:** U5/bước3, U6/bước2
+
+### P05 · Nhiều cửa cùng điều khiển nhầm hoặc đúp — RỦI RO CẦN KIỂM
+
+**Bằng chứng/phạm vi:** pipeline.rs913–925: thiếu target thì dùng focus:session chung; screenshot explicit cũng có đường đổi focus16120–16143. Chưa tái hiện race desktop V2, không bê con trỏ này sang nhiều view.
+
+**Đề xuất:** Lệnh mang target+generation+command ID; một dispatcher/phiên, control lease cho thao tác terminal thô; nhận diện lại trước side effect.
+
+**Bàn tiếp:** Cho gửi thêm khi đang chạy chỉ nếu adapter đã đo; lease hết hạn không replay lệnh mơ hồ. Cùng chữ khác command ID vẫn là hai ý định.
+
+**Tại:** U6/bước5, D2/bước6, U7/bước7
+
+### P06 · Không cửa sổ terminal riêng ≠ không CLI — CẦN BÀN / CHỐT
+
+**Bằng chứng/phạm vi:** Luật hiện hành CLAUDE.md24–44 đòi đường chủ máy tiếp quản; thiết kế cũ §4.3 còn mở terminal thật. Chưa nghiệm thu runtime không cửa sổ thay thế trên3OS.
+
+**Đề xuất:** UI là nơi làm việc chính. Giữ CLI runtime/PTY khi cần, terminal nhúng và nút mở terminal gốc; chỉ bật chế độ mới khi capability đủ.
+
+**Bàn tiếp:** Đề xuất chỉ mở terminal gốc khi cần, chưa duyệt bỏ yêu cầu cửa sổ hiện hành hoặc tự chuyển phiên đang chạy.
+
+**Tại:** U7/bước3, U1/bước7, U4/bước14
+
+### P07 · Cần journal gốc hay cả payload model? — CẦN BÀN / CHỐT
+
+**Bằng chứng/phạm vi:** thiet-ke-desktop.md54–80; MCP không tự quan sát mọi request. Chưa có phép đo payload đầy đủ từngCLI/provider/version.
+
+**Đề xuất:** Nguồn J: journal; nguồn P: model body chỉ khi hook hỗ trợ. Raw có provenance/completeness; phần ẩn ghi không cung cấp.
+
+**Bàn tiếp:** Chốt mức bắt buộc; không MITM/đổi thuê bao sang API tính phí chỉ để có P.
+
+**Tại:** C4/bước4, C5/bước5, X0/bước6
+
+### P08 · Child/job có thể còn chạy khi cha idle — CHƯA ĐO / CHƯA ĐỦ
+
+**Bằng chứng/phạm vi:** Thăm dò lịch sử08:53 ghi memory/active-context.md:5lượt subagent+8job mẫu; tool completed là ACK khởi chạy, jobexit1 vẫn có thể statecompleted. Chưa đo live/recovery/3CLI.
+
+**Đề xuất:** Graph cha-con/job theo nativeID; launch ACK, runtime và kết quả là ba trục riêng. Sau ngắt/đóng vẫn nêu job còn sống.
+
+**Bàn tiếp:** Khi cha kết thúc có dừng job không phải policy được công bố; child không làm tăng số phiên người dùng.
+
+**Tại:** C5/bước7, D5/bước5, U2/bước15
+
+### P09 · Giao lệnh/permission/attachment cần parity từng adapter — CHƯA ĐO / CHƯA ĐỦ
+
+**Bằng chứng/phạm vi:** pipeline.rs8214–8227: thiếu journal thì Codex chưa xác nhận nhưng non-Codex còn trả DaGui theo màn; bất nhất đọc từ mã, chưa tái hiện giao lỗi thật. Asking/Question sessions.rs4244–4288 chưa có revision/toolID; multi-question/multi-select đã có, không phủ nhận tính năng cũ.
+
+**Đề xuất:** Đã nhận ở huba khác CLI-accepted; revision cho câu hỏi; attachment có manifest và receipt theo nguồn. Không hỗ trợ thì nêu rõ và có takeover.
+
+**Bàn tiếp:** Không bật nút giả; không nhận spawn0/composer mất chữ là chắc đã giao. Không nâng quyền để đạt parity.
+
+**Tại:** D2/bước7, U2/bước10, U7/bước5
+
+### P10 · Usage từng request chưa là báo cáo toàn kỳ — CHƯA ĐO / CHƯA ĐỦ
+
+**Bằng chứng/phạm vi:** Thiết kế cũ §9 và request-trace.md: metric ngữ cảnh/quota không phải tổng token; prototype dùng fixture, chưa collector toàn kỳ.
+
+**Đề xuất:** Canonical usage theo semantics/cache/counter generation; child rollup tránh cộng đôi; chart/CSV cùng filter và coverage.
+
+**Bàn tiếp:** Không có nguồn thì chưa đo; không thêm billing/tracker hoặc model để ước lượng.
+
+**Tại:** D4/bước3, C4/bước7
+
+### P11 · Vỏ desktop, transport và quyền trên ba OS — CẦN BÀN / CHỐT
+
+**Bằng chứng/phạm vi:** thiet-ke-desktop.md7–52: Tauri/local IPC là đề xuất; kiểm HTML Chromium không chứng minh WebView2/WebKit/native ACL hay bộ cài.
+
+**Đề xuất:** Frontend chung; core kiểm principal/scopes; host/CLI/channel adapter riêng. Chạy spike trên Windows/macOS/Linux trước chọn vỏ cuối.
+
+**Bàn tiếp:** Không mở LAN mặc định; secrets ngoài DOM; lựa chọn framework/vỏ theo thử thật, chưa là quyết định đã triển khai.
+
+**Tại:** U1/bước2, U3/bước8, U6/bước1
+
+### P12 · Crash/reconnect/retention có thể làm mất hoặc lặp — RỦI RO CẦN KIỂM
+
+**Bằng chứng/phạm vi:** Nguy cơ của thiết kế streaming/command mới, chưa khẳng định lỗi runtime cụ thể. Nguồn mutable/cursor/history thiếu đã có bằng chứng giới hạn.
+
+**Đề xuất:** Raw+ingest cursor commit cùng transaction; projection và view cursors riêng; command uncertain hòa giải, không replay side effect.
+
+**Bàn tiếp:** Chốt retention/export theo quyền và audit; gap phải thấy rõ, quyền bị thu hồi thì xử lý cache nhạy cảm của client theo policy.
+
+**Tại:** U4/bước3, D1/bước4, U6/bước8
 
 ## Thành phần tham gia một phiên — ai làm việc gì?
 
@@ -42,7 +179,7 @@ huba là cầu nối tới phiên CLI thật. Chủ máy thao tác qua Desktop, 
 | A01 | Chủ máy | Mục tiêu, câu hỏi, xác nhận, tệp → ý định thao tác | Mọi UC; không thay quyết định người dùng bằng model đoán |
 | A02 | Khung chat Desktop | Draft + session đích → send/answer/action; event → timeline | Chat local; draft/UI state không tự vào model |
 | A03 | Telegram client + adapter | Owner text/callback/file → route/command; event → tin/nút | Kênh tùy chọn; một collector Telegram; gate chat/user đúng loại update |
-| A04 | Terminal / TUI | Gõ trực tiếp → CLI; CLI → chữ màn hình/PTY | Chủ máy tiếp quản phiên thật; không bắt gõ terminal phải vòng qua huba |
+| A04 | Terminal nhúng / cửa sổ gốc | Control lease + binding → tiếp quản cùng CLI; capture/PTY → màn | Cứu hộ/tương tác chưa có API; không cần cửa sổ riêng thường xuyên là mục tiêu, chưa là capability đã đo |
 | A05 | Vỏ Desktop / IPC client | UI command → local transport đã ghép; stream → UI | Đề xuất Tauri; không cho frontend chạy shell/đọc DB CLI tùy ý |
 | A06 | Gate danh tính và scope | OS peer/pairing hoặc owner chat → quyền thao tác | Mọi cửa core; không tin actor/scope client tự khai |
 | A07 | Router / application service | Phân loại quản lý hay chat → handler chung | help/list/config có thể dừng tại huba, không đi model |
@@ -117,15 +254,15 @@ sequenceDiagram
     participant P8 as Raw / index / usage
     participant P9 as UI kết quả / kênh
     participant P10 as MCP facade huba
-    Note over P0: 01 · Khung chat gửi; quản lý thuần túy có thể dừng tại huba
+    Note over P0: Bước 1 / 01 · Khung chat gửi; quản lý thuần túy có thể dừng tại huba
     P0->>P1: Input + session ref + command ID
-    Note over P1: 02 · Không chuyển input sang model bằng một agent trung gian
+    Note over P1: Bước 2 / 02 · Không chuyển input sang model bằng một agent trung gian
     P1->>P1: Gate quyền, ghi intent, khóa đúng phiên
-    Note over P1: 03 · CLI-accepted khác huba-received
+    Note over P1: Bước 3 / 03 · CLI-accepted khác huba-received
     P1->>P2: Giao chữ/tệp theo capability và kiểm nhận
-    Note over P2: 04 · Context builder của CLI lắp request
+    Note over P2: Bước 4 / 04 · Context builder của CLI lắp request
     P2->>P2: Luật + lịch sử chọn + schemas + input
-    Note over P2: 05 · Provider adapter serialize; phần ẩn chỉ provider biết
+    Note over P2: Bước 5 / 05 · Provider adapter serialize; phần ẩn chỉ provider biết
     P2->>P3: R1: request model /  auth ngoài prompt
     opt 06 · Đường quan sát song song; chưa chắc là wire payload
     P2-->>P7: Journal/event R1 nếu nguồn xuất
@@ -160,15 +297,15 @@ sequenceDiagram
     opt 16 · Không gửi mọi DB/raw/history của huba tự động
     P2->>P3: R2: context cập nhật + tool result
     end
-    Note over P3: 17 · Reasoning/tệp chỉ khi nguồn cung cấp
+    Note over P3: Bước 17 / 17 · Reasoning/tệp chỉ khi nguồn cung cấp
     P3->>P2: Final text/blocks + usage/stop nếu có
-    Note over P2: 18 · Thu journal hoặc hook chính thức theo schema
+    Note over P2: Bước 18 / 18 · Thu journal hoặc hook chính thức theo schema
     P2->>P7: Assistant event + turn state + usage
-    Note over P7: 19 · Source kind / IDs / completeness; không cộng stream-final đôi
+    Note over P7: Bước 19 / 19 · Source kind / IDs / completeness; không cộng stream-final đôi
     P7->>P8: Lưu raw+cursor /  projection /  canonical usage
-    Note over P8: 20 · UI/kênh theo dõi nhận cùng semantics
+    Note over P8: Bước 20 / 20 · UI/kênh theo dõi nhận cùng semantics
     P8->>P9: Timeline, tool trace, state, usage, refs
-    Note over P9: 21 · Đọc không gọi model và không tự gửi vào context
+    Note over P9: Bước 21 / 21 · Đọc không gọi model và không tự gửi vào context
     P9->>P0: Xem phản hồi, tool, tệp, lỗi, nguồn
     opt 22 · Nhánh riêng: chỉ khi dùng MCP facade
     P0-->>P10: Client có quyền đọc resource huba
@@ -200,40 +337,46 @@ sequenceDiagram
     participant P0 as Chủ máy
     participant P1 as Desktop UI
     participant P2 as hubad / core
-    participant P3 as Host / terminal
+    participant P3 as Host / runtime
     participant P4 as CLI
-    Note over P0: Bắt đầu UC-01
+    alt Đường chính khi các điều kiện hợp lệ
+    Note over P0: Bước 1 / Bắt đầu UC-01
     P0->>P1: Mở ứng dụng
-    Note over P1: Trước mọi thao tác
+    Note over P1: Bước 2 / Trước mọi thao tác
     P1->>P2: Ghép client, kiểm quyền và version
-    opt Nếu core mất / version không khớp / không quyền: dừng
+    opt Account/model có thể theo mặc định đã kiểm
+    P0->>P1: Chọn Phiên chung hoặc dự án đã giao
+    end
+    Note over P1: Bước 5 / UC-04: chủ máy bấm Mở
+    P1->>P2: Yêu cầu Mở phiên + request ID
+    Note over P2: Bước 6 / Thiếu danh tính dự án giữ Phiên chung
+    P2->>P2: Kiểm assignment, luật và capability
+    Note over P2: Bước 7 / Chưa đủ mode mới thì giữ terminal gốc
+    P2->>P3: Mở runtime theo mode đã chọn
+    Note over P3: Bước 8 / Có đường tiếp quản; không tự headless hóa
+    P3->>P4: Khởi động CLI có hàng rào
+    Note over P4: Bước 9 / Xác nhận danh tính, không chỉ exit0
+    P4->>P2: Nhận diện phiên, PID / binding
+    Note over P2: Bước 10 / Chỉ công bố mức đã chứng minh
+    P2->>P1: Chờ câu đầu / đang chạy / sẵn sàng
+    Note over P0: Bước 12 / Desktop focus riêng Telegram focus
+    P0->>P1: Chọn phiên để vào Chat
+    else Nhánh lỗi tại bước 3 / Nếu core mất / version không khớp / không quyền: dừng
+    break Dừng thao tác hiện tại sau khi báo đủ lỗi
+    Note over P2: Bước 3 / Nếu core mất / version không khớp / không quyền: dừng
     P2->>P1: Báo lỗi /  không cho chạy lệnh
     end
-    opt Nếu chưa cấu hình: qua U3 rồi quay lại
-    P0->>P1: Chọn hoặc thêm dự án, account
-    end
-    Note over P1: UC-04: chủ máy bấm Mở
-    P1->>P2: Yêu cầu Mở phiên + request ID
-    Note over P2: Từ chối rõ nếu điều kiện không đủ
-    P2->>P2: Kiểm cấu hình, luật, capability
-    Note over P2: Không đổi sang nguồn model khác âm thầm
-    P2->>P3: Mở terminal với profile đã chọn
-    Note over P3: Terminal thật để chủ máy tiếp quản
-    P3->>P4: Khởi động CLI có hàng rào
-    Note over P4: Xác nhận danh tính, không chỉ exit0
-    P4->>P2: Nhận diện phiên, PID / binding
-    Note over P2: Chỉ công bố mức đã chứng minh
-    P2->>P1: Chờ câu đầu / đang chạy / sẵn sàng
-    opt Nếu đã mở cửa sổ nhưng chưa nhận diện CLI
+    else Nhánh lỗi tại bước 11 / Nếu đã mở cửa sổ nhưng chưa nhận diện CLI
+    break Dừng thao tác hiện tại sau khi báo đủ lỗi
+    Note over P2: Bước 11 / Nếu đã mở cửa sổ nhưng chưa nhận diện CLI
     P2->>P1: Giữ trạng thái chờ /  mở chẩn đoán
     end
-    Note over P0: Desktop focus riêng Telegram focus
-    P0->>P1: Chọn phiên để vào Chat
+    end
 ```
 
 **Input:** OS user, phiên bản app/core, workspace/project ref, account ref hoặc auto, model/effort, việc tùy chọn.
 
-**Output:** Session ref + terminal binding có bằng chứng; UI hiển thị sẵn sàng hoặc trạng thái chưa xác định/lỗi đúng bước.
+**Output:** SessionKey + runtime binding có bằng chứng và đường tiếp quản; UI hiển thị sẵn sàng hoặc trạng thái chưa xác định/lỗi đúng bước.
 
 **Ràng buộc:** Danh sách không đọc được khác danh sách0 phiên. Pane mở được khác CLI sẵn sàng. Chưa có câu đầu thì ghi chờ câu đầu, không bịa phản hồi.
 
@@ -248,21 +391,19 @@ sequenceDiagram
     participant P1 as UI / Telegram
     participant P2 as hubad / core
     participant P3 as CLI / nguồn sự kiện
-    Note over P0: Draft thuộc đúng phiên
+    alt Đường chính khi các điều kiện hợp lệ
+    Note over P0: Bước 1 / Draft thuộc đúng phiên
     P0->>P1: Chọn phiên /  soạn tin
-    Note over P1: Chủ máy bấm Gửi
+    Note over P1: Bước 2 / Chủ máy bấm Gửi
     P1->>P2: Gửi command ID + nội dung
-    Note over P2: Chưa tác động CLI trước khi ghi nhận
+    Note over P2: Bước 3 / Chưa tác động CLI trước khi ghi nhận
     P2->>P2: Ghi ý định bền vững + kiểm quyền
-    Note over P2: Đường driver có kiểm nhận — D2
+    Note over P2: Bước 4 / Đường driver có kiểm nhận — D2
     P2->>P3: Giao lệnh tới đúng phiên
-    opt Nếu thiếu bằng chứng nhận: không tự gửi lại
-    P2->>P1: Còn trong ô / chưa xác định
-    end
     opt Nếu có bằng chứng khớp command
     P3->>P2: Nguồn ghi nhận input, tiến trình
     end
-    Note over P2: ACK giao khác kết thúc lượt
+    Note over P2: Bước 7 / ACK giao khác kết thúc lượt
     P2->>P1: CLI đã nhận /  vẽ hoạt động
     opt Nếu CLI yêu cầu lựa chọn
     P3->>P2: Câu hỏi + revision theo nguồn
@@ -276,9 +417,9 @@ sequenceDiagram
     opt Nếu adapter hỗ trợ và đúng phiên
     P2->>P3: Gửi lựa chọn /  đọc lại kết quả
     end
-    Note over P3: Output theo D1, vòng model theo C2
+    Note over P3: Bước 12 / Output theo D1, vòng model theo C2
     P3->>P2: Phản hồi / lỗi + nguồn
-    Note over P2: Renderer không thực thi nội dung model
+    Note over P2: Bước 13 / Renderer không thực thi nội dung model
     P2->>P1: Timeline và trạng thái lượt
     opt Chỉ khi chủ máy bấm Ngắt và có capability
     P0->>P2: Ngắt lượt qua UI
@@ -294,6 +435,12 @@ sequenceDiagram
     end
     opt Không biến timeout thành đã đóng
     P2->>P1: Đã đóng hoặc chưa đo được
+    end
+    else Nhánh lỗi tại bước 5 / Nếu thiếu bằng chứng nhận: không tự gửi lại
+    break Dừng thao tác hiện tại sau khi báo đủ lỗi
+    Note over P2: Bước 5 / Nếu thiếu bằng chứng nhận: không tự gửi lại
+    P2->>P1: Còn trong ô / chưa xác định
+    end
     end
 ```
 
@@ -376,9 +523,7 @@ sequenceDiagram
     participant P1 as hubad / core
     participant P2 as CLI / host
     participant P3 as Kho cục bộ
-    opt Nếu mất kết nối
-    P0->>P0: Giữ draft, đánh dấu dữ liệu cũ
-    end
+    alt Đường chính khi các điều kiện hợp lệ
     opt Khi kết nối phục hồi
     P0->>P1: Ghép lại + cursor + command IDs
     end
@@ -418,6 +563,12 @@ sequenceDiagram
     opt Nhánh Đóng app; không phải Đóng phiên
     P0->>P0: Đóng cửa sổ app, để dịch vụ chạy
     end
+    else Nhánh lỗi tại bước 1 / Nếu mất kết nối
+    break Dừng thao tác hiện tại sau khi báo đủ lỗi
+    Note over P0: Bước 1 / Nếu mất kết nối
+    P0->>P0: Giữ draft, đánh dấu dữ liệu cũ
+    end
+    end
 ```
 
 **Input:** Session ref, command treo, cursor đọc, draft, capability và checkpoint/brief nếu bàn giao.
@@ -425,6 +576,155 @@ sequenceDiagram
 **Output:** Tiếp tục đọc hoặc làm việc với đúng danh tính; nhánh fork/checkpoint có provenance; trạng thái mơ hồ không bị che.
 
 **Ràng buộc:** Không replay tác dụng phụ đã có thể xảy ra. Mở app lại không tự mở CLI mới. Brief là bản tóm tắt dẫn nguồn, không phải toàn bộ context gốc.
+
+## U5 · A nhiều ô chat — focus cột phải — B footer đầy ngang
+
+A là các khung chat có hội thoại, input, trạng thái và việc đang làm luôn nhìn thấy. Focus ô nào thì cột phải hiện chi tiết ô đó. B là footer dưới cả menu+A+chi tiết, không còn bảng lớn trong vùng làm việc; vẫn nhận tin và hoạt động khi không focus.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P0 as Chủ máy
+    participant P1 as Bàn / ViewID
+    participant P2 as Session registry
+    participant P3 as Subscriptions
+    participant P4 as CLI sources
+    alt Đường chính khi các điều kiện hợp lệ
+    Note over P0: Bước 1 / Không mặc định có quản lý máy xa
+    P0->>P1: Mở bàn, chọn scope máy/account
+    Note over P1: Bước 2 / Bàn lưu layout, không tự tạo phiên
+    P1->>P2: Xin snapshot + revision + freshness
+    Note over P2: Bước 3 / Focus chỉ đổi chi tiết cột phải
+    P2->>P1: Ô chat A + footer B + tổng theo khóa
+    Note over P0: Bước 4 / Chỉ thay layout, không gọi Mở CLI
+    P0->>P1: Mở panel của một phiên trong B
+    Note over P1: Bước 5 / Không focus vẫn nhận cập nhật
+    P1->>P3: Timeline A + activity/latest cho footer B
+    Note over P3: Bước 6 / Nhiều panel không nhân bản collector
+    P3->>P4: Thu nguồn một lần theo adapter
+    Note over P3: Bước 7 / Không giành focus hoặc làm mất draft
+    P3->>P1: Chat/activity A và icon/tin/việc tại B
+    opt Trong view này; không ngắt hoặc đóng CLI
+    P0->>P1: Đóng panel cuối, phiên trở về B
+    end
+    Note over P1: Bước 10 / Lọc/tìm có số đang hiện trên tổng
+    P1->>P1: Đối soát A/B/tổng và phần chưa rõ
+    else Nhánh lỗi tại bước 9 / Không loại hàng như thể phiên đã chết
+    break Dừng thao tác hiện tại sau khi báo đủ lỗi
+    Note over P2: Bước 9 / Không loại hàng như thể phiên đã chết
+    P2->>P1: Nguồn mất: giữ ảnh cũ và nhãn unknown
+    end
+    end
+```
+
+**Input:** Scope host/account, view ID, layout đã lưu, session census có freshness/generation; layout không quyết định phiên sống hay chết.
+
+**Output:** Mỗi ô A có chat/input/status/activity riêng; cột phải theo focus; footer B có icon chạy/chữ trạng thái/việc đang làm/tin gần nhất; root count và phần chưa xác minh, child/job riêng.
+
+**Ràng buộc:** A=O∩Panels(view), B=O trừ A, với O là tập root mở đã xác minh cùng scope. Panel unverified/out-of-scope có nhãn riêng, ngoài A/B. Filter hiển thị không đổi tổng scope; đổi scope thì tính lại O. Đóng panel cuối mới trả về B; tổng nhiều view dùng hợp khóa, không cộng tổng. Có nguồn mù thì tổng toàn bộ chưa xác minh.
+
+## U6 · Nhiều cửa sổ — subscription riêng, command đích rõ
+
+Nhiều view có thể cùng xem một phiên hoặc khác phiên. Desktop/Telegram dùng chung service nhưng không giành lựa chọn, draft hoặc con trỏ đọc của nhau.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P0 as View A / View B
+    participant P1 as IPC / gate
+    participant P2 as Query + fanout
+    participant P3 as Command dispatcher
+    participant P4 as CLI / driver
+    alt Đường chính khi các điều kiện hợp lệ
+    Note over P0: Bước 1 / Không tin user ID client tự khai
+    P0->>P1: Ghép client + cấp scopes theo quyền
+    Note over P0: Bước 2 / Mỗi cửa giữ layout/draft riêng
+    P0->>P2: Subscribe ViewID + scope + cursor
+    Note over P2: Bước 3 / Khoảng giữa snapshot/delta không mất event
+    P2->>P0: Snapshot watermark rồi delta có revision
+    Note over P0: Bước 4 / Chọn phiên tại cửa khác không đổi đích
+    P0->>P1: Gửi command ID + SessionKey + generation
+    Note over P1: Bước 5 / Retry cùng key trả trạng thái cũ
+    P1->>P3: Gate quyền và nhận intent một lần
+    Note over P3: Bước 6 / Đọc lại binding trước khi gửi
+    P3->>P4: Serialize tác động tới đúng phiên
+    Note over P4: Bước 7 / Kết quả fanout cho view có quyền
+    P4->>P2: Nguồn ghi ACK/trạng thái/nội dung mới
+    opt Không đóng CLI hay view khác
+    P0->>P2: Unsubscribe hoặc đóng một cửa
+    end
+    else Nhánh lỗi tại bước 8 / Queue đầy không làm rơi event im lặng
+    break Dừng thao tác hiện tại sau khi báo đủ lỗi
+    Note over P2: Bước 8 / Queue đầy không làm rơi event im lặng
+    P2->>P0: Gap hoặc cursor cũ: yêu cầu snapshot
+    end
+    else Nhánh lỗi tại bước 10 / Xử lý cache nhạy cảm theo policy
+    break Dừng thao tác hiện tại sau khi báo đủ lỗi
+    Note over P1: Bước 10 / Xử lý cache nhạy cảm theo policy
+    P1->>P0: Scope bị thu hồi: ngừng stream/action
+    end
+    end
+```
+
+**Input:** Client identity/scopes, ViewID, session key, binding generation, subscription filter, snapshot/event cursor, command ID.
+
+**Output:** Mỗi view nhận snapshot+delta đúng scope; lệnh serialize theo session và không bị chuyển đích khi cửa khác chọn phiên.
+
+**Ràng buộc:** View focus không phải command target. Subscription chỉ đọc không giữ control lease. Core kiểm quyền mỗi lần, bounded queue báo gap/resync; không hứa exactly-once trên CLI không hỗ trợ.
+
+## U7 · UI thay cửa sổ thường ngày — runtime và terminal tiếp quản
+
+Giảm cửa sổ terminal riêng mà không biến phiên thành agent nền không thể tiếp quản. Chỉ đề xuất mode mới; chưa sửa quy tắc hoặc runtime đang dùng.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P0 as Chủ máy / UI
+    participant P1 as Capability / core
+    participant P2 as Runtime / Host
+    participant P3 as CLI / PTY
+    participant P4 as Terminal viewer
+    alt Đường chính khi các điều kiện hợp lệ
+    Note over P0: Bước 1 / Tauri không tự cung cấp mọi driver
+    P0->>P1: Xem capability theo OS/CLI/version
+    Note over P1: Bước 2 / Chưa đo thì chưa hỗ trợ, không ẩn lỗi
+    P1->>P0: Hiện mode hiện hành và giới hạn
+    opt Cần duyệt trước thay luật cửa sổ hiện hành
+    P0->>P1: Chọn mode UI-first nếu đủ điều kiện
+    end
+    opt Không gọi mode mới là bỏ CLI
+    P1->>P2: Runtime giữ CLI và kênh điều khiển
+    end
+    Note over P0: Bước 5 / Chỉ bật thao tác có capability đã đo
+    P0->>P1: Chat/hỏi/quyền/tệp bằng UI cấu trúc
+    opt Đăng nhập/cứu hộ/tương tác chưa có UI
+    P0->>P1: Yêu cầu tiếp quản cùng phiên
+    end
+    opt Chặn structured/raw input; kiểm composer
+    P1->>P2: Barrier + drain/fence rồi cấp lease
+    end
+    opt Nếu không attach được: báo, không mở phiên mới
+    P2->>P4: Attach PTY hoặc mở viewer gốc
+    end
+    opt Input ngoài huba ghi nguồn terminal nếu biết
+    P4->>P3: Input terminal tới cùng CLI
+    end
+    opt Reconcile input/draft rồi mở gửi cấu trúc
+    P0->>P1: Trả lease qua barrier, giữ CLI
+    end
+    else Nhánh lỗi tại bước 11 / Giữ đường terminal gốc, không hứa tự động hết
+    break Dừng thao tác hiện tại sau khi báo đủ lỗi
+    Note over P1: Bước 11 / Giữ đường terminal gốc, không hứa tự động hết
+    P1->>P0: Thiếu driver / OS dialog cần tay người
+    end
+    end
+```
+
+**Input:** CLI/OS/version capability matrix, runtime mode người dùng đã duyệt, attach handle/generation, control lease và scope thao tác.
+
+**Output:** Chat/trace/questions trong UI; khi cần thì cùng phiên mở terminal nhúng hoặc terminal gốc có bằng chứng, không sinh phiên thay thế.
+
+**Ràng buộc:** Cửa sổ đồ họa, PTY/console và tiến trình CLI là ba lớp khác nhau. Không đủ attach/receive/permission/interrupt/close/reconnect thì không công bố terminal-free. Takeover phải qua barrier cho cả structured và raw input, fence writer bằng lease epoch; còn command uncertain thì chưa nhập terminal.
 
 ## D1 · Nguồn CLI → raw → projection → màn hình
 
@@ -438,34 +738,40 @@ sequenceDiagram
     participant P2 as Kho raw + cursor
     participant P3 as Projection / index
     participant P4 as UI / kênh đã chọn
-    Note over P0: Journal/file hoặc DB snapshot được hỗ trợ
+    alt Đường chính khi các điều kiện hợp lệ
+    Note over P0: Bước 1 / Journal/file hoặc DB snapshot được hỗ trợ
     P0->>P1: Record + vị trí nguồn + version
-    Note over P1: Nguồn lỗi → log và coverage gap
+    Note over P1: Bước 2 / Nguồn lỗi → log và coverage gap
     P1->>P1: Kiểm generation, identity, schema
-    Note over P1: Commit nguyên tử với ingest checkpoint
+    Note over P1: Bước 3 / Commit nguyên tử với ingest checkpoint
     P1->>P2: Ghi bản gốc + hash + source ref
-    Note over P2: Chỉ sau commit mới nâng cursor nguồn
+    Note over P2: Bước 4 / Chỉ sau commit mới nâng cursor nguồn
     P2->>P1: Mốc ingest đã bền vững
-    Note over P1: Worker phục hồi được từ raw chưa xử lý
+    Note over P1: Bước 5 / Worker phục hồi được từ raw chưa xử lý
     P1->>P3: Chuẩn hóa bằng raw ref
-    opt Nếu schema lạ/hỏng; không nuốt thành rỗng
-    P1->>P3: Parse-error event + raw ref
-    end
-    Note over P3: ID nguồn + thế hệ; không chỉ timestamp
+    Note over P3: Bước 7 / ID nguồn + thế hệ; không chỉ timestamp
     P3->>P3: Khử trùng và liên kết chắc chắn
-    Note over P3: Cập nhật màn, không gọi model
+    Note over P3: Bước 8 / Cập nhật màn, không gọi model
     P3->>P4: Event/timeline + read cursor
     opt Nếu reconnect; replay đọc không có side effect
     P4->>P3: Đọc tiếp bằng cursor
-    end
-    opt Nếu cursor đã hết hạn hoặc nguồn thiếu
-    P3->>P4: Gap / dữ liệu cũ / cần snapshot
     end
     opt Nếu nguồn có liên hệ chứng minh được
     P0->>P1: Stream và final cùng request ref
     end
     opt Không tạo hai câu trả lời final trùng
     P3->>P4: Một message cập nhật, raw vẫn giữ
+    end
+    else Nhánh lỗi tại bước 6 / Nếu schema lạ/hỏng; không nuốt thành rỗng
+    break Dừng thao tác hiện tại sau khi báo đủ lỗi
+    Note over P1: Bước 6 / Nếu schema lạ/hỏng; không nuốt thành rỗng
+    P1->>P3: Parse-error event + raw ref
+    end
+    else Nhánh lỗi tại bước 10 / Nếu cursor đã hết hạn hoặc nguồn thiếu
+    break Dừng thao tác hiện tại sau khi báo đủ lỗi
+    Note over P3: Bước 10 / Nếu cursor đã hết hạn hoặc nguồn thiếu
+    P3->>P4: Gap / dữ liệu cũ / cần snapshot
+    end
     end
 ```
 
@@ -487,37 +793,43 @@ sequenceDiagram
     participant P2 as Sổ command
     participant P3 as Session driver
     participant P4 as CLI / journal
-    Note over P0: Desktop qua IPC; Telegram qua owner-chat gate
+    alt Đường chính khi các điều kiện hợp lệ
+    Note over P0: Bước 1 / Desktop qua IPC; Telegram qua owner-chat gate
     P0->>P1: Identity + input + command ID
-    opt Nếu sai quyền / sai phiên / revision cũ: dừng
-    P1->>P0: Từ chối + audit lý do
-    end
-    Note over P1: Trước side effect; không dùng text hash duy nhất
+    Note over P1: Bước 3 / Trước side effect; không dùng text hash duy nhất
     P1->>P2: Insert intent theo idempotency key
     opt Nếu retry cùng key, đúng principal/phạm vi
     P2->>P0: Trả trạng thái lệnh đã có
     end
-    Note over P2: Chỉ một writer/lease gửi trên mỗi phiên
+    Note over P2: Bước 5 / Chỉ một writer/lease gửi trên mỗi phiên
     P2->>P3: Lệnh mới + target generation
-    Note over P3: Revalidate identity ngay trước side effect
+    Note over P3: Bước 6 / Revalidate identity ngay trước side effect
     P3->>P4: Thực hiện một lần có kiểm nhận
-    Note over P4: Nguồn bằng chứng được adapter hỗ trợ
+    Note over P4: Bước 7 / Nguồn bằng chứng được adapter hỗ trợ
     P4->>P3: Input record / composer / lỗi
     opt Khi bằng chứng đủ
     P3->>P2: CLI-accepted / in-composer / failed
     end
-    opt Nếu crash, mất ACK hoặc không đọc được nguồn
-    P3->>P2: Uncertain + attempt evidence
-    end
-    Note over P2: Không lấy exit0 làm accepted
+    Note over P2: Bước 10 / Không lấy exit0 làm accepted
     P2->>P0: Trạng thái giao thật
     opt Sau restart: không tự replay hành động mơ hồ
     P1->>P4: Chỉ đọc để hòa giải lệnh treo
     end
-    Note over P4: CLI-accepted khác model-done
+    Note over P4: Bước 12 / CLI-accepted khác model-done
     P4->>P1: Turn events qua collector D1
-    Note over P1: Đúng kênh và đúng phiên được theo dõi
+    Note over P1: Bước 13 / Đúng kênh và đúng phiên được theo dõi
     P1->>P0: Cập nhật output + trạng thái
+    else Nhánh lỗi tại bước 2 / Nếu sai quyền / sai phiên / revision cũ: dừng
+    break Dừng thao tác hiện tại sau khi báo đủ lỗi
+    Note over P1: Bước 2 / Nếu sai quyền / sai phiên / revision cũ: dừng
+    P1->>P0: Từ chối + audit lý do
+    end
+    else Nhánh lỗi tại bước 9 / Nếu crash, mất ACK hoặc không đọc được nguồn
+    break Dừng thao tác hiện tại sau khi báo đủ lỗi
+    Note over P3: Bước 9 / Nếu crash, mất ACK hoặc không đọc được nguồn
+    P3->>P2: Uncertain + attempt evidence
+    end
+    end
 ```
 
 **Input:** Principal được transport xác minh, channel/source-message ID, session ref, client command ID, expected revision, nội dung.
@@ -538,20 +850,15 @@ sequenceDiagram
     participant P2 as Gate / service
     participant P3 as Kho raw / refs
     participant P4 as Bản hiển thị / export
-    Note over P0: UC-12: chọn record cụ thể
+    alt Đường chính khi các điều kiện hợp lệ
+    Note over P0: Bước 1 / UC-12: chọn record cụ thể
     P0->>P1: Xem bản gốc / đọc resource
-    Note over P1: Không tin principal client tự khai
+    Note over P1: Bước 2 / Không tin principal client tự khai
     P1->>P2: Client identity + scope + record ref
-    opt Nếu thiếu scope / sai owner: dừng
-    P2->>P1: Từ chối có lý do
-    end
-    Note over P2: Theo quyền, không lấy preview thay raw
+    Note over P2: Bước 4 / Theo quyền, không lấy preview thay raw
     P2->>P3: Đọc record và manifest
-    Note over P3: UI escape nội dung, không chạy HTML/JS
+    Note over P3: Bước 5 / UI escape nội dung, không chạy HTML/JS
     P3->>P4: Raw + nguồn + hash + completeness
-    opt Nếu chỉ có journal hoặc ảnh terminal
-    P3->>P4: Không có nguồn / payload chưa cung cấp
-    end
     opt UC-16: không tự gửi raw ra kênh khác
     P0->>P2: Yêu cầu xuất phạm vi đã chọn
     end
@@ -561,8 +868,19 @@ sequenceDiagram
     opt Raw nguyên vẹn hoặc derivative có nhãn
     P2->>P4: Xuất manifest + dữ liệu theo quyền
     end
-    Note over P2: Không chép raw/secret vào log audit
+    Note over P2: Bước 10 / Không chép raw/secret vào log audit
     P2->>P2: Audit ai đọc/xuất, ref, thời điểm
+    else Nhánh lỗi tại bước 3 / Nếu thiếu scope / sai owner: dừng
+    break Dừng thao tác hiện tại sau khi báo đủ lỗi
+    Note over P2: Bước 3 / Nếu thiếu scope / sai owner: dừng
+    P2->>P1: Từ chối có lý do
+    end
+    else Nhánh lỗi tại bước 6 / Nếu chỉ có journal hoặc ảnh terminal
+    break Dừng thao tác hiện tại sau khi báo đủ lỗi
+    Note over P3: Bước 6 / Nếu chỉ có journal hoặc ảnh terminal
+    P3->>P4: Không có nguồn / payload chưa cung cấp
+    end
+    end
 ```
 
 **Input:** Client/principal, scopes, record refs hoặc cursor; yêu cầu export riêng và xác nhận khi nhạy cảm.
@@ -583,31 +901,35 @@ sequenceDiagram
     participant P2 as Raw + usage index
     participant P3 as Query / bộ lọc
     participant P4 as Báo cáo UI / CSV
-    Note over P0: Đi qua ingest D1
+    alt Đường chính khi các điều kiện hợp lệ
+    Note over P0: Bước 1 / Đi qua ingest D1
     P0->>P2: Lưu raw usage + source ref
-    Note over P2: Không suy usage từ độ dài text
+    Note over P2: Bước 2 / Không suy usage từ độ dài text
     P2->>P1: Đọc raw/version/counter semantics
-    Note over P1: Chưa biết semantics → unknown
+    Note over P1: Bước 3 / Chưa biết semantics → unknown
     P1->>P1: Xác định scope và thành phần
     opt Nếu counter tích lũy; reset mở thế hệ mới
     P1->>P1: Delta theo cùng counter + baseline
     end
-    Note over P1: Chunk/final/refork đã đối chiếu khử trùng
+    Note over P1: Bước 5 / Chunk/final/refork đã đối chiếu khử trùng
     P1->>P2: Canonical request usage + coverage
-    opt Nếu thiếu ID/account hoặc thành phần
-    P1->>P2: Thiếu / chưa quy thuộc + lý do
-    end
-    Note over P4: UC-13: một filter chung
+    Note over P4: Bước 7 / UC-13: một filter chung
     P4->>P3: Ngày/múi giờ/dự án/model/account
-    Note over P3: Không gọi provider/model khi đổi filter
+    Note over P3: Bước 8 / Không gọi provider/model khi đổi filter
     P3->>P2: Đọc cùng tập canonical records
-    Note over P2: Ngày không có nguồn không thành0 thật
+    Note over P2: Bước 9 / Ngày không có nguồn không thành0 thật
     P2->>P4: Tổng biết + coverage + danh sách thiếu
     opt Cùng scope/revision với chart
     P4->>P3: CSV hoặc drill-down tới raw
     end
     opt Mất nguồn → dữ liệu cũ, không báo mới nhất
     P3->>P4: Kết quả khớp bảng và chart
+    end
+    else Nhánh lỗi tại bước 6 / Nếu thiếu ID/account hoặc thành phần
+    break Dừng thao tác hiện tại sau khi báo đủ lỗi
+    Note over P1: Bước 6 / Nếu thiếu ID/account hoặc thành phần
+    P1->>P2: Thiếu / chưa quy thuộc + lý do
+    end
     end
 ```
 
@@ -616,6 +938,95 @@ sequenceDiagram
 **Output:** Chỉ mục usage chuẩn, KPI/chart/bảng/CSV cùng filter; coverage/unknown/unattributed luôn thấy được.
 
 **Ràng buộc:** Cache đã nằm trong input thì không cộng lần hai. Context hiện tại/quota% không phải token đã dùng. Không cộng cả parent rollup và usage child nếu đã bao gồm nhau.
+
+## D5 · Lifecycle — nguồn thật → registry → panel/list/Telegram
+
+Trạng thái phiên, lượt model, tool và job không được gộp thành một cờ busy. Sự kiện đánh thức nhánh nhẹ, polling đối soát phần nguồn không phát sự kiện.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P0 as CLI / runtime
+    participant P1 as Adapter observer
+    participant P2 as Registry / graph
+    participant P3 as Event delivery
+    participant P4 as UI / Telegram
+    alt Đường chính khi các điều kiện hợp lệ
+    Note over P0: Bước 1 / Nguồn mutable cũng phải được cập nhật
+    P0->>P1: Busy/idle/question/exit hoặc revision mới
+    Note over P1: Bước 2 / Polling định kỳ chỉ để đối soát
+    P1->>P2: Wake nhánh nhẹ + observation có nguồn
+    Note over P2: Bước 3 / Mốc cũ không ghi đè trạng thái mới
+    P2->>P2: Kiểm generation và thứ tự bằng chứng
+    Note over P2: Bước 4 / Đo t_source/t_ingest/t_fanout riêng
+    P2->>P3: Event chuẩn + source health + watermark
+    opt ACK khởi chạy không khép runtime job
+    P2->>P3: Child/job còn chạy hoặc kết quả lỗi
+    end
+    Note over P3: Bước 6 / Một lần theo transition, không báo mỗi poll
+    P3->>P4: Panel live + summary list + notice theo dõi
+    opt Khôi phục không phát lại notice hàng loạt
+    P1->>P2: Resync từ snapshot có generation
+    end
+    Note over P4: Bước 10 / ACK Telegram không chứng minh đã thấy trên điện thoại
+    P4->>P4: Render/ACK transport và đo latency
+    else Nhánh lỗi tại bước 7 / Giữ ảnh cũ, đánh dấu chưa xác minh
+    break Dừng thao tác hiện tại sau khi báo đủ lỗi
+    Note over P1: Bước 7 / Giữ ảnh cũ, đánh dấu chưa xác minh
+    P1->>P2: Probe lỗi / disconnect / schema chưa biết
+    Note over P2: Bước 8 / Không chuyển unknown thành idle/closed
+    P2->>P4: Cũ/unknown và mốc cuối đã xác minh
+    end
+    end
+```
+
+**Input:** Runtime/source events có timestamp/revision/generation và kết quả probe; scope nguồn và mức độ tin cậy; graph child/job.
+
+**Output:** Session lifecycle + turn state + job state + source health, các mốc quan sát và notification chuyển trạng thái có dedup.
+
+**Ràng buộc:** Idle khác closed; ended turn khác nghiệp vụ được nghiệm thu; lỗi probe khác danh sách rỗng. Mất kết nối không tự giết phiên hay khép mọi job.
+
+## D6 · Danh tính — SessionKey khác topic, cwd và dự án được giao
+
+Dẹp việc một phiên hỏi chung bị đổi tên sang ứng dụng trong log. Cho phép đặt tên dễ đọc nhưng không để nhãn làm thay quyền, scope hay đích lệnh.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P0 as Chủ máy
+    participant P1 as UI / lời giao việc
+    participant P2 as Identity service
+    participant P3 as Registry / audit
+    participant P4 as CLI / nguồn
+    Note over P4: Bước 1 / Account attribution và binding riêng
+    P4->>P2: Native ID + namespace + host + CLI
+    Note over P2: Bước 2 / Không ép root phải thuộc một ứng dụng
+    P2->>P3: Chưa giao dự án: assignment null
+    Note over P4: Bước 3 / Lưu provenance; không dùng làm assignment
+    P4->>P2: Path trong log / prefix assistant / cwd
+    Note over P2: Bước 4 / Topic tự sinh có nhãn, không đổi scope
+    P2->>P1: Hiện Phiên chung · ID + topic riêng
+    opt Ngôn ngữ tự nhiên mơ hồ thì chưa nhận giao
+    P0->>P1: Chọn dự án/module hoặc xác nhận gợi ý
+    end
+    opt Không đổi tên từ thao tác xem log
+    P1->>P2: Assignment request + expected revision
+    end
+    opt Xung đột revision phải đối chiếu lại
+    P2->>P3: Kiểm folder/quyền, lưu actor và nguồn
+    end
+    Note over P3: Bước 8 / Đổi scope/runtime là UC riêng
+    P3->>P1: Nhãn đã xác nhận, khóa phiên giữ nguyên
+    opt Có audit; không phục hồi nhãn đoán cũ
+    P0->>P2: Sửa tên hoặc bỏ assignment
+    end
+```
+
+**Input:** SessionKey từ host/CLI/namespace native; account attribution riêng; assignment user chọn/xác nhận, topic/cwd riêng, expected revision và actor.
+
+**Output:** Phiên chung + ID hoặc dự án/module đã giao; provenance cho assignment và audit. Đổi tên không thay khóa phiên.
+
+**Ràng buộc:** Không có assignment không có nghĩa là không có phiên. Path census/prefix model chỉ có thể là gợi ý, không tự xác lập danh tính. Giao dự án không tự cấp quyền ghi hay đổi luật/context.
 
 ## C1 · Khởi tạo phiên: ai đưa gì vào context?
 
@@ -629,22 +1040,22 @@ sequenceDiagram
     participant P2 as CLI
     participant P3 as Luật / tools / nguồn
     participant P4 as Model / provider
-    Note over P0: Cấu hình không phải câu hỏi cho model
+    Note over P0: Bước 1 / Cấu hình không phải câu hỏi cho model
     P0->>P1: Chọn dự án, account, model/effort
-    Note over P1: Không gộp secret vào system prompt
+    Note over P1: Bước 2 / Không gộp secret vào system prompt
     P1->>P2: Profile + nguồn luật + cổng quyền
-    Note over P2: Phạm vi project/subfolder phải kiểm thực tế
+    Note over P2: Bước 3 / Phạm vi project/subfolder phải kiểm thực tế
     P2->>P3: Nạp luật được CLI hỗ trợ
-    Note over P3: Đọc trực tiếp khi vào phạm vi theo quy định
+    Note over P3: Bước 4 / Đọc trực tiếp khi vào phạm vi theo quy định
     P3->>P2: Nội dung luật + provenance
-    Note over P2: Catalog/schema có thể nạp eager hoặc lazy
+    Note over P2: Bước 5 / Catalog/schema có thể nạp eager hoặc lazy
     P2->>P3: Liệt kê tools/MCP được cấp
-    Note over P3: Lấy dữ liệu khi tool/resource được đọc
+    Note over P3: Bước 6 / Lấy dữ liệu khi tool/resource được đọc
     P3->>P2: Schema tools, không phải mọi dữ liệu
     opt Nếu mở phiên không việc thì chờ, không bịa tin
     P0->>P2: Tin đầu / brief được duyệt
     end
-    Note over P2: System + luật + lịch sử chọn + input
+    Note over P2: Bước 8 / System + luật + lịch sử chọn + input
     P2->>P2: Lắp messages theo CLI/provider
     opt Chỉ khi CLI thực sự khởi một lượt
     P2->>P4: Request model theo nguồn xác thực
@@ -652,7 +1063,7 @@ sequenceDiagram
     opt Không quan sát được → ghi chưa biết
     P2-->>P1: Manifest / usage nếu nguồn hỗ trợ
     end
-    Note over P1: huba không khẳng định thấy prompt ẩn
+    Note over P1: Bước 11 / huba không khẳng định thấy prompt ẩn
     P1->>P0: Hiện nguồn nạp và độ đầy đủ
 ```
 
@@ -674,15 +1085,15 @@ sequenceDiagram
     participant P2 as Model / provider
     participant P3 as Tool / MCP / host
     participant P4 as Collector → huba
-    Note over P0: Từ D2 hoặc gõ terminal trực tiếp
+    Note over P0: Bước 1 / Từ D2 hoặc gõ terminal trực tiếp
     P0->>P1: Tin mới + tệp/tham chiếu
-    Note over P1: Lịch sử được chọn + luật + schemas + input
+    Note over P1: Bước 2 / Lịch sử được chọn + luật + schemas + input
     P1->>P1: Lắp context cho request R1
-    Note over P1: Provider adapter có thể biến đổi payload
+    Note over P1: Bước 3 / Provider adapter có thể biến đổi payload
     P1->>P2: R1: model input
-    Note over P2: Chỉ trường nguồn thực sự xuất
+    Note over P2: Bước 4 / Chỉ trường nguồn thực sự xuất
     P2->>P1: Chunk text / tool call / usage
-    Note over P1: Không mặc định journal = payload R1
+    Note over P1: Bước 5 / Không mặc định journal = payload R1
     P1->>P4: Journal/event quan sát được
     opt Nếu output yêu cầu tool và gate cho phép
     P1->>P3: Kiểm quyền rồi chạy tool
@@ -699,7 +1110,7 @@ sequenceDiagram
     opt Kết thúc request chưa chắc kết thúc toàn lượt
     P2->>P1: Phản hồi cuối + usage R2
     end
-    Note over P1: D1 chuyển tới UI và kênh theo dõi
+    Note over P1: Bước 11 / D1 chuyển tới UI và kênh theo dõi
     P1->>P4: Mốc turn-complete / abort / error
     opt Nếu dùng subagent; context con không mặc định y hệt cha
     P3-->>P4: Child session + parent relation
@@ -735,7 +1146,7 @@ sequenceDiagram
     opt Không còn đồng nghĩa toàn lịch sử gốc
     P2->>P2: Lắp request từ summary + phần giữ
     end
-    Note over P3: Xem trên UI không bơm lại vào prompt
+    Note over P3: Bước 4 / Xem trên UI không bơm lại vào prompt
     P3->>P0: Xem lịch sử cũ theo quyền
     opt Nhánh resume: chủ máy chọn
     P0->>P1: Resume cùng phiên/profile
@@ -784,11 +1195,11 @@ sequenceDiagram
     participant P2 as Collector
     participant P3 as CLI
     participant P4 as Provider
-    Note over P0: Đọc dữ liệu không phát sinh suy luận model
+    Note over P0: Bước 1 / Đọc dữ liệu không phát sinh suy luận model
     P0->>P1: Xem hội thoại / lọc báo cáo
-    Note over P3: Mức J: những gì CLI ghi
+    Note over P3: Bước 2 / Mức J: những gì CLI ghi
     P3->>P2: Journal: user/assistant/tools
-    Note over P2: Không gọi đây là model payload
+    Note over P2: Bước 3 / Không gọi đây là model payload
     P2->>P1: Raw journal + completeness
     opt Mức P: chỉ khi có capability/version đã đo
     P3-->>P2: Request/response từ hook được hỗ trợ
@@ -796,11 +1207,11 @@ sequenceDiagram
     opt Giữ nhãn model-body source, không gọi packet nguyên byte
     P2-->>P1: Payload đã bỏ header secret + provenance
     end
-    Note over P4: Phần provider không xuất không được suy diễn
+    Note over P4: Bước 6 / Phần provider không xuất không được suy diễn
     P4->>P3: Text / reasoning / usage được phép xuất
-    Note over P3: Không dùng cùng một nhãn tổng token
+    Note over P3: Bước 7 / Không dùng cùng một nhãn tổng token
     P3->>P2: Usage từng request / context metric
-    Note over P1: Không có nguồn → chưa cung cấp
+    Note over P1: Bước 8 / Không có nguồn → chưa cung cấp
     P1->>P0: Journal hoặc payload với nhãn riêng
     opt Chỉ khi chủ máy chủ động yêu cầu
     P0->>P1: Chọn nội dung để gửi lại cho CLI
@@ -808,7 +1219,7 @@ sequenceDiagram
     opt Lúc này nội dung mới có thể vào context
     P1->>P3: Tin mới / attachment theo quyền
     end
-    Note over P1: Không lấy hash khớp1 record chứng minh thu đủ
+    Note over P1: Bước 11 / Không lấy hash khớp1 record chứng minh thu đủ
     P1->>P0: Coverage lịch sử và nguồn bị thiếu
 ```
 
@@ -817,6 +1228,115 @@ sequenceDiagram
 **Output:** Nhãn nguồn/coverage, payload nếu có khả năng, hoặc chưa cung cấp; token usage và context metrics tách rõ.
 
 **Ràng buộc:** Không hứa đầy đủ request model từ transcript hoặc MCP. Không MITM/chuyển sang API trả phí để lấy payload. Provider có thể giữ prompt/thinking không xuất.
+
+## C5 · Cây lượt xử lý — vòng assistant, model, tool, child và job
+
+Cùng graph phục vụ xem trực tiếp và xem lại. Các ID nguồn có đến đâu hiện đến đó; không lấy số hàng assistant làm số HTTP request khi thiếu ánh xạ.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P0 as CLI / provider
+    participant P1 as Collector
+    participant P2 as Graph / raw
+    participant P3 as UI trace
+    participant P4 as Child / job
+    Note over P0: Bước 1 / Turn ref chỉ khi có liên hệ chắc chắn
+    P0->>P1: Lượt bắt đầu hoặc assistant event
+    Note over P1: Bước 2 / Không dựng graph từ preview cắt ngắn
+    P1->>P2: Lưu event gốc + source revision
+    Note over P0: Bước 3 / Đọc revision, không chỉ seq tăng
+    P0->>P1: Cập nhật hàng cũ hoặc tool state
+    Note over P2: Bước 4 / Không bịa request HTTP từ số hàng
+    P2->>P3: Vòng assistant quan sát được + refs
+    opt Có capability mới hiện payload/source P
+    P0-->>P1: Model request/response nếu hook xuất
+    end
+    opt Giữ toolID; gắn raw input/output
+    P0->>P2: Tool-call → permission → result/error
+    end
+    opt ACK khởi chạy không phải job kết thúc
+    P0->>P4: Launch child/job + nhận ACK ID
+    end
+    opt Theo IDcon/job, không ghép bằng giờ gần
+    P4->>P1: Running/exit/result/error theo nguồn
+    end
+    Note over P2: Bước 9 / Usage parent/child không cộng trùng
+    P2->>P3: Cập nhật graph + coverage + usage
+    Note over P0: Bước 10 / Kết thúc lượt không phải nghiệmthu côngviệc
+    P0->>P1: Idle/abort/error + job còn mở
+    Note over P2: Bước 11 / Chưa có ID thì hiện chưa ghép, không giấu
+    P2->>P3: Live hoặc replay cùng dữ liệu có nguồn
+```
+
+**Input:** Command/delivery refs nếu có; turn/assistant/request/tool/child/job IDs, mutable revision, trạng thái và raw refs theo capability.
+
+**Output:** Timeline/cây cha-con có input/output/tool result/errors/usage/source links; live và lịch sử chung semantics, có nhãn thiếu correlation.
+
+**Ràng buộc:** Tool returned/completed cho launch chỉ chứng minh lời gọi khởi chạy trả về. Child/job outcome và runtime terminal là bằng chứng riêng; exit1 không thành thành công vì metadata completed.
+
+## Sổ màn hình V2 — đầy đủ thao tác và trạng thái phải vẽ
+
+Đây là yêu cầu thiết kế, không phải checklist đã kiểm sản phẩm. Header toàn ngang; logo/tên trái, tài khoản chủ máy phải; nút thu menu ở đầu menu trái. Bảng có STT xuyên trang, nền xen kẽ, tìm toàn tập và phân trang.
+
+| Màn / vùng | Nội dung và thao tác | Empty/error/unknown bắt buộc | Điểm vướng |
+| --- | --- | --- | --- |
+| Bàn làm việc | A: nhiều chat/input riêng, luôn thấy việc đang làm; focus đổi cột phải. B: footer full ngang icon/status/việc/tin mới; lưu layout | Không focus vẫn cập nhật; draft riêng; mất nguồn giữ ảnh cũ và nhãn unknown; tổng chưa xác minh | P02/P04/P05 |
+| Panel phiên | Danh tính/topic/account/model; hội thoại; gửi/tệp/ngắt; bảng hỏi/quyền; job; raw | Draft riêng; ACK chưa rõ; câu hỏi cũ; tệp mất; chỉ có preview; chưa hỗ trợ thao tác | P01/P03/P08/P09 |
+| Trace một lượt | Cây lượt → vòng assistant/request nếu biết → tool → child/job; input/result/raw; live/xem lại | Chưa ghép được; thiếu một phần; bị từ chối/lỗi; còn job sau idle; không có payload | P03/P07/P08 |
+| Phiên và lịch sử | Root mở, chưa xác minh và đã đóng tách nhóm; tìm toàn tập; mở panel/resume/fork/bàn giao | Mất nguồn khác 0 phiên; resume chưa hỗ trợ; job mồ côi; lịch sử có khoảng thiếu | P03/P06/P12 |
+| Mở phiên | Chung/dự án rõ; account/model/effort; mode/capability; xem luật/quyền; việc tùy chọn | Thiếu CLI/login; đang chờ binding; thiếu luật; mode chưa đủ; không tự mở pane thay thế | P01/P06/P11 |
+| Tài khoản & model | Thêm/sửa/khóa; lần đăng nhập; catalog model; quota có thời điểm và nguồn | Challenge hết hạn; account khóa; model chưa xác minh; quota chưa đo; revision xung đột | P09/P11 |
+| Kết nối | Desktop IPC, Telegram, MCP pairing/scopes; kiểm nhận/gửi hai chiều; thu hồi client | Sai owner/secret; poller trùng; mất mạng; nguồn lỗi; getMe không chứng minh hai chiều | P05/P11/P12 |
+| Dự án / danh tính | Folder thực; defaults; assignment có nguồn; topic riêng; xem luật; sửa tên nhưng giữ key | Chưa gán; folder mất; thiếu quyền; xung đột; không đổi cwd/quyền theo nhãn | P01 |
+| Báo cáo token | ECharts từ usage CLI/plugin; lọc ngày/múi giờ/CLI/account/model; drill-down; CSV | Chưa đo khác 0; cache không cộng đôi; độ phủ; counter reset; child rollup; cũ/offline | P10 |
+| Hoạt động & chẩn đoán | Command/attempt/audit, mốc latency và nguồn; export theo quyền | Không đưa raw nhạy cảm vào log; thiếu receipt; crash chưa rõ kết quả; schema lạ | P02/P09/P12 |
+| Cài đặt / bản cài | Layout, thông báo, retention, cấu hình động có quyền/revision/audit; update/rollback | Mặc định an toàn có nhãn; hết đĩa; migration lỗi; bundle lệch version; không tự tải/chạy | P11/P12 |
+| Terminal tiếp quản | Nhúng/gốc cùng binding; lease quyền nhập; chỉ xem khi không có quyền điều khiển | Attach lỗi; tty tái sử dụng; dialog OS; lease cũ; mode chưa đo; không tạo phiên khác | P05/P06/P09 |
+
+## State model — không gộp mọi thứ thành đang chạy / xong
+
+Các trục độc lập. Tên hiển thị theo bằng chứng nguồn; unknown có lý do và lần cuối xác minh. Kết thúc lượt không chứng minh nghiệp vụ hoàn thành đúng.
+
+| Trục | Trạng thái thiết kế | Nguồn / điều kiện | Hành vi UI |
+| --- | --- | --- | --- |
+| Session lifecycle | starting / open / closing / closed / unverified | Process/native session binding; snapshot và generation | Idle vẫn open; mất nguồn giữ known row unverified, không loại nhưclosed |
+| Turn | idle / queued nếu hỗ trợ / processing / waiting-input / waiting-permission / ended / aborted / error / unknown | Lifecycle CLI + turn refs khi có; không chỉ lấy text cuối | Hiện outcome nguồn; job con vẫn độc lập; phần thiếu phải thấy |
+| Command delivery | received / dispatching / CLI-accepted / in-composer / rejected / uncertain | Sổ intent + attempt + bằng chứng giao; command ID không thay native ACK | Uncertain không tự gửi lại; giữ bản tin chờ đối chiếu |
+| Tool call | requested / permission-pending / running / returned / denied / error / unknown | tool-callID, args, result hoặc error | returned của launch chưa phải child/job ended; status metadata≠exit outcome |
+| Child/job | launching / running / ended(exit/outcome) / aborted / unknown | Native child/job ID; liên hệ parent; runtime và kết quả | Tách khỏi số root; parent đóng không tự khép job |
+| Source health | fresh / stale / disconnected / parse-error / unsupported / gap | Tách content_changed/read_ok/inventory_complete/binding_verified; mỗi nguồn và child/job riêng | Nguồn im lặng nhưng kiểm thành công không tự stale/ended; inventory kỳ vọng có phần chưa đo |
+| Control | structured / terminal-lease / transitioning / unavailable | Core cấp lease theo actor + target generation + expiry | Mọi view xem theo quyền; chỉ chủ lease gửi raw keys; không trộn composer |
+| Assignment | unassigned / confirmed(project,module,actor,revision) / conflict | User chọn hoặc giao rõ được xác nhận; không đếm đường dẫn | Topic/cwd riêng; đổi nhãn không đổi session key/context/quyền |
+
+## Contract bổ sung cho nhiều view và runtime
+
+Tên contract dự kiến, không khẳng định là API đang có. Localhost không tự có quyền. HostID là khóa local ổn định; hỗ trợ máy xa là mở rộng riêng, không mở LAN trong thiết kế này.
+
+| Đối tượng | Khóa / trường tối thiểu | Bất biến | Phục hồi / lỗi |
+| --- | --- | --- | --- |
+| SessionKey | host_id, cli_kind, source_namespace_ref, native_session_id | Namespace native đã xác minh; account attribution riêng. Alias nhiều account không nhân đôi logical session | Native ID chưa có: giữ pending_launch_id; nhiều runtime cùng session có binding riêng và phải giải mơ hồ |
+| RuntimeBinding | SessionKey, process/pane/console handle, binding_generation, driver_version | Thay viewer/binding không tự đổi danh tính; kiểm generation trước tác động | Handle cũ/tty dùng lại: từ chối hoặc đối soát, không gửi gần đúng |
+| View / Panel | client_instance_id, view_id, panel_id, selected_session, layout_revision | Draft theo panel/session; focus view không đổi focus Tele; đóng panel không đóng CLI | Khôi phục layout nhưng xác minh phiên còn sống; không tự launch |
+| Subscription | subscription_id, view_id, scopes, SessionKeys/filter, cursor, snapshot_watermark | Thu nguồn một lần; kiểm quyền tại core; replay event không replay command | Queue có giới hạn cấu hình; vượt giới hạn báo gap/resnapshot |
+| Assignment | SessionKey, project_ref?, module?, origin, actor, revision, confirmed_at | Không assignment vẫn có Phiên chung; gợi ý khác xác nhận | Nhãn đoán cũ giữ provenance/unconfirmed, không nâng thành lựa chọn user |
+| ControlLease | lease_id, lease_epoch, SessionKey, binding_generation, owner_client, expiry, mode | Barrier chặn structured/raw mới; drain hoặc hòa giải đang bay; fence writer cũ tại side effect rồi attach | Uncertain thì chưa cấp nhập; trả mode cũng qua barrier/composer; không phát lại phím; terminal ngoài không fence được phải báo giới hạn |
+| Command | command_id, actor đã xác minh, target, generation, expected_revision, payload_ref | Idempotency theo ý định/phạm vi; payload khác cùng key phải từ chối | Ghi sổ trước hiệu ứng; uncertain hòa giải theo bằng chứng |
+| Capability | OS, CLI, version, runtime_mode, feature, evidence_ref, verified_at | supported / unsupported / unmeasured là ba trạng thái; không đoán parity | Version đổi thì kiểm lại bằng chứng phù hợp; tắt action có giải thích |
+
+## Ma trận giảm terminal — điều kiện phải đo trước khi bật mode UI-first
+
+Dấu chưa đo là trạng thái hiện tại của thiết kế mới, không phủ nhận thao tác cũ đã có. Không chọn bỏ terminal hiện hành chỉ vì vẽ được UI.
+
+| Khả năng | Trong UI mong muốn | Đường runtime / fallback | Điều kiện mở mode mới |
+| --- | --- | --- | --- |
+| Mở/attach/resume | Một session key đúng, không cửa sổ riêng thường trực | CLI + PTY/console khi cần; Linux tmux tách viewer; driver macOS/Windows riêng | Attach/resume/restart/identity trên OS + CLI/version thật |
+| Chat và giao nhận | Text/Unicode/đa dòng, draft, receipt đúng mức | API hỗ trợ hoặc PTY driver; không ACK chỉ theo chữ màn hình | Mất ACK/double-click/crash/nhiều view; nguồn không chắc thì uncertain |
+| Hỏi / quyền / input | Đủ câu/multi-select/mô tả/free-text; revision; gate quyền | Nguồn cấu trúc + driver chính thức; terminal nếu thiếu | Không trả lời bảng cũ; giữ từ chối; không nới cổng |
+| Tệp / ảnh / output | Manifest/ref/bytes, code/text an toàn, bản gốc có nguồn | Khả năng attachment CLI/provider; ref mất báo lỗi | Phân biệt byte/ref/receipt; không nói model nhận bytes khi chỉ có path |
+| Ngắt/đóng/job | Năm thao tác: đóng view, ngắt lượt, dừng job, đóng CLI, tắt dịch vụ | Driver/process group theo hỗ trợ; không giết bừa mọi job | Đọc nguồn sau tác động; nêu job sống/unknown; xác nhận ảnh hưởng |
+| Tiếp quản | Terminal nhúng hoặc mở viewer gốc cùng phiên | Control lease + cùng binding; dialog OS có thể cần tay người | UI → terminal → UI giữ session ID/nội dung/draft, không mở phiên thay thế |
+| Login / khôi phục | Wizard đúng account/lần login; offline/reconnect | URL/OTP/dialog OS theo yêu cầu; không tự mở browser | Đo hết hạn/mã cũ/tắt app/tắt viewer/daemon crash, giữ đường cứu hộ |
 
 ## Một kết quả tương tác đầy đủ gồm những phần nào?
 
@@ -844,7 +1364,7 @@ Tên dưới đây là contract thiết kế, KHÔNG phải khẳng định các
 | Đối tượng | Khóa / quan hệ | Nguồn thật / bên sở hữu | Quy tắc |
 | --- | --- | --- | --- |
 | Account / project config | account_ref, project_ref, config_revision | Chủ máy cấu hình qua core; provider auth riêng | Không suy account từ thư mục symlink; revision/audit; model mặc định chỉ áp dụng đúng phạm vi |
-| CLI session | cli_kind + profile_ref + native_session_id + generation | CLI tạo/khôi phục; huba ghi binding | Huba ID và native ID là hai trường riêng; pending binding không được bịa native session đã tồn tại |
+| CLI session | host_id + cli_kind + source_namespace_ref + native_session_id; binding_generation riêng | CLI tạo/khôi phục; huba ghi binding và account attribution có nguồn | Namespace chung nhiều account không nhân đôi; generation không nằm trong SessionKey; pending launch không phải native session đã tồn tại |
 | Command intent | command_id + principal + scope; source_message_id nếu có | UI/Telegram → core | Idempotency key theo yêu cầu, không theo nội dung: hai tin cùng chữ vẫn có thể là hai ý định thật |
 | Delivery attempt | attempt_id → command_id + target_generation | Driver thực thi | Ghi trước/sau side effect; ambiguous không được replay tự động; khóa session không khóa cả app |
 | Turn / model request | turn_id → request_id → attempt_id nếu nguồn cấp | CLI/provider events | Một user turn có nhiều request và retry; không có native ID thì local observation ID phải mang nhãn chưa ghép |
@@ -901,9 +1421,9 @@ Ví dụ cách truy vết UC-05. Không tạo dữ liệu nghiệp vụ thật v
 | 7. Chủ máy xem | E80 → timeline; source refs → raw | Core → Desktop / kênh theo dõi | Hiện output và turn status; xem raw không gọi model thêm |
 | 8. Báo cáo | U1 + U2 trong filter F1 | Usage index → chart/CSV | Tổng request usage, không lấy context T4 hoặc quota% thay thế |
 
-## Nguồn hiện có đã đọc trong lượt vẽ
+## Nguồn khảo sát bản15/11 — đối chiếu lịch sử
 
-Mốc khảo sát là cây làm việc đang có sửa song song ngày15/11/2026, không phải khẳng định các dòng này cố định hoặc bản cài đã có thiết kế mới.
+Các số dòng dưới đây giữ mốc15/11, không được coi là vị trí mã hiện tại. Bằng chứng đọc lại ở lượt V2 nằm trong P01–P12 và đặc tả thiet-ke-tong-the-v2.md. Không phải bản đồ phụ thuộc runtime đã đo.
 
 | Nguồn mã / thiết kế | Điều quan sát được | Không suy rộng thành |
 | --- | --- | --- |
@@ -927,7 +1447,7 @@ Mốc khảo sát là cây làm việc đang có sửa song song ngày15/11/2026
 ## Các quyết định còn cần duyệt / spike, không tự chốt trong lượt vẽ
 - Mức gốc cần nghiệm thu: J = journal CLI giữ nguyên theo nguồn; P = body request/response model nếu CLI có điểm mở rộng đã đo. Thiết kế chứa cả hai đường, không nhận P sẵn có.
 - Ưu tiên Claude CLI + OpenCode theo thiết kế trước; không tự xóa/chuyển Codex đang tích hợp. Tích hợp khác model/provider không được mặc định dùng chung thuê bao hoặc mọi tính năng.
-- Tauri là đề xuất vỏ đa OS; cần spike WebView/IPC/capability và native packaging trên máy thật. Chưa có app để nghiệm thu UC01–16 xuyên ba hệ.
+- Tauri là đề xuất vỏ đa OS; cần spike WebView/IPC/capability và native packaging trên máy thật. Chưa có app V2 để nghiệm thu UC01–22 xuyên ba hệ.
 - Thời hạn lưu/raw nhạy cảm/dung lượng, quyền export, danh mục model và ngưỡng vận hành phải cấu hình bằng dữ liệu có quyền quản trị + audit; bí mật vẫn ở secret store/env.
 - Hiện có thể duyệt luồng và nội dung bản vẽ. Browser kiểm tài liệu chỉ chứng minh tài liệu hiển thị, không thay cho UI→core→CLI→model→nguồn thật của sản phẩm.
 

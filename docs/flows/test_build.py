@@ -6,7 +6,9 @@ from pathlib import Path
 import unittest
 import xml.etree.ElementTree as ET
 
-from build import HERE, render, svg, validate
+from build import HERE, mermaid, render, svg, validate
+from workspace_mockup import SESSIONS, standalone
+from unittest.mock import patch
 
 
 class PageParser(HTMLParser):
@@ -36,7 +38,8 @@ class RenderTests(unittest.TestCase):
 
     def test_links_uc_layers_and_all_participants(self):
         validate(self.data)
-        self.assertEqual(len(self.data['use_cases']), 16)
+        self.assertEqual(len(self.data['use_cases']), 22)
+        self.assertEqual(len(self.data['flows']), 19)
         self.assertEqual(len(self.data['front_tables'][0]['rows']), 30)
         components = self.data['front_tables'][0]['rows']
         self.assertEqual([r[0] for r in components], [f'A{i:02}' for i in range(1,31)])
@@ -60,7 +63,7 @@ class RenderTests(unittest.TestCase):
         self.assertGreater(len(parser.links), 10)
         self.assertTrue(set(parser.links).issubset(set(parser.ids)))
         self.assertEqual(parser.remote, [])
-        self.assertEqual(parser.scripts, 0)
+        self.assertEqual(parser.scripts, 2)  # fixture JSON + scoped prototype behavior
         self.assertEqual(md.count('```mermaid'), len(self.data['flows']))
 
     def test_generated_documents_match_current_source(self):
@@ -106,6 +109,90 @@ class RenderTests(unittest.TestCase):
         self.assertNotIn('<script>', rendered)
         self.assertIn('&lt;script&gt;', rendered)
         ET.fromstring(rendered)
+
+    def test_issue_census_and_marks_at_real_steps(self):
+        issues = self.data['issues']
+        self.assertEqual([i['id'] for i in issues], [f'P{i:02}' for i in range(1, 13)])
+        self.assertEqual({i['state'] for i in issues}, {'bug', 'gap', 'decision', 'risk'})
+        for flow in self.data['flows']:
+            root = ET.fromstring(svg(flow, issues))
+            ns = {'s': 'http://www.w3.org/2000/svg'}
+            actual = [a.get('href') for a in root.findall('.//s:a', ns)]
+            expected = ['#' + i['id'] for step in range(1, len(flow['events']) + 1)
+                        for i in issues if [flow['id'], step] in i['points']]
+            self.assertEqual(actual, expected)
+
+    def test_negative_issue_guards_both_directions(self):
+        for field, value, error in (
+            ('state', 'resolved-without-evidence', 'Unknown issue state'),
+            ('points', [['MISSING', 1]], 'unknown flow or step'),
+            ('points', [['U1', 999]], 'unknown flow or step'),
+            ('evidence', '', 'requires evidence'),
+        ):
+            broken = copy.deepcopy(self.data)
+            broken['issues'][0][field] = value
+            with self.assertRaisesRegex(ValueError, error):
+                validate(broken)
+            validate(self.data)
+        broken = copy.deepcopy(self.data)
+        broken['issues'].append(copy.deepcopy(broken['issues'][0]))
+        with self.assertRaisesRegex(ValueError, 'Duplicate issue ID'):
+            validate(broken)
+
+    def test_issue_markup_is_escaped(self):
+        data = copy.deepcopy(self.data)
+        data['issues'][0]['evidence'] = '<script>bad()</script>'
+        _, page = render(data)
+        self.assertNotIn('<script>bad()', page)
+        self.assertIn('&lt;script&gt;', page)
+
+    def test_v2_overview_is_explicitly_a_design(self):
+        _, page = render(self.data)
+        self.assertIn('A∩B', page)
+        self.assertIn('không cần mở thường xuyên', page)
+        self.assertIn('Không phải app đã chạy', page)
+        self.assertIn('Phiên chung', page)
+        self.assertIn('Đóng panel', page)
+        self.assertIn('Terminal nhúng', page)
+
+    def test_error_branch_breaks_instead_of_falling_through(self):
+        for flow in self.data['flows']:
+            diagram = mermaid(flow)
+            groups = sum(e[4] == 'error' and (i == 0 or flow['events'][i-1][4] != 'error')
+                         for i, e in enumerate(flow['events']))
+            self.assertEqual(diagram.count('    break '), groups)
+            for event in flow['events']:
+                if event[4] == 'error':
+                    self.assertNotIn('    opt ' + event[3] + '\n', diagram)
+
+    def test_source_failure_still_reports_unknown_before_break_ends(self):
+        flow = next(f for f in self.data['flows'] if f['id'] == 'D5')
+        diagram = mermaid(flow)
+        self.assertEqual(diagram.count('    break '), 1)
+        self.assertIn('    alt ', diagram)
+        error_path = diagram.split('    break ', 1)[1].split('    end', 1)[0]
+        self.assertIn('Probe lỗi / disconnect / schema chưa biết', error_path)
+        self.assertIn('Cũ/unknown và mốc cuối đã xác minh', error_path)
+
+    def test_standalone_workspace_matches_source_and_is_labelled_demo(self):
+        page = standalone()
+        self.assertEqual((HERE / 'workspace.html').read_text(), page)
+        self.assertIn('B luôn hiện ở đáy khung làm việc', page)
+        self.assertIn('chưa kết nối CLI', page)
+        self.assertIn('data-workspace-script', page)
+        self.assertNotIn('class="wire-list"', page)
+        self.assertEqual(len(SESSIONS), 7)
+        self.assertEqual(len({s['id'] for s in SESSIONS}), 7)
+
+    def test_fixture_cannot_close_script_and_inject_another(self):
+        sessions = copy.deepcopy(SESSIONS)
+        sessions[0]['latest'] = '</script><script>alert(1)</script>'
+        with patch('workspace_mockup.SESSIONS', sessions):
+            page = standalone()
+        parser = PageParser()
+        parser.feed(page)
+        self.assertEqual(parser.scripts, 2)
+        self.assertIn('<\\/script>', page)
 
 
 if __name__ == '__main__':
