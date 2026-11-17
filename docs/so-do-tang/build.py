@@ -63,11 +63,15 @@ def doc_head(tep: str) -> str:
 
 
 def head_sha() -> str:
+    """Commit CUỐI chạm `rust/src` tới HEAD — thứ bản đồ trích từ đó. Không dùng HEAD trần:
+    commit chính index.html làm HEAD đổi ⟹ bản đồ tự thành «cũ» mãi (đo 17/11)."""
     r = subprocess.run(
-        ["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"], capture_output=True, text=True
+        ["git", "-C", str(REPO), "log", "-1", "--format=%h", "HEAD", "--", "rust/src"],
+        capture_output=True,
+        text=True,
     )
-    if r.returncode != 0:
-        raise KhongDoDuoc("git rev-parse HEAD")
+    if r.returncode != 0 or not r.stdout.strip():
+        raise KhongDoDuoc("git log HEAD -- rust/src")
     return r.stdout.strip()
 
 

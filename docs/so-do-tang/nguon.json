@@ -77,11 +77,6 @@
       "mau": "pub fn answer_trust_dialog(",
       "noi": "claude: đọc màn rồi bấm hộ hộp trust"
     },
-    "trust_codex": {
-      "tep": "rust/src/accounts.rs",
-      "mau": "pub fn codex_trust_dir(",
-      "noi": "trust ghi sẵn — CHỈ cho codex"
-    },
     "trust_acc_mo_vai": {
       "tep": "ws:scripts/acc-mo-vai.sh",
       "mau": "CHƯA duyệt thư mục",
@@ -346,8 +341,7 @@
         ],
         [
           "QL",
-          "chuẩn bị máy: trust · tường · MCP",
-          "trust_codex"
+          "chuẩn bị máy: trust · tường · MCP (trust chung đã có 17/11: tin_truoc_khi_mo)"
         ],
         [
           "CV",
