@@ -8417,6 +8417,7 @@ fn start_in_terminal(
     }
     // Mở cửa sổ TRỐNG — đề bài gõ vào sau, khi ô nhập đã sẵn sàng.
     let cmd = window_command(cfg, account, root, None, resume);
+    crate::accounts::tin_truoc_khi_mo(cfg, account_row(cfg, account).as_ref(), root);
     let (window, tty) = crate::keys::open_window(&cmd)?;
     let tty_short = tty.trim_start_matches("/dev/").to_string();
     logging::info(
@@ -8540,6 +8541,7 @@ fn start_opencode_in_terminal(
         (!task.trim().is_empty()).then_some(task),
         resume.or(dat_truoc.as_deref()),
     );
+    crate::accounts::tin_truoc_khi_mo(cfg, Some(&acc), root);
     let (window, tty) = crate::keys::open_window(&cmd)?;
     let tty_short = tty.trim_start_matches("/dev/").to_string();
     logging::info(
@@ -9572,6 +9574,7 @@ pub fn start_fresh_after_handover(
             ensure_account_usable(cfg, Some(dung_acc))?;
         }
         let cmd = window_command(cfg, Some(dung_acc), cwd, Some(&task), None);
+        crate::accounts::tin_truoc_khi_mo(cfg, account_row(cfg, Some(dung_acc)).as_ref(), cwd);
         let opened_at = std::time::SystemTime::now();
         let (_window, tty) = crate::keys::open_window(&cmd)?;
         let tty_short = tty.trim_start_matches("/dev/").to_string();
@@ -9814,15 +9817,6 @@ pub fn open_codex_window(
 ) -> Result<(i64, String, String)> {
     let tuong = crate::accounts::ensure_codex_wall(acc, &cfg.workspace_root)
         .map_err(|e| anyhow::anyhow!(e))?;
-    // Không ghi được «tin cậy» thì vẫn mở — hộp «Folder access» hiện lên và chủ
-    // máy bấm `1` qua /key được; nhưng NÓI ra trong log, không nuốt.
-    if let Err(e) = crate::accounts::codex_trust_dir(acc, dir) {
-        logging::warn(
-            "codex_trust_not_written",
-            json!({ "account": acc.name, "dir": dir.display().to_string(), "err": e,
-                    "effect": "hộp «Folder access» sẽ hiện ở lần mở này" }),
-        );
-    }
     let mut cmd = format!(
         "cd {} && {}",
         shell_quote(&dir.to_string_lossy()),
@@ -9832,6 +9826,7 @@ pub fn open_codex_window(
         cmd.push(' ');
         cmd.push_str(&shell_quote(task.trim()));
     }
+    crate::accounts::tin_truoc_khi_mo(cfg, Some(acc), dir);
     let (window, tty) = crate::keys::open_window(&cmd)?;
     let tty_short = tty.trim_start_matches("/dev/").to_string();
     logging::info(
@@ -10297,6 +10292,7 @@ pub fn start_background(
              (không có cửa sổ nào để gõ vào) — gõ lại kèm việc cần làm"
         );
     }
+    crate::accounts::tin_truoc_khi_mo(cfg, account_row(cfg, account).as_ref(), &root);
     let denied = denied_tools();
     let mut args: Vec<&str> = vec!["--bg", &task_with_project, "--disallowedTools"];
     args.extend(denied.iter().map(String::as_str));

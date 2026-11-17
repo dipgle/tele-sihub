@@ -336,6 +336,17 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub new_in_terminal: bool,
 
+    /// MÁY tin gốc workspace — một lời khai cho MỌI tài khoản / mọi CLI.
+    ///
+    /// Quang 17/11: *"nó phải là chung trên cả máy tính"* · *"cần cấu hình chung
+    /// chứ sao mỗi acc một kiểu"* · *"chỉnh cho xong đi"*. Bật ⟹ trước MỖI lượt mở
+    /// phiên, huba ghi «đã tin `workspace_root`» xuống sổ của tài khoản sắp mở
+    /// (`accounts::tin_thu_muc`) — hộp «Do you trust this folder» không còn chặn
+    /// một màn không ai ngồi. Tắt ⟹ không ghi, log `dir_trust_off` mỗi lượt mở.
+    /// Tường quyền của phiên huba mở (`--disallowedTools`) không đổi.
+    #[serde(default = "default_true")]
+    pub tin_goc_workspace: bool,
+
     /// `host` → TÊN biến môi trường giữ mật khẩu `sudo` cho host ấy.
     ///
     /// Khoá `""` là **máy này**; các khoá còn lại khớp với host trong lệnh `ssh`.
@@ -404,6 +415,7 @@ impl Default for Config {
             claude_accounts: vec![],
             claude_transcript_root: String::new(),
             new_in_terminal: true,
+            tin_goc_workspace: true,
             // Rỗng = TẮT. Mặc định phải là tắt: bật một đường chạy `sudo` từ xa
             // là chuyện chủ máy phải cố ý khai, không phải thứ mọc sẵn.
             sudo_password_env: BTreeMap::new(),

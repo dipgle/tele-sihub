@@ -1,0 +1,571 @@
+{
+  "tieu_de": "huba — tầng GIAO TIẾP tách khỏi tầng QUẢN LÝ MODEL",
+  "ghi_chu": "Phần HIỆN TẠI trích từ mã ở HEAD (build.py tự tìm số dòng; mẫu không còn ⇒ build ĐỎ). Phần ĐÍCH là thiết kế đề xuất 17/11, chưa triển khai.",
+  "lop_module": {
+    "giao_tiep": [
+      "telegram",
+      "verbs",
+      "commands",
+      "pipeline",
+      "sessions",
+      "keys",
+      "keys_tmux",
+      "keys_win",
+      "watch",
+      "tin_den"
+    ],
+    "quan_ly_model": [
+      "config",
+      "accounts",
+      "account_login",
+      "accounts_page",
+      "quota",
+      "effort",
+      "opencode",
+      "codex_sessions",
+      "api_key"
+    ]
+  },
+  "bang_chung": {
+    "route_codex": {
+      "tep": "rust/src/pipeline.rs",
+      "mau": "r.name == a && r.is_codex()",
+      "noi": "/new rẽ acc codex ngay ở tầng route"
+    },
+    "mo_opencode": {
+      "tep": "rust/src/sessions.rs",
+      "mau": "return start_opencode_in_terminal(",
+      "noi": "mở phiên rẽ sang hàm riêng của opencode"
+    },
+    "mo_codex": {
+      "tep": "rust/src/sessions.rs",
+      "mau": "pub fn open_codex_window(",
+      "noi": "hàm mở riêng của codex"
+    },
+    "cho_id_opencode": {
+      "tep": "rust/src/sessions.rs",
+      "mau": "fn wait_opencode_session(",
+      "noi": "chờ id kiểu opencode"
+    },
+    "cho_id_claude": {
+      "tep": "rust/src/sessions.rs",
+      "mau": "fn wait_for_new_session_id(",
+      "noi": "chờ id kiểu claude"
+    },
+    "cho_id_codex": {
+      "tep": "rust/src/sessions.rs",
+      "mau": "fn wait_for_codex_session_id(",
+      "noi": "chờ id kiểu codex"
+    },
+    "id_tam_win_tty": {
+      "tep": "rust/src/sessions.rs",
+      "mau": "\"new_session_matched_by_agents\"",
+      "noi": "lưới đỡ nhận dòng tạm win-<tty> làm id"
+    },
+    "go_khong_xem_hop": {
+      "tep": "rust/src/sessions.rs",
+      "mau": "Ready::Yes => match crate::keys::type_and_send(window, task)",
+      "noi": "gõ đề bài khi ready_to_type nói Yes — không thấy hộp không đánh số"
+    },
+    "hop_chon_co_so": {
+      "tep": "rust/src/keys.rs",
+      "mau": "pub fn parse_choices(",
+      "noi": "chỉ đọc lựa chọn dạng «<số>.»"
+    },
+    "trust_doc_man": {
+      "tep": "rust/src/sessions.rs",
+      "mau": "pub fn answer_trust_dialog(",
+      "noi": "claude: đọc màn rồi bấm hộ hộp trust"
+    },
+    "trust_codex": {
+      "tep": "rust/src/accounts.rs",
+      "mau": "pub fn codex_trust_dir(",
+      "noi": "trust ghi sẵn — CHỈ cho codex"
+    },
+    "trust_acc_mo_vai": {
+      "tep": "ws:scripts/acc-mo-vai.sh",
+      "mau": "CHƯA duyệt thư mục",
+      "noi": "bản trust thứ ba: chỉ kiểm, từ chối"
+    },
+    "ban_giao_codex": {
+      "tep": "rust/src/sessions.rs",
+      "mau": "account_row(cfg, Some(dung_acc)).filter(|a| a.is_codex())",
+      "noi": "bàn giao rẽ codex; opencode rơi nhánh claude"
+    },
+    "ban_giao_han_muc": {
+      "tep": "rust/src/sessions.rs",
+      "mau": "ensure_account_usable(cfg, Some(dung_acc))",
+      "noi": "kiểm khoá/hạn mức nằm trong luồng bàn giao"
+    },
+    "effort_go_phim": {
+      "tep": "rust/src/effort.rs",
+      "mau": "pub fn set_opencode(",
+      "noi": "đổi effort opencode bằng gõ phím thẳng"
+    },
+    "opencode_tron": {
+      "tep": "rust/src/opencode.rs",
+      "mau": "const CHATGPT_USAGE_URL",
+      "noi": "module đọc phiên opencode cũng gọi hạn mức ChatGPT"
+    },
+    "mo_dau_re_cli": {
+      "tep": "ws:scripts/mo-dau-phien.py",
+      "mau": "bien = \"CODEX_HOME\" if cli == \"codex\" else \"CLAUDE_CONFIG_DIR\"",
+      "noi": "khâu mở đầu chung tự rẽ theo CLI"
+    }
+  },
+  "khoi_dich": {
+    "giao_tiep": [
+      "Cổng route (chat_id)",
+      "Điều phối phiên: mở · gõ · đọc · bàn giao · đóng · báo",
+      "Ghép đề bài + luật chung (CLAUDE.md)",
+      "Cửa sổ (tmux / Terminal)",
+      "CHỈ biết: PHIÊN, CỬA SỔ"
+    ],
+    "giao_dien": [
+      "chọn tài khoản",
+      "đặc tả mở (đã chuẩn bị máy)",
+      "màn đang ở đâu",
+      "ai ngồi trên cửa sổ",
+      "đọc phiên → trạng thái chuẩn",
+      "hỏi chỉ đọc (fork)",
+      "đặt effort"
+    ],
+    "quan_ly_model": [
+      "Sổ tài khoản · đăng nhập",
+      "Hạn mức · chọn tài khoản",
+      "Model · effort",
+      "Chuẩn bị máy: trust · tường · MCP"
+    ],
+    "bo_chuyen": [
+      "claude",
+      "codex",
+      "opencode"
+    ]
+  },
+  "du_lieu": {
+    "nut": [
+      {
+        "id": "tele",
+        "ten": "Telegram",
+        "loai": "ngoai",
+        "x": 40,
+        "y": 40
+      },
+      {
+        "id": "tin_den",
+        "ten": "tin_den (huba.sqlite)",
+        "loai": "kho",
+        "x": 40,
+        "y": 190
+      },
+      {
+        "id": "route",
+        "ten": "Cổng route",
+        "loai": "gt",
+        "x": 420,
+        "y": 40
+      },
+      {
+        "id": "dieu_phoi",
+        "ten": "Điều phối phiên",
+        "loai": "gt",
+        "x": 560,
+        "y": 190
+      },
+      {
+        "id": "so_huba",
+        "ten": "runs · cursors · spend",
+        "loai": "kho",
+        "x": 860,
+        "y": 190
+      },
+      {
+        "id": "luat",
+        "ten": "CLAUDE.md (luật chung)",
+        "loai": "kho",
+        "x": 860,
+        "y": 40
+      },
+      {
+        "id": "ql",
+        "ten": "Quản lý model + Bộ chuyển",
+        "loai": "ql",
+        "x": 420,
+        "y": 340
+      },
+      {
+        "id": "cfg",
+        "ten": "huba.config.json · huba.env",
+        "loai": "kho",
+        "x": 20,
+        "y": 340
+      },
+      {
+        "id": "cua_so",
+        "ten": "Cửa sổ (tmux)",
+        "loai": "gt",
+        "x": 820,
+        "y": 340
+      },
+      {
+        "id": "so_cli",
+        "ten": "Sổ CLI theo acc: trust · đăng nhập · hạn mức",
+        "loai": "kho",
+        "x": 160,
+        "y": 500
+      },
+      {
+        "id": "cli",
+        "ten": "CLI + model",
+        "loai": "ngoai",
+        "x": 820,
+        "y": 500
+      },
+      {
+        "id": "nhat_ky",
+        "ten": "Nhật ký phiên (.jsonl · rollout · opencode db)",
+        "loai": "kho",
+        "x": 480,
+        "y": 640
+      }
+    ],
+    "canh": [
+      [
+        "tele",
+        "tin_den",
+        "update"
+      ],
+      [
+        "tin_den",
+        "route",
+        "lệnh"
+      ],
+      [
+        "route",
+        "dieu_phoi",
+        "yêu cầu"
+      ],
+      [
+        "luat",
+        "dieu_phoi",
+        "luật → đề bài"
+      ],
+      [
+        "dieu_phoi",
+        "so_huba",
+        "ghi sổ"
+      ],
+      [
+        "dieu_phoi",
+        "ql",
+        "câu hỏi (giao diện chung)"
+      ],
+      [
+        "ql",
+        "dieu_phoi",
+        "trạng thái chuẩn"
+      ],
+      [
+        "cfg",
+        "ql",
+        "tài khoản · tên khoá"
+      ],
+      [
+        "ql",
+        "so_cli",
+        "ghi trust · tường"
+      ],
+      [
+        "so_cli",
+        "ql",
+        "hạn mức · danh tính"
+      ],
+      [
+        "dieu_phoi",
+        "cua_so",
+        "phím"
+      ],
+      [
+        "cua_so",
+        "dieu_phoi",
+        "màn"
+      ],
+      [
+        "cua_so",
+        "cli",
+        "chạy"
+      ],
+      [
+        "cli",
+        "nhat_ky",
+        "ghi"
+      ],
+      [
+        "nhat_ky",
+        "ql",
+        "đọc phiên"
+      ],
+      [
+        "dieu_phoi",
+        "tele",
+        "chỉ khi ĐỔI"
+      ]
+    ]
+  },
+  "lan": [
+    "Chủ",
+    "GT",
+    "QL",
+    "CV",
+    "CLI"
+  ],
+  "ten_lan": {
+    "Chủ": "Chủ máy (Telegram)",
+    "GT": "Tầng giao tiếp",
+    "QL": "Quản lý model",
+    "CV": "Bộ chuyển CLI",
+    "CLI": "CLI + model"
+  },
+  "uc": [
+    {
+      "id": "UC-1",
+      "ten": "/new — mở phiên mới",
+      "buoc": [
+        [
+          "Chủ",
+          "/new -s <dự án> \"<việc>\" (có thể -a <acc>)"
+        ],
+        [
+          "GT",
+          "kiểm chat_id · ghi tin_den · tách cờ"
+        ],
+        [
+          "QL",
+          "chọn tài khoản (chỉ định / theo hạn mức)",
+          "route_codex"
+        ],
+        [
+          "QL",
+          "chuẩn bị máy: trust · tường · MCP",
+          "trust_codex"
+        ],
+        [
+          "CV",
+          "đặc tả mở: lệnh + env theo CLI của acc",
+          "mo_opencode"
+        ],
+        [
+          "GT",
+          "ghép đề bài + «đọc CLAUDE.md»"
+        ],
+        [
+          "GT",
+          "mở cửa sổ ở gốc workspace"
+        ],
+        [
+          "CV",
+          "đọc màn: có hộp chặn ⇒ báo chủ, KHÔNG gõ",
+          "go_khong_xem_hop"
+        ],
+        [
+          "CV",
+          "tìm id phiên trên tty",
+          "id_tam_win_tty"
+        ],
+        [
+          "CLI",
+          "phiên chào đời, nhận đề bài"
+        ],
+        [
+          "GT",
+          "gắn id ↔ cửa sổ · báo «đã mở» (không chào đời ⇒ báo lý do)"
+        ]
+      ]
+    },
+    {
+      "id": "UC-2",
+      "ten": "/tell — nói với phiên đang theo",
+      "buoc": [
+        [
+          "Chủ",
+          "gõ chữ"
+        ],
+        [
+          "GT",
+          "lấy phiên đang theo (con trỏ)"
+        ],
+        [
+          "CV",
+          "màn: ô nhập trống? hộp chọn mở?",
+          "hop_chon_co_so"
+        ],
+        [
+          "GT",
+          "có hộp ⇒ báo; ô sẵn ⇒ gõ + Enter"
+        ],
+        [
+          "CV",
+          "chữ đã rời ô ⇒ xác nhận"
+        ],
+        [
+          "CLI",
+          "chạy lượt"
+        ],
+        [
+          "CV",
+          "lượt xong (theo nhật ký)"
+        ],
+        [
+          "GT",
+          "«vừa xong» MỘT lần"
+        ]
+      ]
+    },
+    {
+      "id": "UC-3",
+      "ten": "/shot — xem màn",
+      "buoc": [
+        [
+          "Chủ",
+          "/shot"
+        ],
+        [
+          "GT",
+          "chụp cửa sổ của phiên"
+        ],
+        [
+          "CV",
+          "tách dòng lệnh · hộp chọn · ô nhập"
+        ],
+        [
+          "GT",
+          "định dạng qua MỘT cửa + nút ▶️ 🖥 ☑"
+        ],
+        [
+          "Chủ",
+          "nhận màn, bấm được"
+        ]
+      ]
+    },
+    {
+      "id": "UC-4",
+      "ten": "Bàn giao / chuyển phiên",
+      "buoc": [
+        [
+          "CV",
+          "nhắc ngữ cảnh ≥ 50 % (hook/plugin theo CLI)",
+          "mo_dau_re_cli"
+        ],
+        [
+          "GT",
+          "xin bản bàn giao"
+        ],
+        [
+          "CV",
+          "fork CHỈ ĐỌC phiên cũ"
+        ],
+        [
+          "QL",
+          "chọn acc mới theo hạn mức",
+          "ban_giao_han_muc"
+        ],
+        [
+          "GT",
+          "chạy UC-1 bước 4–11, đề bài = bản bàn giao",
+          "ban_giao_codex"
+        ],
+        [
+          "GT",
+          "mới sống ⇒ đóng cũ; không ⇒ GIỮ cũ, báo"
+        ]
+      ]
+    },
+    {
+      "id": "UC-5",
+      "ten": "/accounts <acc> -l — đăng nhập",
+      "buoc": [
+        [
+          "Chủ",
+          "/accounts <acc> -l"
+        ],
+        [
+          "QL",
+          "lệnh đăng nhập theo CLI"
+        ],
+        [
+          "GT",
+          "mở cửa sổ đăng nhập"
+        ],
+        [
+          "CV",
+          "đọc mã thiết bị trên màn"
+        ],
+        [
+          "GT",
+          "gửi mã cho chủ"
+        ],
+        [
+          "Chủ",
+          "nhập mã trên web"
+        ],
+        [
+          "CV",
+          "đọc kết cục"
+        ],
+        [
+          "QL",
+          "cập nhật sổ · kiểm danh tính trùng"
+        ]
+      ]
+    },
+    {
+      "id": "UC-6",
+      "ten": "/effort <mức>",
+      "buoc": [
+        [
+          "Chủ",
+          "/effort <mức>"
+        ],
+        [
+          "QL",
+          "chuẩn hoá mức"
+        ],
+        [
+          "CV",
+          "cách đặt theo CLI (cờ lúc mở / phím / lệnh)",
+          "effort_go_phim"
+        ],
+        [
+          "GT",
+          "gõ nếu cần · báo"
+        ]
+      ]
+    },
+    {
+      "id": "UC-7",
+      "ten": "/ask — hỏi chỉ đọc",
+      "buoc": [
+        [
+          "Chủ",
+          "/ask <câu>"
+        ],
+        [
+          "GT",
+          "câu hỏi + phiên đích"
+        ],
+        [
+          "CV",
+          "fork CHỈ ĐỌC (Read, Grep, Glob)"
+        ],
+        [
+          "CLI",
+          "trả lời trên bản fork"
+        ],
+        [
+          "GT",
+          "gửi câu trả lời; phiên gốc cùng byte, cùng mtime"
+        ]
+      ]
+    }
+  ]
+}

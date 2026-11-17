@@ -256,31 +256,177 @@ pub fn codex_trust_block(existing: &str, dir: &str) -> Option<String> {
     Some(out)
 }
 
-/// Ghi sẵn «tin cậy» cho thư mục mở phiên vào `CODEX_HOME/config.toml` — việc
-/// chủ máy sẽ bấm ở hộp «Folder access», làm trước cho một màn không ai ngồi.
-/// Chỉ cho thư mục huba MỞ PHIÊN (đã qua bộ phân giải dự án của `/new`).
-pub fn codex_trust_dir(acc: &ClaudeAccountCfg, dir: &Path) -> Result<bool, String> {
-    let p = codex_home(acc).join("config.toml");
-    let co = match std::fs::read_to_string(&p) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(format!("không đọc được {}: {e}", p.display())),
+/// `.claude.json` với gốc `dir` đã «tin cậy» — `Ok(None)` khi sổ đã ghi tin rồi.
+/// Hàm THUẦN. Chỉ chạm ĐÚNG một khoá (`projects[dir].hasTrustDialogAccepted`);
+/// mọi khoá khác (đăng nhập, hạn mức, quyền đã cho) giữ nguyên giá trị. Sổ hỏng
+/// ⟹ `Err`, KHÔNG ghi đè: viết lại một sổ đọc không ra là xoá đăng nhập.
+///
+/// ⚠ `serde_json` của crate không bật `preserve_order` ⟹ khoá in lại theo thứ tự
+/// chữ cái. Claude không dựa vào thứ tự, và lần tự ghi kế tiếp của nó in lại.
+pub fn claude_trust_json(existing: &str, dir: &str) -> Result<Option<String>, String> {
+    let mut v: Value =
+        serde_json::from_str(existing).map_err(|e| format!("sổ .claude.json hỏng: {e}"))?;
+    let Some(goc) = v.as_object_mut() else {
+        return Err("sổ .claude.json không phải object".into());
     };
-    let Some(them) = codex_trust_block(&co, &dir.to_string_lossy()) else {
-        return Ok(false);
+    let projects = goc
+        .entry("projects")
+        .or_insert_with(|| Value::Object(Default::default()));
+    let Some(projects) = projects.as_object_mut() else {
+        return Err("`projects` trong .claude.json không phải object".into());
     };
-    use std::io::Write;
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&p)
-        .and_then(|mut f| f.write_all(them.as_bytes()))
-        .map_err(|e| format!("không ghi được {}: {e}", p.display()))?;
-    crate::logging::info(
-        "codex_dir_trusted",
-        json!({ "account": acc.name, "dir": dir.display().to_string() }),
-    );
-    Ok(true)
+    let muc = projects
+        .entry(dir.to_string())
+        .or_insert_with(|| Value::Object(Default::default()));
+    let Some(muc) = muc.as_object_mut() else {
+        return Err(format!("`projects[{dir}]` không phải object"));
+    };
+    if muc.get("hasTrustDialogAccepted") == Some(&Value::Bool(true)) {
+        return Ok(None);
+    }
+    muc.insert("hasTrustDialogAccepted".into(), Value::Bool(true));
+    serde_json::to_string_pretty(&v)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+/// Kết quả của [`tin_thu_muc`] — bốn chuyện khác nhau, không gộp vào một `bool`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TinCay {
+    /// Sổ của CLI đã tin thư mục này từ trước — không ghi gì.
+    DaCo,
+    /// Vừa ghi «tin cậy» vào sổ của CLI.
+    VuaGhi,
+    /// CLI này không có hộp tin-thư-mục (opencode) — không có gì để ghi.
+    KhongCoHop,
+    /// Tài khoản chưa có sổ (chưa đăng nhập lần nào) — KHÔNG tạo sổ thay CLI.
+    ChuaCoSo,
+    /// Thư mục nằm NGOÀI gốc workspace — máy không khai tin nó, không ghi.
+    NgoaiGoc,
+}
+
+/// Ghi tệp bằng tệp tạm + đổi tên (cùng thư mục), giữ quyền của tệp cũ: một
+/// tiến trình đọc giữa chừng thấy bản cũ hoặc bản mới, không bao giờ nửa vời.
+fn ghi_nguyen_tu(p: &Path, noi_dung: &str) -> Result<(), String> {
+    let thu_muc = p.parent().unwrap_or(Path::new("."));
+    let tam = thu_muc.join(format!(
+        ".{}.huba-{}",
+        p.file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_default(),
+        std::process::id()
+    ));
+    std::fs::write(&tam, noi_dung).map_err(|e| format!("không ghi được {}: {e}", tam.display()))?;
+    if let Ok(meta) = std::fs::metadata(p) {
+        let _ = std::fs::set_permissions(&tam, meta.permissions());
+    }
+    std::fs::rename(&tam, p).map_err(|e| {
+        let _ = std::fs::remove_file(&tam);
+        format!("không thay được {}: {e}", p.display())
+    })
+}
+
+/// 🔴 «Tin thư mục» là chuyện của MÁY, không phải của tài khoản hay CLI (Quang
+/// 17/11: *"nó phải là chung trên cả máy tính"* · *"công việc là chung không cần
+/// quan tâm dùng cli hay model nào"* · *"mỗi lần mở acc mới lại phải đi định
+/// nghĩa … là đi ngược logic"*).
+///
+/// Máy khai tin ĐÚNG MỘT chỗ: gốc workspace (`cfg.workspace_root`) — mọi dự án
+/// nằm dưới nó. Mỗi CLI lại cất «đã tin» trong sổ RIÊNG của từng tài khoản, theo
+/// đường tuyệt đối (claude: `<config_dir>/.claude.json`; codex:
+/// `CODEX_HOME/config.toml`), nên tài khoản mới / máy mới luôn hỏi lại. Hàm này là
+/// CỬA DUY NHẤT dịch quyết định của máy xuống sổ của tài khoản sắp mở, gọi ngay
+/// trước mọi lượt mở phiên — chỗ gọi không phân biệt CLI.
+///
+/// Đo 17/11 (Ubuntu): `/new acc3` — acc3 chưa tin `/mnt/data/projects` (8 sổ, chỉ
+/// acc6·acc9 có), claude 2.1.326 vẽ hộp KHÔNG đánh số, con trỏ sẵn ở «No, exit»;
+/// huba không nhận ra hộp, gõ đề bài + Enter ⟹ chọn «No» ⟹ phiên chết.
+pub fn tin_thu_muc(
+    cfg: &Config,
+    acc: Option<&ClaudeAccountCfg>,
+    dir: &Path,
+) -> Result<TinCay, String> {
+    let that = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let goc = that(&cfg.workspace_root);
+    let dir = that(dir);
+    if !dir.starts_with(&goc) {
+        return Ok(TinCay::NgoaiGoc);
+    }
+    match acc {
+        Some(a) if a.is_opencode() => Ok(TinCay::KhongCoHop),
+        // codex khoá «tin» theo ĐÚNG thư mục dự án (không thừa kế từ cha) ⟹ ghi `dir`.
+        Some(a) if a.is_codex() => {
+            let p = codex_home(a).join("config.toml");
+            let co = match std::fs::read_to_string(&p) {
+                Ok(t) => t,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(e) => return Err(format!("không đọc được {}: {e}", p.display())),
+            };
+            let Some(them) = codex_trust_block(&co, &dir.to_string_lossy()) else {
+                return Ok(TinCay::DaCo);
+            };
+            ghi_nguyen_tu(&p, &format!("{co}{them}"))?;
+            Ok(TinCay::VuaGhi)
+        }
+        // claude tin cả cây con của thư mục đã tin ⟹ ghi GỐC một lần là đủ mọi dự án.
+        _ => {
+            let cfg_dir = acc
+                .and_then(|a| some(&a.config_dir))
+                .map(|d| expand_home(Path::new(d)));
+            let p = crate::quota::book_path(cfg_dir.as_deref());
+            let co = match std::fs::read_to_string(&p) {
+                Ok(t) => t,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(TinCay::ChuaCoSo),
+                Err(e) => return Err(format!("không đọc được {}: {e}", p.display())),
+            };
+            match claude_trust_json(&co, &goc.to_string_lossy())? {
+                None => Ok(TinCay::DaCo),
+                Some(moi) => {
+                    ghi_nguyen_tu(&p, &moi)?;
+                    Ok(TinCay::VuaGhi)
+                }
+            }
+        }
+    }
+}
+
+/// [`tin_thu_muc`] + log — cái mọi chỗ mở phiên gọi. Không ghi được thì VẪN mở
+/// (hộp hiện, chủ máy còn `/shot` thấy), nhưng NÓI ra, không nuốt.
+pub fn tin_truoc_khi_mo(cfg: &Config, acc: Option<&ClaudeAccountCfg>, dir: &Path) {
+    let ten = acc.map(|a| a.name.clone()).unwrap_or_default();
+    let cli = acc.map(|a| a.cli_name()).unwrap_or("claude");
+    if !cfg.tin_goc_workspace {
+        crate::logging::info(
+            "dir_trust_off",
+            json!({ "account": ten, "cli": cli, "dir": dir.display().to_string(),
+                    "effect": "tin_goc_workspace = false — hộp tin-thư-mục có thể hiện" }),
+        );
+        return;
+    }
+    match tin_thu_muc(cfg, acc, dir) {
+        Ok(TinCay::DaCo) | Ok(TinCay::KhongCoHop) => {}
+        Ok(TinCay::VuaGhi) => crate::logging::info(
+            "dir_trusted_for_machine",
+            json!({ "account": ten, "cli": cli, "dir": dir.display().to_string(),
+                    "why": "máy tin gốc workspace — ghi xuống sổ của tài khoản sắp mở" }),
+        ),
+        Ok(TinCay::ChuaCoSo) => crate::logging::info(
+            "dir_trust_no_book",
+            json!({ "account": ten, "cli": cli,
+                    "effect": "tài khoản chưa đăng nhập lần nào — hộp tin-thư-mục có thể hiện" }),
+        ),
+        Ok(TinCay::NgoaiGoc) => crate::logging::warn(
+            "dir_trust_outside_root",
+            json!({ "account": ten, "cli": cli, "dir": dir.display().to_string(),
+                    "root": cfg.workspace_root.display().to_string(),
+                    "effect": "thư mục ngoài gốc workspace — máy không khai tin, hộp có thể hiện" }),
+        ),
+        Err(e) => crate::logging::warn(
+            "dir_trust_not_written",
+            json!({ "account": ten, "cli": cli, "dir": dir.display().to_string(), "err": e,
+                    "effect": "hộp tin-thư-mục sẽ hiện ở lần mở này" }),
+        ),
+    }
 }
 
 /// Cổng bảo mật chung (`cong_bao_mat.py`) — nằm CẠNH plugin opencode

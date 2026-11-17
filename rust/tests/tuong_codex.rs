@@ -268,13 +268,17 @@ fn mo_dau_phien_hien_man_va_vao_ngu_canh() {
         !man.contains("LUAT-THU-0714"),
         "luật không đổ lên màn: {man}"
     );
+    // Codex đọc AGENTS.md, KHÔNG đọc CLAUDE.md — kể cả đứng đúng gốc workspace
+    // (`scripts/mo-dau-phien.py::can_dan_luat`, V-0194 `5c91cd1`, ca tự kiểm «Codex luôn
+    // nạp luật CLAUDE ở cả gốc workspace»). Kỳ vọng cũ «tự đọc, không dán» theo bản
+    // `4997f88` đã bị thay; đo lại 17/11 sau gộp kho chung `f37897e`.
     let trong = hook_mo_dau(&goc, &home, &goc);
     assert!(
-        !trong["hookSpecificOutput"]["additionalContext"]
+        trong["hookSpecificOutput"]["additionalContext"]
             .as_str()
             .unwrap_or("")
             .contains("LUAT-THU-0714"),
-        "đứng đúng kho gốc ⟹ codex tự đọc, không dán lần hai: {trong}"
+        "đứng đúng kho gốc ⟹ codex VẪN được dán luật (nó không tự đọc CLAUDE.md): {trong}"
     );
 
     // khối khởi động hỏng ⟹ ĐÚNG câu phiên Claude in, giữ phần đã in.
