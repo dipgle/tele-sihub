@@ -8350,6 +8350,17 @@ pub struct Started {
     /// được.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_why: Option<String>,
+    /// Đề bài CÓ mà CHƯA gõ được vào phiên — vì sao.
+    ///
+    /// Cùng lý do với [`Started::fallback_why`], và cùng một bài học: một đường
+    /// lui không nói ra thì người dùng chỉ phát hiện lúc việc họ định làm không
+    /// làm được. Ca 15/11 (Ubuntu): hộp chọn KHÔNG ĐÁNH SỐ giữ ô nhập lại, huba
+    /// vẫn báo *"Đã mở ⌨ cửa sổ Terminal"* — anh ngồi chờ một phiên chưa hề
+    /// nhận đề bài, và phiên ấy chết vì cú Enter rơi vào hộp.
+    ///
+    /// `None` = hoặc không có đề bài, hoặc đề bài đã vào ô nhập.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_blocked: Option<String>,
 }
 
 /// The session id out of `claude --bg`'s human-readable output.
@@ -8452,6 +8463,9 @@ fn start_in_terminal(
     // lượt thật — cửa sổ mở 05:21:32 · hộp tin-thư-mục chặn · bấm hộ 05:21:53 ·
     // id xuất hiện 05:22:18). Nên "đã có id" **là** bằng chứng đo được rằng ô
     // nhập đã sẵn sàng, không phải một phép đoán về thời gian.
+    //
+    // Lý do KHÔNG gõ được (nếu có) đi ra câu chào — xem `Started::task_blocked`.
+    let mut blocked: Option<String> = None;
     if !task.trim().is_empty() {
         match ready_to_type(window) {
             Ready::Yes => match crate::keys::type_and_send(window, task) {
@@ -8477,10 +8491,27 @@ fn start_in_terminal(
             // gõ. Gõ chữ vào một hộp chọn là chốt hộ chủ máy một lựa chọn
             // (luật 13), và đó là thứ không lùi lại được. Hỏng về phía im lặng,
             // và nói ra ở log để còn biết vì sao đề bài chưa chạy.
-            Ready::Blocked(n) => logging::warn(
-                "new_task_not_typed",
-                json!({ "session": id, "why": "màn đang có hộp chọn", "options": n }),
-            ),
+            //
+            // 🔴 `shape` phải đi vào cả LOG lẫn CÂU CHÀO: 15/11 hộp không số
+            // khiến `/new` gõ đề bài vào hộp và chốt «No, exit» — phiên chết,
+            // log ghi `session_started`, người cầm điện thoại không biết gì.
+            Ready::Blocked { options, shape } => {
+                logging::warn(
+                    "new_task_not_typed",
+                    json!({ "session": id, "why": "màn đang có hộp chọn",
+                            "options": options, "shape": shape.as_str(),
+                            "effect": "đề bài CHƯA gõ — gõ vào hộp là chốt hộ một lựa chọn" }),
+                );
+                blocked = Some(match shape {
+                    BoxShape::Numbered => format!(
+                        "màn đang có hộp chọn {options} lựa chọn — bấm /key <số> hoặc /shot để xem"
+                    ),
+                    BoxShape::Unnumbered => format!(
+                        "màn đang có hộp chọn {options} lựa chọn KHÔNG đánh số — huba không bấm hộ được, \
+                         mở cửa sổ trên máy để chọn rồi /tell"
+                    ),
+                });
+            }
             Ready::Blind(err) => logging::warn(
                 "new_task_not_typed",
                 json!({ "session": id, "why": "không đọc được màn", "err": err }),
@@ -8497,6 +8528,7 @@ fn start_in_terminal(
         window: true,
         // Đường chính đi được thì không có đường lui nào để giải thích.
         fallback_why: None,
+        task_blocked: blocked,
     })
 }
 
@@ -8607,6 +8639,8 @@ fn start_opencode_in_terminal(
         ts: crate::logging::now_iso(),
         window: true,
         fallback_why: None,
+        // opencode nhận đề bài qua `--prompt` lúc mở, không qua ô nhập.
+        task_blocked: None,
     })
 }
 
@@ -8640,24 +8674,82 @@ fn wait_opencode_session(
 ///
 /// Cùng luật với `keys::look`: *không đo được* phải là một kết cục RIÊNG, chứ
 /// không đọc thành "không có hộp chọn". Gộp lại là hỏng mở đúng lúc mù nhất.
-enum Ready {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ready {
     Yes,
-    Blocked(usize),
+    /// Màn đang có hộp chọn — `options` là số lựa chọn ĐỌC ĐƯỢC.
+    ///
+    /// `shape` phải tách được, vì hai hình dạng đòi hai cách gỡ khác nhau:
+    /// hộp CÓ SỐ thì `/key <số>` bấm được, hộp KHÔNG SỐ thì phải mở cửa sổ.
+    Blocked {
+        options: usize,
+        shape: BoxShape,
+    },
     Blind(String),
+}
+
+/// Hộp chọn trên màn đọc bằng đường nào.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoxShape {
+    /// `1.` `2.` — `keys::parse_choices` đọc ra số, `/key` bấm được.
+    Numbered,
+    /// `❯ No, exit` / `Yes, I trust this folder` — không số nào để bấm.
+    Unnumbered,
+}
+
+impl BoxShape {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BoxShape::Numbered => "co_so",
+            BoxShape::Unnumbered => "khong_so",
+        }
+    }
+}
+
+/// Phần THUẦN của `ready_to_type` — tách ra để kiểm trên màn thật.
+///
+/// 🔴 Ca thật 15/11 (Ubuntu): `ready_to_type` chỉ hỏi `parse_choices`, mà hộp
+/// tin-thư-mục của claude 2.1.326 **không đánh số** ⟹ hàm trả `Yes` cho một
+/// hộp đang MỞ ⟹ `/new` gõ đề bài vào đó, cú CR chốt «No, exit», phiên chết
+/// trong khi log ghi `session_started`. Cửa thứ hai (`keys::hop_chon_khong_so`)
+/// là thứ đóng đúng lỗ ấy.
+pub fn ready_from_screen(screen: &str) -> Ready {
+    let choices = crate::keys::parse_choices(screen);
+    if !choices.is_empty() {
+        return Ready::Blocked {
+            options: choices.len(),
+            shape: BoxShape::Numbered,
+        };
+    }
+    let khong_so = crate::keys::hop_chon_khong_so(screen);
+    if !khong_so.is_empty() {
+        return Ready::Blocked {
+            options: khong_so.len(),
+            shape: BoxShape::Unnumbered,
+        };
+    }
+    Ready::Yes
 }
 
 fn ready_to_type(window: i64) -> Ready {
     match crate::keys::screen_text(window) {
-        Ok(screen) => {
-            let choices = crate::keys::parse_choices(&screen);
-            if choices.is_empty() {
-                Ready::Yes
-            } else {
-                Ready::Blocked(choices.len())
-            }
-        }
+        Ok(screen) => ready_from_screen(&screen),
         Err(e) => Ready::Blind(e.to_string()),
     }
+}
+
+/// Dòng của `claude agents` có phải một PHIÊN THẬT trên đúng tty ấy không.
+///
+/// 🔴 `win-<tty>` là dòng ĐỠ của [`snapshot`] cho một cửa sổ chưa có phiên
+/// (`add_shell_windows`). Nhận nó làm id phiên là báo *"đã mở phiên"* cho một
+/// thứ không tồn tại: mọi route sau đó (`/shot`, `/type`, `/stop`) đi tìm một
+/// `sessionId` không có trong sổ CLI. Ca 15/11: hộp không số giữ cửa sổ lại,
+/// lưới đỡ vẫn trả `win-ttys005` ⟹ log `session_started`, đề bài gõ vào hộp.
+///
+/// Tách ra thuần để kiểm được — nhánh này chỉ chạy sau ~64 giây chờ, tức
+/// không có cách nào chạm tới nó bằng một lượt thử ngắn.
+pub fn hop_le_tu_agents(row_tty: &str, row_id: &str, tty: &str) -> bool {
+    !row_tty.is_empty() && row_tty == tty && !row_id.starts_with(SHELL_ID_PREFIX)
 }
 
 /// Phiên đang ngồi trong ĐÚNG cửa sổ này — `tty` → `pid` → sổ của CLI.
@@ -8898,18 +8990,36 @@ fn wait_for_new_session_id(
     // cho từng tài khoản, nên "30 vòng × 2 giây" trên thực tế là 90 giây chứ
     // không phải 60 — và câu báo lỗi nói "60 giây" sẽ là một con số bịa.
     let deadline = std::time::Instant::now() + Duration::from_secs(40);
+    let mut da_bao_dong_vo = false;
     while std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_secs(2));
-        if let Some(row) = snapshot(cfg)
-            .sessions
-            .into_iter()
-            .find(|s| !s.tty.is_empty() && s.tty == tty_short)
+        let rows = snapshot(cfg).sessions;
+        if let Some(row) = rows
+            .iter()
+            .find(|s| hop_le_tu_agents(&s.tty, &s.session_id, tty_short))
         {
             logging::info(
                 "new_session_matched_by_agents",
                 json!({ "session": row.session_id, "tty": tty_short }),
             );
-            return Some(row.session_id);
+            return Some(row.session_id.clone());
+        }
+        // 🔴 NÓI RA MỘT LẦN khi chỉ có dòng ĐỠ `win-<tty>`: đó chính là hình
+        // dạng đã làm `/new` báo "đã mở phiên" cho một cửa sổ còn kẹt ở hộp
+        // (15/11). Không nói mỗi vòng — 20 vòng × 2 giây là nhiễu, mà nhiễu
+        // thì người đọc log học cách bỏ qua đúng dòng này.
+        if !da_bao_dong_vo
+            && rows
+                .iter()
+                .any(|s| s.tty == tty_short && s.session_id.starts_with(SHELL_ID_PREFIX))
+        {
+            da_bao_dong_vo = true;
+            logging::warn(
+                "new_session_shell_row_rejected",
+                json!({ "tty": tty_short,
+                        "why": "dòng `win-<tty>` là CỬA SỔ chưa có phiên — không phải sessionId",
+                        "effect": "tiếp tục chờ id thật; hết giờ thì /new báo hỏng thay vì báo «đã mở»" }),
+            );
         }
     }
     None
@@ -8954,8 +9064,10 @@ pub fn answer_trust_dialog(tty: &str) -> Option<usize> {
     // phải hộp ấy" — ba chuyện khác hẳn nhau, và chỉ một trong ba là bình
     // thường. Cùng cái bẫy `keys::look` sinh ra để gỡ, lặp lại ở chỗ gọi.
     let looked = crate::keys::look(tty, 24);
-    let choices = match looked {
-        crate::keys::Look::Saw { choices, .. } => choices,
+    let (body, choices) = match looked {
+        // `body` giữ lại: nhánh "không có lựa chọn ĐÁNH SỐ" cần đọc chính màn
+        // ấy bằng `hop_chon_khong_so` để nói được hộp nào đang chặn.
+        crate::keys::Look::Saw { body, choices } => (body, choices),
         // 🪦 Nhánh `Withheld` gỡ 2026-08-16 — xem bia mộ trong `keys::Look`.
         // Chốt an toàn THẬT của chỗ này không đổi và nằm ngay dưới: luật nhận
         // hộp đọc CHỮ ("trust" + "folder"), nên một màn không khớp chữ thì
@@ -8969,7 +9081,32 @@ pub fn answer_trust_dialog(tty: &str) -> Option<usize> {
         }
     };
     let Some(n) = trust_dialog_choice(&choices) else {
-        if !choices.is_empty() {
+        // 🔴 NHÁNH RỖNG TỪNG IM — và cái im ấy là một cái cửa sổ đứng 22 phút.
+        //
+        // Ba chuyện khác hẳn nhau, phải đọc ra được từ log: không có hộp nào
+        // (bình thường), có hộp nhưng KHÔNG đánh số (huba không bấm được bằng
+        // đường số — 15/11), và có hộp nhưng không phải hộp tin-thư-mục.
+        if choices.is_empty() {
+            let khong_so = crate::keys::hop_chon_khong_so(&body);
+            if khong_so.is_empty() {
+                // `debug`, không `info`: đường này chạy ở MỌI lượt `/new` (3 lần
+                // một lượt) và ở lượt quét tab mù — kêu ở `info` là nhiễu, mà
+                // nhiễu thì dạy người đọc log bỏ qua đúng dòng cần đọc. Vẫn
+                // GHI, để khi nâng `HUB_LOG_LEVEL` thì ba kết cục tách được.
+                logging::debug(
+                    "trust_dialog_no_choices",
+                    json!({ "tty": tty,
+                            "why": "màn chưa có hộp lựa chọn nào — không phải hộp tin-thư-mục" }),
+                );
+            } else {
+                logging::warn(
+                    "trust_dialog_unnumbered_box",
+                    json!({ "tty": tty, "choices": khong_so,
+                            "why": "hộp chọn KHÔNG ĐÁNH SỐ — đường số không với tới, huba không bấm hộ",
+                            "effect": "cửa sổ đứng chờ chủ máy chọn; KHÔNG gõ đề bài vào hộp" }),
+                );
+            }
+        } else {
             logging::info(
                 "trust_dialog_not_this_box",
                 json!({ "tty": tty, "choices": choices.len(),
@@ -10459,6 +10596,8 @@ pub fn start_background(
         ts: crate::logging::now_iso(),
         window: false,
         fallback_why: why,
+        // `--bg` nhận đề bài ngay trên dòng lệnh — không có ô nhập nào để kẹt.
+        task_blocked: None,
     })
 }
 

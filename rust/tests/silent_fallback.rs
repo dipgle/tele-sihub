@@ -78,6 +78,7 @@ fn the_fallback_carries_its_reason() {
         ts: "2026-08-19T10:43:17Z".into(),
         window: false,
         fallback_why: Some("osascript quá 20s".into()),
+        task_blocked: None,
     };
     // Trường này là thứ câu chào đọc; không có nó thì lý do chỉ nằm trong log.
     assert_eq!(started.fallback_why.as_deref(), Some("osascript quá 20s"));
@@ -90,4 +91,19 @@ fn the_fallback_carries_its_reason() {
         ..started
     };
     assert!(ok.fallback_why.is_none());
+}
+
+/// Đề bài KHÔNG gõ được vào phiên cũng phải nói ra — không chỉ ghi log.
+///
+/// 🔴 Ca 15/11 (Ubuntu): hộp chọn KHÔNG ĐÁNH SỐ giữ ô nhập, huba vẫn chào
+/// *"Đã mở ⌨ cửa sổ Terminal"*; Hà ngồi chờ một phiên chưa hề nhận đề bài.
+#[test]
+fn the_blocked_task_carries_its_reason() {
+    let khoa = huba::pipeline::task_blocked_note(Some(
+        "màn đang có hộp chọn 2 lựa chọn KHÔNG đánh số — huba không bấm hộ được",
+    ));
+    assert!(khoa.contains("ĐỀ BÀI CHƯA GÕ VÀO"), "{khoa}");
+    assert!(khoa.contains("KHÔNG đánh số"), "lý do phải đi cùng: {khoa}");
+    // Câu chào KHÔNG được im khi không có gì để nói, và không được tự bịa lý do.
+    assert_eq!(huba::pipeline::task_blocked_note(None), "");
 }

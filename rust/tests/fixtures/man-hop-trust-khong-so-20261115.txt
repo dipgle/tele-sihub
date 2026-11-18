@@ -1,0 +1,26 @@
+'Bash(rsync:*)' 'Bash(sudo:*)' 'Bash(rm:*)' 'Bash(curl:*)' 'Bash(wget:*)' 'Bash(psql:*)' 'Bash(docker:*)' 'Bash(launchctl:*)' 'Bash(*deploy*)' 'WebFetch' 'WebSearch'
+user1@user1-ubuntu:~/huba$ cd '/mnt/data/projects' && CLAUDE_CONFIG_DIR='/home/user1/.claude-acc3' 'claude' --permission-mode auto --disallowedTools 'Bash(git push:*)' 'Bash(git merge:*)' 'Bash(git rebase:*)' 'Bash(git reset:*)' 'Bash(ssh:*)' 'Bash(scp:*)' 'Bash(rsync:*)' 'Bash(sudo:*)' 'Bash(rm:*)' 'Bash(curl:*)' 'Bash(wget:*)' 'Bash(psql:*)' 'Bash(docker:*)' 'Bash(launchctl:*)' 'Bash(*deploy*)' 'WebFetch' 'WebSearch'
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Accessing workspace:
+
+ /mnt/data/projects
+
+ Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this folder first.
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ ⚠ This folder pre-approves 78 tool permissions in .claude/settings.local.json:
+   mcp__vault__list_allowed_commands, mcp__visualize__read_me, Bash(ssh tccadmin*@*: sudo -n /usr/local/bin/tcc-update.sh*), Bash(ssh tccadmin*@*: sudo -n /usr/bin/systemctl restart tcc…, Bash(ssh tccadmin*@*: sudo -n
+ /usr/local/bin/tcc-deploy-beta…, Bash(ssh tccadmin*@*: sudo cp /usr/local/bin/tcc-node*), Bash(ssh:*), Bash(scp:*), and 69 more
+ ⚠ This folder adds 1 directory to the workspace in .claude/settings.json:
+   /tmp
+ These will apply without asking. Only proceed if you trust this configuration.
+
+ Security guide
+
+ ❯ No, exit
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel
+user1@user1-ubuntu:/mnt/data/projects$ 

@@ -6383,6 +6383,98 @@ pub fn chooser_footer_line(screen: &str) -> Option<usize> {
         .last()
 }
 
+/// Nhãn của hộp chọn **KHÔNG ĐÁNH SỐ** đang mở trên màn — rỗng khi không có.
+///
+/// 🔴 Ca thật 15/11 (Ubuntu, `/new acc3 "1+1"`): claude 2.1.326 vẽ hộp
+/// tin-thư-mục bằng hai dòng **trơn**, không số thứ tự (chụp nguyên màn:
+/// `rust/tests/fixtures/man-hop-trust-khong-so-20261115.txt`):
+///
+/// ```text
+///  ❯ No, exit
+///    Yes, I trust this folder
+///
+///  Enter to confirm · Esc to cancel
+/// ```
+///
+/// `parse_choices` chỉ đọc `"<số>."` nên trên chính màn ấy nó trả **rỗng** —
+/// và mọi cổng hỏi *"màn có hộp chọn chưa"* đều trả lời *"chưa"* cho một hộp
+/// đang MỞ. Hậu quả đo được: `/new` gõ đề bài vào hộp, cú CR mà mọi lượt gõ
+/// đều mang theo **chốt «No, exit»** — phiên chết, còn log ghi `session_started`.
+///
+/// Nên hàm này KHÔNG trả về số: không có số nào để bấm. Nó trả lời đúng một
+/// câu — *màn này có một hộp chọn mà đường số không với tới* — để chỗ gọi
+/// **ngừng tay** (luật 13: gõ vào hộp chọn là chốt hộ một lựa chọn).
+///
+/// Ba cửa, đều là thứ TUI vẽ ra và văn xuôi không có:
+/// 1. **dòng chân** của hộp ([`chooser_footer_line`]) — hộp tự khai nó là hộp;
+/// 2. một **khối mục liền nhau** ngay trên dòng chân (cách nó những dòng trống),
+///    mỗi nhãn ngắn ≤ `LABEL_MAX` ký tự, và **không mục nào đánh số** (có số
+///    thì đó là hộp của `parse_choices`, đừng đếm hai lần);
+/// 3. đúng **MỘT** dòng mang con trỏ `❯` — con trỏ thứ hai là ô nhập (màn
+///    `man-hop-chon-hai-con-tro.txt` đã đánh lừa `nav_plan` đúng kiểu ấy).
+///
+/// Không đủ cả ba ⟹ rỗng. Chiều hỏng đã chọn: thà bỏ sót (huba mở phiên mà
+/// KHÔNG gõ đề bài, nói ra ở `/new`) hơn nhận bừa (gõ vào hộp và chốt một lựa
+/// chọn không lùi lại được).
+pub fn hop_chon_khong_so(screen: &str) -> Vec<String> {
+    // Hộp CÓ số đã có bộ đọc riêng — hai bộ đọc cùng trả lời "có hộp" là hai
+    // con số lệch nhau ở chỗ đếm.
+    if !parse_choices(screen).is_empty() {
+        return Vec::new();
+    }
+    let Some(chan) = chooser_footer_line(screen) else {
+        return Vec::new();
+    };
+    // Khối mục: những dòng LIỀN NHAU ngay trên dòng chân. Đi ngược lên, bỏ qua
+    // dòng trống ĐẦU TIÊN (khoảng cách giữa hộp và chân), rồi dừng ở dòng
+    // trống tiếp theo — trên đó là văn xuôi của phiên, không phải lựa chọn.
+    let dong: Vec<&str> = screen.lines().collect();
+    let mut khoi: Vec<&str> = Vec::new();
+    for line in dong[..chan.min(dong.len())].iter().rev() {
+        if line.trim().is_empty() {
+            if khoi.is_empty() {
+                continue;
+            }
+            break;
+        }
+        khoi.push(line);
+    }
+    khoi.reverse();
+    // Một mục thì không có gì để chọn; quá chín mục thì không phải hộp của CLI.
+    if khoi.len() < 2 || khoi.len() > 9 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut con_tro = 0usize;
+    for line in &khoi {
+        let t = line.trim();
+        let (tro, nhan) = match t.strip_prefix('❯') {
+            Some(rest) => (true, rest.trim()),
+            None => (false, t),
+        };
+        // Nhãn rỗng là ô nhập (`❯ ` trần), không phải một lựa chọn.
+        if nhan.is_empty() || nhan.chars().count() > LABEL_MAX {
+            return Vec::new();
+        }
+        // Đánh số hoặc ô tick ⟹ hộp của đường khác (dù `parse_choices` không
+        // đọc ra được, ví dụ số đã cuộn khỏi màn) — đừng nhận làm hộp không số.
+        let co_so = nhan
+            .split_once('.')
+            .is_some_and(|(n, _)| n.trim().parse::<usize>().is_ok());
+        if co_so || nhan.starts_with('[') {
+            return Vec::new();
+        }
+        if tro {
+            con_tro += 1;
+        }
+        out.push(nhan.to_string());
+    }
+    if con_tro != 1 {
+        return Vec::new();
+    }
+    out
+}
+
 /// Thanh tab của một bảng hỏi nhiều câu, đọc từ màn.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AskTable {
@@ -7355,7 +7447,13 @@ pub enum Arrow {
 
 pub fn arrow_verdict(look: &Look) -> Arrow {
     match look {
-        Look::Saw { choices, .. } if choices.is_empty() => Arrow::Send,
+        // 🔴 Hộp KHÔNG ĐÁNH SỐ cũng là hộp: mũi tên trong đó vừa DI vừa CHỐT
+        // (mỗi lượt ghi kèm một CR). Trước 18/11 cửa này chỉ hỏi
+        // `parse_choices`, nên một hộp `❯ No, exit` đọc thành "màn trống" và
+        // `→` đi thẳng vào đó — cùng lỗ với `/new` gõ đề bài vào hộp.
+        Look::Saw { body, choices } if choices.is_empty() && hop_chon_khong_so(body).is_empty() => {
+            Arrow::Send
+        }
         Look::Saw { .. } => Arrow::RefuseDialog,
         Look::Blind { why } => Arrow::RefuseBlind(why.clone()),
     }
@@ -7562,6 +7660,87 @@ mod merge_above_tests {
         let dang_co = v(&["một", "hai", "ba"]);
         let cu = v(&["một", "hai"]);
         assert_eq!(merge_above(&cu, &dang_co), dang_co);
+    }
+}
+
+#[cfg(test)]
+mod hop_chon_khong_so_tests {
+    // ── Hộp chọn KHÔNG ĐÁNH SỐ (ca thật 15/11, Ubuntu) ────────────────────────
+
+    /// Màn THẬT chụp từ pane của `claude` 2.1.326 lúc nó đứng ở hộp tin-thư-mục.
+    const MAN_HOP_TRUST: &str =
+        include_str!("../tests/fixtures/man-hop-trust-khong-so-20261115.txt");
+
+    #[test]
+    fn hop_chon_khong_so_doc_duoc_hop_that() {
+        // Hai câu này là CẢ lý do hàm này tồn tại: cùng một màn, đường số trả
+        // rỗng — nên mọi cổng dựa vào `parse_choices` đọc thành "không có hộp".
+        assert!(
+            super::parse_choices(MAN_HOP_TRUST).is_empty(),
+            "màn này không có số thứ tự — đó là lỗi, không phải hộp rỗng"
+        );
+        assert_eq!(
+            super::hop_chon_khong_so(MAN_HOP_TRUST),
+            vec![
+                "No, exit".to_string(),
+                "Yes, I trust this folder".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn hop_chon_khong_so_khong_an_van_xuoi_va_hop_co_so() {
+        // Hộp CÓ số: `parse_choices` lo, hàm này phải im để không đếm hai lần.
+        let co_so = "Chọn cách đi tiếp?\n❯ 1. Sửa tại chỗ\n  2. Mở phiên mới\n\n Enter to confirm · Esc to cancel";
+        assert!(super::hop_chon_khong_so(co_so).is_empty(), "{co_so}");
+        // Ô nhập rỗng: `❯` trần không phải một lựa chọn.
+        let o_nhap = "❯ \n\n Enter to confirm · Esc to cancel";
+        assert!(super::hop_chon_khong_so(o_nhap).is_empty(), "{o_nhap}");
+        // Không dòng chân ⟹ không phải hộp: ô nhập nhiều dòng của chủ máy.
+        let van = "Tôi đã xong phần đầu.\n❯ câu tôi đang gõ dở\n  dòng thứ hai của câu ấy";
+        assert!(super::hop_chon_khong_so(van).is_empty(), "{van}");
+        // Dòng chân đứng một mình (không mục nào) ⟹ vẫn không phải hộp.
+        let mot_minh = "việc đang làm\n\n Enter to confirm · Esc to cancel";
+        assert!(super::hop_chon_khong_so(mot_minh).is_empty(), "{mot_minh}");
+        // Khối mục mà KHÔNG mục nào mang con trỏ: hộp đã chọn xong / không mở.
+        let khong_tro = "No, exit\nYes, I trust this folder\n\n Enter to confirm · Esc to cancel";
+        assert!(
+            super::hop_chon_khong_so(khong_tro).is_empty(),
+            "{khong_tro}"
+        );
+    }
+
+    /// Đối chứng ngược hai chiều: cấy mỗi mảnh hỏng thì hàm phải IM, không được
+    /// kêu — nếu nó kêu ở mọi màn thì chỗ gọi sẽ học cách bỏ qua tiếng kêu.
+    #[test]
+    fn hop_chon_khong_so_doi_chung_hai_chieu() {
+        // Mảnh ①: gỡ dòng chân ⟹ không còn căn cứ nào.
+        let khong_chan = MAN_HOP_TRUST.replace("Enter to confirm · Esc to cancel", "");
+        assert!(super::hop_chon_khong_so(&khong_chan).is_empty());
+        // Mảnh ②: đánh số một mục ⟹ nhường cho đường số.
+        let co_so = MAN_HOP_TRUST.replace("❯ No, exit", "❯ 1. No, exit");
+        assert!(super::hop_chon_khong_so(&co_so).is_empty());
+        // Mảnh ③: thêm con trỏ thứ hai ⟹ không biết đang đứng ở đâu.
+        let hai_tro = MAN_HOP_TRUST.replace("   Yes, I trust", "❯  Yes, I trust");
+        assert!(super::hop_chon_khong_so(&hai_tro).is_empty());
+    }
+
+    /// Cửa MŨI TÊN cũng phải thấy hộp không số: mỗi lượt ghi kèm một CR nên
+    /// `→` trong hộp vừa DI vừa CHỐT (luật 13).
+    #[test]
+    fn cua_mui_ten_tu_choi_hop_khong_so() {
+        let hop = super::Look::Saw {
+            body: MAN_HOP_TRUST.to_string(),
+            choices: Vec::new(),
+        };
+        assert_eq!(super::arrow_verdict(&hop), super::Arrow::RefuseDialog);
+        // …và KHÔNG từ chối một màn thật sự trống (nếu không thì cửa này khoá
+        // luôn đường nhận gợi ý mờ — thứ nó sinh ra để mở).
+        let trong = super::Look::Saw {
+            body: "✻ Chào bạn\n\n❯ \n? for shortcuts".to_string(),
+            choices: Vec::new(),
+        };
+        assert_eq!(super::arrow_verdict(&trong), super::Arrow::Send);
     }
 }
 

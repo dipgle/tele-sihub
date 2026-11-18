@@ -11829,6 +11829,21 @@ pub struct NewSession {
     pub allow_locked: bool,
 }
 
+/// Câu báo *"đề bài CHƯA gõ được"* của `/new` — rỗng khi không có gì để nói.
+///
+/// Tách ra để kiểm được câu chữ, cùng lý do với `fallback_why` bên `Started`:
+/// lý do nằm trong log là lý do người cầm điện thoại không đọc được.
+pub fn task_blocked_note(reason: Option<&str>) -> String {
+    match reason {
+        Some(why) => format!(
+            "\n\n⚠ Cửa sổ đã mở nhưng ĐỀ BÀI CHƯA GÕ VÀO: {why}.\n\
+             Phiên này đang đứng chờ trên máy — huba KHÔNG gõ vào hộp để tránh chốt hộ \
+             một lựa chọn. Xem bằng /shot, rồi /tell khi nó đã sẵn sàng."
+        ),
+        None => String::new(),
+    }
+}
+
 fn watch_new_session(job: NewSession) {
     let NewSession {
         cfg,
@@ -11926,11 +11941,12 @@ fn watch_new_session(job: NewSession) {
                         _ => String::new(),
                     };
                     format!(
-                        "🚀 Đã mở {}{}.\nPhiên {} — đang chạy trên máy.{}\n\n🎯 Nay đang theo phiên này: gõ thẳng câu hỏi ở đây là vào nó. Tắt bằng /stop.",
+                        "🚀 Đã mở {}{}.\nPhiên {} — đang chạy trên máy.{}{}\n\n🎯 Nay đang theo phiên này: gõ thẳng câu hỏi ở đây là vào nó. Tắt bằng /stop.",
                         cua_so,
                         cho,
                         &s.session_id[..8.min(s.session_id.len())],
-                        lui
+                        lui,
+                        task_blocked_note(s.task_blocked.as_deref())
                     )
                 }
                 // Không cắt 200 như các ack khác: lời báo hỏng ở đây MANG THEO
