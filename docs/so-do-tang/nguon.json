@@ -59,13 +59,13 @@
     },
     "id_tam_win_tty": {
       "tep": "rust/src/sessions.rs",
-      "mau": "\"new_session_matched_by_agents\"",
-      "noi": "lưới đỡ nhận dòng tạm win-<tty> làm id"
+      "mau": "hop_le_tu_agents(&s.tty, &s.session_id, tty_short)",
+      "noi": "lưới đỡ CHỈ nhận sessionId thật — dòng đỡ `win-<tty>` bị loại (18/11)"
     },
     "go_khong_xem_hop": {
       "tep": "rust/src/sessions.rs",
-      "mau": "Ready::Yes => match crate::keys::type_and_send(window, task)",
-      "noi": "gõ đề bài khi ready_to_type nói Yes — không thấy hộp không đánh số"
+      "mau": "let khong_so = crate::keys::hop_chon_khong_so(screen);",
+      "noi": "cửa 2 (18/11): hộp KHÔNG đánh số cũng chặn việc gõ — trước đó `parse_choices` rỗng ⟹ `Yes` ⟹ cú CR chốt «No, exit»"
     },
     "hop_chon_co_so": {
       "tep": "rust/src/keys.rs",
