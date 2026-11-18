@@ -290,6 +290,36 @@ pub fn claude_trust_json(existing: &str, dir: &str) -> Result<Option<String>, St
         .map_err(|e| e.to_string())
 }
 
+/// Hộp «auto mode — Allow this read outside the working directories?» (18/11).
+///
+/// Đo trên claude 2.1.327: hộp bốn lựa chọn ấy chỉ hiện khi cờ
+/// `hasSeenAutoModeOutsideReadPrompt` trong `.claude.json` của tài khoản KHÔNG
+/// true; lựa chọn «Yes, and keep allowing any reads outside» chính là việc đặt
+/// cờ này (`ipa` trong nhị phân). Hộp đứng chờ một phím trên MÀN — huba mở phiên
+/// từ điện thoại thì không ai bấm.
+///
+/// Ca thật 18/11 (Ubuntu, khởi động lại máy): phiên đầu tiên `/new acc3` mang
+/// claude 2.1.327, một `Read` chính tệp tool-result của nó (ngoài cwd) dựng hộp
+/// ấy. Đo sổ 8 tài khoản: acc3 · acc6 có cờ, acc2 · acc4 · acc5 · acc7 KHÔNG —
+/// tài khoản nào mở lần đầu sau bản 2.1.327 cũng gặp lại.
+///
+/// Hàm THUẦN, chạm ĐÚNG một khoá. KHÔNG ghi `permissions` — chặn/cho đọc ngoài
+/// vẫn là quyết định của chủ máy (`permissions.blockReadsOutsideWorkingDirectories`).
+pub fn claude_het_hoi_doc_ngoai_json(existing: &str) -> Result<Option<String>, String> {
+    let mut v: Value =
+        serde_json::from_str(existing).map_err(|e| format!("sổ .claude.json hỏng: {e}"))?;
+    let Some(goc) = v.as_object_mut() else {
+        return Err("sổ .claude.json không phải object".into());
+    };
+    if goc.get("hasSeenAutoModeOutsideReadPrompt") == Some(&Value::Bool(true)) {
+        return Ok(None);
+    }
+    goc.insert("hasSeenAutoModeOutsideReadPrompt".into(), Value::Bool(true));
+    serde_json::to_string_pretty(&v)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
 /// Kết quả của [`tin_thu_muc`] — bốn chuyện khác nhau, không gộp vào một `bool`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TinCay {
@@ -297,6 +327,9 @@ pub enum TinCay {
     DaCo,
     /// Vừa ghi «tin cậy» vào sổ của CLI.
     VuaGhi,
+    /// Sổ đã tin từ trước; vừa chỉ ghi cờ «đã thấy hộp đọc ngoài thư mục» của
+    /// auto mode ([`claude_het_hoi_doc_ngoai_json`]).
+    VuaTatHopDocNgoai,
     /// CLI này không có hộp tin-thư-mục (opencode) — không có gì để ghi.
     KhongCoHop,
     /// Tài khoản chưa có sổ (chưa đăng nhập lần nào) — KHÔNG tạo sổ thay CLI.
@@ -379,13 +412,28 @@ pub fn tin_thu_muc(
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(TinCay::ChuaCoSo),
                 Err(e) => return Err(format!("không đọc được {}: {e}", p.display())),
             };
-            match claude_trust_json(&co, &goc.to_string_lossy())? {
-                None => Ok(TinCay::DaCo),
-                Some(moi) => {
-                    ghi_nguyen_tu(&p, &moi)?;
-                    Ok(TinCay::VuaGhi)
-                }
+            let mut hien = co;
+            let mut doi_trust = false;
+            let mut doi_co = false;
+            if let Some(moi) = claude_trust_json(&hien, &goc.to_string_lossy())? {
+                hien = moi;
+                doi_trust = true;
             }
+            // Hộp «đọc ngoài thư mục làm việc» của auto mode: sổ nào chưa đánh dấu
+            // thì ghi — ca 18/11, xem [`claude_het_hoi_doc_ngoai_json`].
+            if let Some(moi) = claude_het_hoi_doc_ngoai_json(&hien)? {
+                hien = moi;
+                doi_co = true;
+            }
+            if !doi_trust && !doi_co {
+                return Ok(TinCay::DaCo);
+            }
+            ghi_nguyen_tu(&p, &hien)?;
+            Ok(if doi_trust {
+                TinCay::VuaGhi
+            } else {
+                TinCay::VuaTatHopDocNgoai
+            })
         }
     }
 }
@@ -409,6 +457,11 @@ pub fn tin_truoc_khi_mo(cfg: &Config, acc: Option<&ClaudeAccountCfg>, dir: &Path
             "dir_trusted_for_machine",
             json!({ "account": ten, "cli": cli, "dir": dir.display().to_string(),
                     "why": "máy tin gốc workspace — ghi xuống sổ của tài khoản sắp mở" }),
+        ),
+        Ok(TinCay::VuaTatHopDocNgoai) => crate::logging::info(
+            "outside_read_prompt_marked",
+            json!({ "account": ten, "cli": cli, "dir": dir.display().to_string(),
+                    "why": "sổ chưa có hasSeenAutoModeOutsideReadPrompt — hộp «đọc ngoài thư mục làm việc» của auto mode sẽ không hiện" }),
         ),
         Ok(TinCay::ChuaCoSo) => crate::logging::info(
             "dir_trust_no_book",
