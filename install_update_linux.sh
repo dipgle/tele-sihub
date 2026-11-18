@@ -27,10 +27,23 @@ case "$(uname -s 2>/dev/null || echo khong-ro)" in
 esac
 SRC="$(cd "$(dirname "$0")" && pwd)"
 DIR="${HUBA_HOME:-$HOME/huba}"
-BIN_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hub/bin"
+# 🔴 Đích cài = thư mục của ExecStart trong unit systemd ĐANG CÓ — MỘT nguồn.
+# KHÔNG theo `XDG_DATA_HOME`: phiên opencode (acc8/acc9) đặt
+# `XDG_DATA_HOME=~/.opencode-accX/data`, nên 18/11 bản mới rơi vào
+# `~/.opencode-acc8/data/hub/bin/hubd` trong khi unit chạy
+# `~/.local/share/hub/bin/hubd` ⟹ trình cài in ✅, restart dịch vụ, và hubd vẫn
+# là mã CŨ — hỏng im lặng (đúng lớp lỗi luật 3). Chưa có unit ⟹ đường mặc định.
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-APP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 UNIT=huba-hubd.service
+BIN_DIR_MAC_DINH="$HOME/.local/share/hub/bin"
+if [ -n "${HUBA_BIN_DIR:-}" ]; then
+  BIN_DIR="$HUBA_BIN_DIR"
+elif [ -f "$UNIT_DIR/$UNIT" ] && grep -q '^ExecStart=' "$UNIT_DIR/$UNIT"; then
+  BIN_DIR="$(dirname "$(sed -n 's/^ExecStart=//p' "$UNIT_DIR/$UNIT" | head -1)")"
+else
+  BIN_DIR="$BIN_DIR_MAC_DINH"
+fi
+APP_DIR="$(dirname "$(dirname "$BIN_DIR")")/applications"
 # Bản CLI ghim: MỘT nguồn với bộ cài Mac (`cli-ghim.env`, gói mang theo).
 [ -f "$SRC/cli-ghim.env" ] || { echo "❌ gói thiếu cli-ghim.env — dựng lại bằng scripts/dong-goi-linux.sh"; exit 2; }
 . "$SRC/cli-ghim.env"
