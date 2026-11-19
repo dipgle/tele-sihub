@@ -1,5 +1,30 @@
 # Xác minh lại bản chốt trên hai engine — 17/11/2026 09:55+07
 
+## 19/11 09:15+07 — thêm P13–P18 (rà soát 19/11): cả hai engine ĐỌC LẠI bản mới
+
+`docs/thiet-ke-tong-the-v2.md` thêm **§13** + `design.json` thêm **P13–P18**
+(principal/viewer · nguồn `host_id`/`generation`/command ID · ngưỡng độ trễ-retention ·
+raw nhạy cảm · Windows parity · số hiển thị phải đọc từ catalog CLI). Sinh lại
+`index.html` + `index.md`; cập nhật census trong `test_build.py` (P01..P18) và bỏ
+con số 12 viết cứng trong `review.cjs` (nay đọc `design.json`).
+
+| Đo trên bản mới | Kết quả |
+|---|---|
+| `index.html` 347.352 B · `f7880ef648d76cadef70556523740e8eef697e04835c74a8a688c2b7a4d2bacc` | Chromium **và** WebKit cùng đọc hash này trước/sau lượt chạy |
+| Unit | `python3 -m unittest discover -s docs/flows -p 'test_*.py'` **17/17**, mã 0 |
+| Chromium `.tmp/review-flows-20261119-chromium.log` | `GATE_EXIT=0` · 19 flow/30 thành phần/22 UC/**18 issue** · console-page-request **0** · remote **0** |
+| WebKit `.tmp/review-flows-20261119-webkit.log` | `GATE_EXIT=0`, cùng mẫu số và cùng hash |
+| Màn hẹp | page390/390 cả hai engine; sơ đồ cuộn 1000 trong 326; khung 1120 trong 326 |
+| Đối chứng ngược (census) | Dựng danh sách chỉ 12 issue ⟹ phép đếm P01..P18 **ĐỎ** (chạy trong lượt: `DOI_CHUNG_DO`) |
+| Ảnh từng issue | `docs/flows/previews/v3-layout-20261116/<engine>/P01…P18.png` (script chụp đủ 18) |
+
+Chỉ tài liệu/bản mẫu: **không** sửa Rust/config, không cài, không gọi CLI/model.
+Chạy qua `cong-node chay e2e` (NODE_PATH trỏ node_modules có playwright của kho
+dwork; `PLAYWRIGHT_BROWSERS_PATH=/home/user1/.cache/ms-playwright`). Lượt này KHÔNG
+chạy lại `workspace.html` độc lập bằng tay — `reviewWorkspace` vẫn chạy trong cùng
+script ở cả hai engine và báo `full_width_footer/independent_drafts/…` như cũ.
+
+
 Lượt 16/11 12:23 sinh lại `index.html` (nhúng lại W0 sau khi sửa footer) nhưng chỉ
 chạy unit + `pin_review` trên bản riêng; **19 sơ đồ/12 issue link của `index.html`
 hiện tại chưa từng được kiểm bằng browser**. Lượt này chạy đúng bộ đó trên tệp

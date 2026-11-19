@@ -112,7 +112,7 @@ class RenderTests(unittest.TestCase):
 
     def test_issue_census_and_marks_at_real_steps(self):
         issues = self.data['issues']
-        self.assertEqual([i['id'] for i in issues], [f'P{i:02}' for i in range(1, 13)])
+        self.assertEqual([i['id'] for i in issues], [f'P{i:02}' for i in range(1, 19)])
         self.assertEqual({i['state'] for i in issues}, {'bug', 'gap', 'decision', 'risk'})
         for flow in self.data['flows']:
             root = ET.fromstring(svg(flow, issues))

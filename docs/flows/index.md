@@ -170,6 +170,66 @@ Xem HTML: W0 bàn hai vùng, T0 terminal và các Pxx liên kết tới từng b
 
 **Tại:** U4/bước3, D1/bước4, U6/bước8
 
+### P13 · Ai được XEM? Thiếu mô hình principal và luật viewer≠owner — CẦN BÀN / CHỐT
+
+**Bằng chứng/phạm vi:** Mã hiện tại chỉ có MỘT cổng người: telegram::update_sender theo chat id/from id (huba/CLAUDE.md:160–173). Không có khái niệm principal/viewer trong rust/src — sessions.rs:5677 read_only_count là đếm PHIÊN, không phải quyền người. Thiết kế §6 nói «nhiều người xem, một đường tác động» nhưng không nói ai được pair IPC, ai chỉ đọc, ai ra lệnh; cũng không nói viewer KHÔNG được coi là chủ máy (luật 7).
+
+**Đề xuất:** Bảng principal {owner, viewer} + luật «mọi route GHI chỉ owner»; pairing chỉ cấp quyền ĐỌC; audit mỗi lần nâng quyền; thu hồi quyền phải cắt stream + xử lý cache theo policy.
+
+**Bàn tiếp:** Nếu làm đúng chữ hiện tại, desktop thành cổng thứ hai mở quyền ra lệnh — đúng thứ đã xoá một lần (trust.tfl5_user_tids, CLAUDE.md:164–172). Chốt trước P04 vì A/B và subscription đứng trên nó.
+
+**Tại:** U6/bước1, U1/bước10
+
+### P14 · host_id · generation · command ID: ba trường xương sống chưa có nguồn trong mã — CHƯA ĐO / CHƯA ĐỦ
+
+**Bằng chứng/phạm vi:** grep toàn rust/src (19/11): host_id 0 · generation 0 · command_id 0. Telegram dedupe đang dùng update_id + bảng tin_den — riêng kênh ấy (huba/CLAUDE.md:149–159). P05/P09/P12 đều dựa lên ba trường này.
+
+**Đề xuất:** Chốt: một host (bỏ host_id) HAY nhiều host (thì bỏ câu «không quản lý máy xa» ở §2); generation sinh ở driver hay DB, ai tăng; command ID do view sinh, lưu bảng nào, khoá theo (session, actor).
+
+**Bàn tiếp:** Chưa có nguồn thì không hứa lease/epoch/fence ở §6 — định nghĩa trước khi vẽ tiếp, nếu không P05 chỉ là chữ.
+
+**Tại:** D6/bước1, D2/bước2
+
+### P15 · Không có NGƯỠNG nghiệm thu cho độ trễ, retention, gap — CHƯA ĐO / CHƯA ĐỦ
+
+**Bằng chứng/phạm vi:** P02 đòi đo latency nhưng không nêu mục tiêu/trần; P03/P12 đòi retention/gap nhưng không nêu hạn mức; §7 freshness có ba mốc nhưng không nói bao lâu thì coi là cũ. Không có số ⇒ không viết được ca đỏ.
+
+**Đề xuất:** Một bảng số: p95 nguồn→ingest→UI; retention raw (ngày · GB); mất quá N% thì CẤM gọi «liên tục»; queue tràn ⇒ gap/resnapshot; freshness hết hạn theo loại nguồn.
+
+**Bàn tiếp:** Số đặt trong dữ liệu như §9, nhưng phải có mặc định để đo ngay từ lát cắt đầu.
+
+**Tại:** D5/bước1, D1/bước3
+
+### P16 · Raw store giữ nguyên văn: chưa có chính sách nội dung nhạy cảm — RỦI RO CẦN KIỂM
+
+**Bằng chứng/phạm vi:** Luật 5 (không giấu chữ) + §8 raw nguyên văn ⇒ bí mật lọt vào transcript (tiền lệ: một phiên đọc .env, sổ 18/11) sẽ nằm trong DB raw. §8 chỉ nói «raw nhạy cảm theo quyền/policy», không nói mã hoá at-rest, thời hạn xoá, xuất/xoá theo yêu cầu.
+
+**Đề xuất:** Ghi rõ: (a) mã hoá at-rest hoặc thư mục 0700 + tên tệp không lộ nội dung; (b) retention mặc định + xoá theo yêu cầu có audit; (c) đánh dấu record khớp mẫu bí mật để cảnh báo khi xuất; (d) ai được đọc raw qua MCP facade.
+
+**Bàn tiếp:** Không mâu thuẫn luật 5: vẫn KHÔNG giấu chữ với chủ máy — chỉ định nghĩa vòng đời lưu trữ và đường xuất.
+
+**Tại:** D3/bước1, C4/bước1
+
+### P17 · Windows đang được hứa ngang macOS/Linux nhưng chưa chạy thật lần nào — RỦI RO CẦN KIỂM
+
+**Bằng chứng/phạm vi:** keys_win.rs:1–12 tự khai «CHƯA CHẠY TRÊN WINDOWS THẬT»; §10 nói «cùng core/contracts trên ba OS»; §12 không có mốc Windows; P11 chỉ là spike. Chưa có install/update/rollback đo trên Windows.
+
+**Đề xuất:** Ba cột nghiệm thu riêng theo OS; parity 3 OS là MỤC TIÊU, không phải cam kết; Windows chỉ được khai «hỗ trợ» sau khi chạy thật gõ/đọc/đóng/mở/cập nhật.
+
+**Bàn tiếp:** Cùng lớp lỗi «cross-build/browser tài liệu tính là nghiệm thu» mà §10 đã cấm — cấm luôn với Windows.
+
+**Tại:** U1/bước12, D1/bước12
+
+### P18 · Số hiển thị phải đọc từ catalog CLI, không bảng cứng (ca thật 18/11) — LỖI ĐÃ XÁC NHẬN
+
+**Bằng chứng/phạm vi:** Ca thật: nhac-chuyen-phien.py khai cứng 200k cho opencode-go/deepseek-v4.1-flash trong khi catalog models-dev của chính kho là 1.000.000 ⇒ 206k token bị tính 103% ⇒ «99% ≥ 50%, chuyển phiên» khi ngữ cảnh thật 21%. Mẫu 11 phiên/3 ngày: 6 phiên acc8 thật16–22% báo80–112%; 5 phiên acc9 thật12–35% báo19–59%. Đã vá a73e394 (kho chung).
+
+**Đề xuất:** Luật trong §9: mọi % ngữ cảnh/quota hiển thị PHẢI kèm nguồn (opencode: catalog trong opencode.db · claude: usage trong transcript · codex: model_context_window) + ca âm «cấy catalog sai ⇒ đỏ»; bảng cứng chỉ là dự phòng có hạn.
+
+**Bàn tiếp:** Cùng lớp lỗi với P02 (nhịp vòng bị đọc thành latency): con số không có nguồn thì không được hiện như sự thật.
+
+**Tại:** D4/bước1, D5/bước3
+
 ## Thành phần tham gia một phiên — ai làm việc gì?
 
 Đây là các vai trò logic; không đồng nghĩa mỗi vai trò phải là một tiến trình/dịch vụ. Nhiều vai trò nằm chung hubad hoặc CLI. Thành phần tùy chọn chỉ tham gia khi UC/capability cần; không bắt một tin chào đi qua mọi thành phần.

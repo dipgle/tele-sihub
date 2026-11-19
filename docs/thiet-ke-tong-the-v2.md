@@ -316,6 +316,12 @@ filter/revision/coverage; unknown khác0, không thêm billing/tracker/model tó
 | P10 | Chưa triển khai đầy đủ | Usage canonical/báo cáo nguồn thật |
 | P11 | Cần spike/chốt | Vỏ, IPC, capabilities và ba OS |
 | P12 | Rủi ro | Crash/idempotency/gap/retention/quyền |
+| P13 | Cần chốt | Ai được XEM — principal/viewer, luật viewer≠owner |
+| P14 | Chưa có nguồn | `host_id` · `generation` · command ID |
+| P15 | Chưa có số | Ngưỡng độ trễ · retention · gap |
+| P16 | Rủi ro | Raw nguyên văn và nội dung nhạy cảm |
+| P17 | Rủi ro | Windows chưa chạy thật mà đã hứa ngang hai OS |
+| P18 | Lỗi có ca thật | Số hiển thị đọc từ catalog CLI, không bảng cứng |
 
 HTML gắn từng Pxx vào đúng bước sơ đồ và có bằng chứng, hướng đề xuất, điểm bàn;
 đỏ/cam/tím/vàng không được hiểu tất cả là lỗi đã tái hiện.
@@ -342,3 +348,67 @@ cache/parent rollup không cộng đôi; tắt viewer không tắt CLI; update l
 Mỗi lượt đo nêu mẫu số/nguồn/phiên bản; UI qua thao tác thật, console0 lỗi, ảnh mọi
 trạng thái. Sơ đồ thiết kế không thay dependency map trích mã/traces. **Lượt này
 chỉ vẽ/kiểm tài liệu; chưa build/cài hoặc nghiệm thu bất kỳ UC sản phẩm V2 nào.**
+
+## 13. Rà soát 19/11 — sáu lỗ hổng còn mở (P13–P18)
+
+Rà lại toàn bộ §1–§12 trên bản đang có trong cây (`index.html` hash `328d0c35…`,
+19 flow/30 thành phần/22 UC/12 issue — khớp mục REVIEW 17/11). Nội dung §1–§12
+**không sai chỗ nào đã kiểm**; các trích dẫn `file:line` còn đúng chủ đề. Sáu việc
+dưới đây là chỗ *chưa có quyết định hoặc chưa có nguồn*, và chúng đứng TRƯỚC
+P04 trong thứ tự triển khai.
+
+**P13 — ai được XEM (nặng nhất).** §6 nói «nhiều người xem, một đường tác động»
+nhưng không định nghĩa principal. Trong mã hiện tại **không có** khái niệm này:
+cổng duy nhất là `telegram::update_sender` theo chat id (`CLAUDE.md:160–173`);
+`sessions::read_only_count` (`sessions.rs:5677`) là đếm PHIÊN, không phải quyền
+người. Làm đúng chữ ⇒ desktop thành **cổng thứ hai mở quyền ra lệnh**, đúng thứ đã
+xoá một lần (`trust.tfl5_user_tids`, `CLAUDE.md:164–172`). Cần: bảng `{owner,
+viewer}` · mọi route GHI chỉ owner · pairing chỉ cấp quyền đọc · audit khi nâng
+quyền · thu hồi quyền cắt stream + xử lý cache.
+
+**P14 — ba trường xương sống chưa có nguồn.** `host_id` (§4 SessionKey),
+`generation` (§4/§6 lease), command ID (§5): grep `rust/src` ngày 19/11 = **0** cả
+ba. Telegram dedupe đang dùng `update_id` + bảng `tin_den`, riêng kênh ấy
+(`CLAUDE.md:149–159`). P05/P09/P12 đều đứng trên chúng ⇒ phải chốt: một host (bỏ
+`host_id`) hay nhiều host (thì bỏ câu «không quản lý máy xa» ở §2); `generation`
+sinh ở driver hay DB; command ID do view sinh, lưu bảng nào, khoá theo
+`(session, actor)`.
+
+**P15 — không có ngưỡng nghiệm thu.** P02 đòi đo latency mà không có mục tiêu/trần;
+P03/P12 đòi retention/gap mà không có hạn mức; §7 có ba mốc freshness mà không nói
+bao lâu thì cũ. Không có số ⇒ không viết được ca đỏ. Cần một bảng: p95
+nguồn→ingest→UI · retention raw (ngày · GB) · mất quá N% thì **cấm** gọi «liên
+tục» · queue tràn ⇒ gap/resnapshot · hạn freshness theo loại nguồn.
+
+**P16 — raw nguyên văn và nội dung nhạy cảm.** Luật 5 (không giấu chữ) + §8 raw
+nguyên văn: bí mật lọt vào transcript (tiền lệ một phiên đọc `.env`, sổ 18/11) sẽ
+nằm trong DB raw. §8 hiện chỉ nói «theo quyền/policy». Cần ghi rõ: mã hoá at-rest
+hoặc thư mục 0700 + tên tệp không lộ nội dung · retention mặc định + xoá theo yêu
+cầu có audit · đánh dấu record khớp mẫu bí mật · ai đọc raw qua MCP facade.
+
+**P17 — Windows.** `keys_win.rs:1–12` tự khai «CHƯA CHẠY TRÊN WINDOWS THẬT», mà §10
+hứa «cùng core/contracts trên ba OS» và §12 không có mốc Windows. Ghi rõ parity 3
+OS là MỤC TIÊU; mỗi OS một cột nghiệm thu; Windows chỉ được khai «hỗ trợ» sau khi
+chạy thật gõ/đọc/đóng/mở/cập nhật.
+
+**P18 — số hiển thị phải đọc từ catalog CLI (ca thật 18/11).** Đầu nhắc chuyển
+phiên khai cứng cửa sổ 200k cho `opencode-go/deepseek-v4.1-flash` trong khi catalog
+`models-dev` của chính kho là 1.000.000 ⇒ 206k token bị tính 103% ⇒ «99% ≥ 50%,
+chuyển phiên» khi ngữ cảnh thật 21%. Mẫu 11 phiên/3 ngày: 6 phiên acc8 (thật
+16–22%) báo 80–112%; 5 phiên acc9 (thật 12–35%) báo 19–59%. Đã vá bằng cách đọc
+`limit.input`→`limit.context` từ `kv models-dev:v2:catalog` (kho chung `a73e394`).
+Luật cho §9: mọi % ngữ cảnh/quota hiển thị **kèm nguồn** + ca âm «cấy catalog sai
+⇒ đỏ»; bảng cứng chỉ là dự phòng có hạn.
+
+**Hai chỗ lệch nhãn (nhẹ).** (a) `design.json` để P04 `state: decision` trong khi
+evidence của chính nó ghi «hướng bố cục không còn là câu hỏi» — đọc kèm §3, không
+đọc thành chưa chọn. (b) Trích dẫn bằng **số dòng** vào `sessions.rs`/`pipeline.rs`/
+`keys.rs` — các tệp này vừa nhận commit 18/11 ⇒ về sau nên ghim `commit:line`, nếu
+không tài liệu tự mất khả năng kiểm. Ngoài ra dispatcher desktop phải đọc
+`commands::ROUTES` (`CLAUDE.md:184–186` — «the real table»), không dựng bảng lệnh
+thứ hai.
+
+**Thứ tự triển khai sửa lại:** **P13 → P14 → P15** rồi mới **P04** (vì A/B,
+subscription và lease đều đứng trên principal/định danh/ngưỡng), sau đó
+P06/P01/P07, rồi P02/P03/P08/P09/P16/P18, cuối cùng P11/P12/P17.
+

@@ -38,6 +38,9 @@ async function inspect(page) {
   const page=await browser.newPage({viewport:{width:1440,height:1000}});
   const errors=[], network=[];
   const artifact = path.join(root,'docs/flows/index.html');
+  // Số issue đọc từ nguồn thiết kế, KHÔNG viết cứng ở đây (19/11: thêm P13–P18 mà
+  // bản cứng 12 làm bản tổng kết nói dối trong khi trang đã 18).
+  const issueCount = JSON.parse(fs.readFileSync(path.join(__dirname,'design.json'),'utf8')).issues.length;
   const hash = () => crypto.createHash('sha256').update(fs.readFileSync(artifact)).digest('hex');
   const startHash = hash();
   page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
@@ -50,7 +53,7 @@ async function inspect(page) {
     assert.equal(await page.locator('svg').count(),19);
     assert.equal(await page.locator('#components tbody tr').count(),30);
     assert.equal(await page.locator('#uc tbody tr').count(),22);
-    assert.equal(await page.locator('#issues article.issue').count(),12);
+    assert.equal(await page.locator('#issues article.issue').count(),issueCount);
     assert.deepEqual(await inspect(page),[]);
     const flowIds=['X0','U1','U2','U3','U4','U5','U6','U7','D1','D2','D3','D4','D5','D6','C1','C2','C3','C4','C5'];
     for (const id of flowIds) {
@@ -69,7 +72,7 @@ async function inspect(page) {
     }
     await page.locator('nav a[href="#workspace"]').click();
     const workspaceInteractions=await reviewWorkspace(page,output);
-    for(let n=1;n<=12;n++) {
+    for(let n=1;n<=issueCount;n++) {
       const id='P'+String(n).padStart(2,'0');
       await page.locator('nav a[href="#issues"]').click();
       const issue=page.locator('#'+id);
@@ -136,7 +139,7 @@ async function inspect(page) {
     assert.deepEqual(errors,[]);
     assert.deepEqual(network,[]);
     assert.equal(hash(),startHash,'Document changed during browser review');
-    console.log(JSON.stringify({document_only:true,flows:19,components:30,use_cases:22,issues:12,
+    console.log(JSON.stringify({document_only:true,flows:19,components:30,use_cases:22,issues:issueCount,
       artifact_sha256:startHash,
       svg_text_overlap:0,negative_overlap_detected:true,console_page_request_errors:errors.length,
       remote_requests:network.length,narrow:sizing,workspace_narrow:workspaceSize,
