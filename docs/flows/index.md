@@ -130,9 +130,9 @@ Xem HTML: W0 bàn hai vùng, T0 terminal và các Pxx liên kết tới từng b
 
 **Tại:** C5/bước7, D5/bước5, U2/bước15
 
-### P09 · Giao lệnh/permission/attachment cần parity từng adapter — CHƯA ĐO / CHƯA ĐỦ
+### P09 · Giao lệnh/permission/attachment cần parity từng adapter (sau khi bỏ Codex) — CHƯA ĐO / CHƯA ĐỦ
 
-**Bằng chứng/phạm vi:** pipeline.rs8214–8227: thiếu journal thì Codex chưa xác nhận nhưng non-Codex còn trả DaGui theo màn; bất nhất đọc từ mã, chưa tái hiện giao lỗi thật. Asking/Question sessions.rs4244–4288 chưa có revision/toolID; multi-question/multi-select đã có, không phủ nhận tính năng cũ.
+**Bằng chứng/phạm vi:** pipeline.rs8214–8227: thiếu nhật ký thì Codex bị từ chối khai đã gửi, non-Codex trả DaGui theo MÀN — nay Codex bỏ (P21) nên chỉ còn MỘT đường DaGui-theo-màn, chưa đo chắc. Asking/Question sessions.rs4244–4288 chưa có revision/toolID; multi-question/multi-select đã có, không phủ nhận tính năng cũ.
 
 **Đề xuất:** Đã nhận ở huba khác CLI-accepted; revision cho câu hỏi; attachment có manifest và receipt theo nguồn. Không hỗ trợ thì nêu rõ và có takeover.
 
@@ -249,6 +249,16 @@ Xem HTML: W0 bàn hai vùng, T0 terminal và các Pxx liên kết tới từng b
 **Bàn tiếp:** Cần chốt: marker theo lượt hỏi hay theo tool-call; nhiều câu trong một lượt thì gộp hay tách; câu đã bị CLI tự trả lời (hết hạn) hiện thế nào; giữ marker khi cuộn ảo hoá (P19). Không dùng marker để thay nút trả lời — trả lời vẫn qua đúng route và gate.
 
 **Tại:** U5/bước1, U2/bước3
+
+### P21 · Bỏ hẳn Codex: phạm vi xoá, dữ liệu cũ, đường di cư — CẦN BÀN / CHỐT
+
+**Bằng chứng/phạm vi:** Quang 19/11 «bỏ hẳn codex đi». Đo mã: grep -ri codex rust/src = 469 dòng/14 tệp (accounts143 · sessions83 · account_login49 · keys46 · quota40 · pipeline25 · runtime21 · config20 · codex_sessions19 · accounts_page10 · opencode6 · main4 · lib2 · keys_tmux1), 79 symbol codex*/CODEX_*, 13 tệp test, acc10 có cli=codex trong huba.config.json.
+
+**Đề xuất:** Bốn bước: (1) CHẶN trước — is_codex ⇒ /new·/tell·/ask·/handover trả «không hỗ trợ» + log codex_refused, /accounts hiện acc10 kèm nhãn không hỗ trợ (không ẩn); (2) gỡ driver: open_codex_window, codex_wall, đọc rollout/journal, xếp hạng quota codex, hook codex_pretooluse, env CODEX_HOME; (3) xoá test CÙNG commit (8 tệp riêng + ca trong 5 tệp chung) — không #[ignore] câm; gate: cargo test + clippy -D warnings + gate.sh; (4) dữ liệu acc10 giữ read-only, báo «lịch sử CLI đã bỏ», KHÔNG migrate sang CLI khác.
+
+**Bàn tiếp:** Đường lệnh chỉ còn UI hoặc Telegram (Quang 19/11) — không thêm cửa thứ ba khi bỏ Codex. P09 hẹp lại chứ không mất: chỉ còn một đường DaGui-theo-màn phải đo. keys_win.rs là chuyện console Windows, không dính codex.
+
+**Tại:** U1/bước1, U3/bước1
 
 ## Thành phần tham gia một phiên — ai làm việc gì?
 

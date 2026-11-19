@@ -55,8 +55,13 @@ Terminal nhúng/gốc ── lease + binding đã xác minh ──────�
   Telegram hoặc backend JavaScript cho cùng việc.
 - Tách `ConversationSource`, `SessionDriver`, `Host`, `Channel`, `ApplicationService`.
   Thêm model/provider không mặc nhiên cần thêm driver CLI.
-- Ưu tiên Claude CLI và OpenCode theo hướng đã trao đổi; giữ Codex hiện có,
-  không tự xóa/chuyển tài khoản. Không hứa một thuê bao dùng được qua mọi CLI.
+- **Đường lệnh chỉ có HAI cửa: UI (desktop) hoặc Telegram** — không kênh thứ ba,
+  không route ghi qua MCP/CLI/HTTP khác (Quang 19/11).
+- CLI hỗ trợ: **Claude CLI + OpenCode**. **Codex BỎ HẲN** (Quang 19/11 «bỏ hẳn codex
+  đi»): không mở phiên mới, không driver, không route; tài khoản codex hiện có
+  (`acc10` trong `huba.config.json`) chuyển sang trạng thái *không hỗ trợ* — vẫn
+  thấy trong danh sách kèm nhãn, không mở được, lịch sử cũ chỉ đọc lại. Chi tiết
+  phạm vi xoá trong mã: P21/§15. Không hứa một thuê bao dùng được qua mọi CLI.
 - Frontend dùng generated contract/client, không gọi shell hoặc tự đọc DB CLI.
 - Tauri/frontend TypeScript là đề xuất cần spike; framework và vỏ chưa được coi là
   quyết định triển khai chỉ vì tài liệu đã ghi tên. Kiểm WebView2/WebKit thật.
@@ -324,6 +329,7 @@ filter/revision/coverage; unknown khác0, không thêm billing/tracker/model tó
 | P18 | Lỗi có ca thật | Số hiển thị đọc từ catalog CLI, không bảng cứng |
 | P19 | Rủi ro | Toàn bộ lịch sử trong ô chat: hiệu năng, bộ nhớ, gap, tìm kiếm |
 | P20 | Cần chốt | Cột đánh dấu câu hỏi để focus nhanh |
+| P21 | Quyết định mới | Bỏ hẳn Codex: phạm vi xoá, dữ liệu cũ, đường di cư |
 
 HTML gắn từng Pxx vào đúng bước sơ đồ và có bằng chứng, hướng đề xuất, điểm bàn;
 đỏ/cam/tím/vàng không được hiểu tất cả là lỗi đã tái hiện.
@@ -431,6 +437,53 @@ quay lại cắt N dòng. Ngưỡng cụ thể thuộc P15.
 Nghiệm thu đếm được: phiên ≥200 lượt ⇒ thấy từ lượt 1 · cuộn tới đỉnh · tìm được
 một câu ở lượt cũ · số bản ghi khớp nguồn · không còn ngưỡng 40/6000 trong đường
 hiển thị ô chat.
+
+## 15. Bỏ hẳn Codex (Quang 19/11) — đường lệnh chỉ còn UI hoặc Telegram
+
+Quyết định: **hai cửa lệnh** (UI desktop, Telegram), **hai CLI** (Claude CLI,
+OpenCode). Codex ra khỏi sản phẩm, không phải "ẩn đi".
+
+**Hiện trạng đo trong mã (19/11)** — `grep -ri codex rust/src` = **469 dòng** ở 14
+tệp; **79** symbol/hằng `codex*`/`CODEX_*`; **13** tệp test; `acc10` trong
+`huba.config.json` có `cli: "codex"`.
+
+| Tệp | dòng chạm codex |
+|---|---|
+| `accounts.rs` | 143 |
+| `sessions.rs` | 83 |
+| `account_login.rs` | 49 |
+| `keys.rs` | 46 |
+| `quota.rs` | 40 |
+| `pipeline.rs` | 25 |
+| `runtime.rs` | 21 |
+| `config.rs` | 20 |
+| `codex_sessions.rs` | 19 |
+| `accounts_page.rs` · `opencode.rs` · `main.rs` · `lib.rs` · `keys_tmux.rs` | 10 · 6 · 4 · 2 · 1 |
+
+Test chạm codex: `codex_account_selection` · `codex_send_delivery` · `codex_sessions` ·
+`codex_gui_va_dong` · `codex_tele_identity` · `codex_duoc_chon` · `tuong_codex` ·
+`tai_khoan_codex` (+ 5 tệp dùng chung có ca codex).
+
+**Bốn bước, mỗi bước tự đỏ/xanh được**
+1. **Chặn trước, xoá sau**: `is_codex()` ⇒ mọi route `/new`, `/tell`, `/ask`,
+   `/handover` trả «CLI này không còn hỗ trợ» + log `codex_refused`; `/accounts`
+   hiện `acc10` kèm nhãn *không hỗ trợ* (không ẩn — ẩn là mất dấu một tài khoản
+   đang có dữ liệu). Đo: `/new acc10` trên Telegram ⇒ câu từ chối, **không** mở cửa sổ.
+2. **Gỡ driver**: `open_codex_window`, `codex_wall`, đọc journal/rollout
+   (`codex_sessions.rs`), xếp hạng quota codex, hook `codex_pretooluse` khỏi đường
+   chạy; xoá `CODEX_HOME` env khỏi launch.
+3. **Xoá test cùng commit với mã** — 8 tệp riêng + các ca codex trong 5 tệp chung;
+   xoá test là **xoá khoá regression** nên phải xoá đúng cụm, không để lại
+   `#[ignore]` câm. `cargo test` + `clippy -D warnings` + `gate.sh` xanh trước khi cài.
+4. **Dữ liệu cũ**: transcript/rollout của `acc10` giữ **read-only** (không xoá), báo
+   rõ «lịch sử của CLI đã bỏ» khi mở; không migrate sang Claude/OpenCode (khác native
+   namespace — xem §4).
+
+**Điều KHÔNG đổi**: luật 1 (tường `denied_tools`) vẫn áp cho hai CLI còn lại; P09
+vẫn còn nghĩa nhưng **hẹp lại** — bất nhất «Codex thiếu journal ⇒ chưa xác nhận,
+non-Codex trả `DaGui` theo màn» biến mất, chỉ còn **một** đường `DaGui`-theo-màn
+chưa được đo chắc; phải đo trước khi hứa «CLI đã nhận».
+
 
 **14.2 Cột đánh dấu câu hỏi để focus nhanh (P20).** Ô chat có **cột mốc** bên trái:
 mỗi câu hỏi một marker — **đang chờ** nổi bật + đếm ở đầu ô, **đã trả lời** mốc mờ,

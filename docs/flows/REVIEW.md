@@ -34,6 +34,22 @@ số issue từ nguồn.
 | Chromium/WebKit `.tmp/review-flows-20261119b-{chromium,webkit}.log` | `GATE_EXIT=0` · 19 flow/30 thành phần/22 UC/**20 issue** · console-page-request 0 · remote 0 · same hash |
 | Đối chứng ngược | Census P01..P20 trên danh sách 18 issue ⟹ ĐỎ (cùng phép đếm đã dựng ở mục trên) |
 
+### 19/11 10:05+07 — bỏ Codex (P21) + đường lệnh chỉ UI/Telegram, chạy lại hai engine
+
+§15 mới: **Codex bỏ hẳn** (Quang 19/11), **đường lệnh chỉ còn UI hoặc Telegram**;
+CLI hỗ trợ = Claude CLI + OpenCode. Phạm vi xoá đo trong mã: **469 dòng / 14 tệp
+`rust/src`**, 79 symbol `codex*`, 13 tệp test, `acc10` (`cli=codex`). P09 hẹp lại
+(chỉ còn MỘT đường `DaGui`-theo-màn phải đo), P21 = bốn bước chặn→gỡ driver→xoá test
+cùng commit→dữ liệu cũ read-only.
+
+| Đo trên bản mới | Kết quả |
+|---|---|
+| `index.html` 354.130 B · `55a07f7809f54242…` | Chromium **và** WebKit cùng hash |
+| Unit | 17/17, mã 0 |
+| Chromium/WebKit `.tmp/review-flows-20261119c-{chromium,webkit}.log` | `GATE_EXIT=0` · 19 flow/30 thành phần/22 UC/**21 issue** · console-page-request 0 · remote 0 |
+| Đối chứng ngược | Census P01..P21 trên danh sách 20 issue ⟹ ĐỎ |
+
+
 Chạy qua `cong-node chay e2e` (NODE_PATH trỏ node_modules có playwright của kho
 dwork; `PLAYWRIGHT_BROWSERS_PATH=/home/user1/.cache/ms-playwright`). Lượt này KHÔNG
 chạy lại `workspace.html` độc lập bằng tay — `reviewWorkspace` vẫn chạy trong cùng
