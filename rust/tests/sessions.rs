@@ -2079,3 +2079,17 @@ fn a_transcript_without_cwd_leaves_the_folder_empty_not_guessed() {
     assert_eq!(got.len(), 1, "{got:?}");
     assert_eq!(got[0].cwd, "", "không biết thì để trống, đừng đoán");
 }
+
+#[test]
+fn codex_bi_tu_choi_o_cua_mo_phien() {
+    // Quang 19/11 «bỏ hẳn codex đi»: cửa mở phiên phải TỪ CHỐI, không mở cửa sổ,
+    // không chạy driver. Tường/driver còn trong mã để gỡ trọn ở lượt riêng (P21).
+    let cfg: huba::config::Config =
+        serde_json::from_str(r#"{"claude_accounts":[{"name":"acc10","cli":"codex"}]}"#).unwrap();
+    let e = huba::sessions::ensure_account_usable(&cfg, Some("acc10"))
+        .expect_err("acc codex phải bị từ chối");
+    assert!(e.to_string().contains("Codex đã bỏ"), "{e}");
+    let cfg2: huba::config::Config =
+        serde_json::from_str(r#"{"claude_accounts":[{"name":"acc1"}]}"#).unwrap();
+    assert!(huba::sessions::ensure_account_usable(&cfg2, Some("acc1")).is_ok());
+}

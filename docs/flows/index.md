@@ -256,7 +256,7 @@ Xem HTML: W0 bàn hai vùng, T0 terminal và các Pxx liên kết tới từng b
 
 **Đề xuất:** BỎ HẾT mọi thứ liên quan Codex (Quang 19/11 «cái gì liên quan bỏ hết»): (a) mã: driver open_codex_window, codex_wall, codex_sessions.rs, nhánh codex trong accounts/sessions/keys/quota/pipeline/runtime/config/account_login/accounts_page/main/lib; (b) test: xoá 8 tệp codex + ca codex trong 5 tệp dùng chung — cùng commit, không #[ignore] câm; (c) cấu hình: bỏ acc10 khỏi huba.config.json trong repo; máy đang có acc10 thì mã TỪ CHỐI với câu «CLI không còn hỗ trợ» + log codex_refused (không crash, không mở cửa sổ); (d) tài liệu/hook: bỏ mọi nhắc Codex trong CLAUDE.md/README/docs, bỏ hook codex_pretooluse khỏi đường chạy; (e) dữ liệu acc10 giữ read-only, không migrate.
 
-**Bàn tiếp:** Nghiệm thu: grep -ri codex rust/src rust/tests = 0 (trừ lịch sử git) · cargo build + clippy -D warnings + lib test xanh · /new acc10 trên Telegram trả câu từ chối, không cửa sổ · huba accounts --print không crash với hàng cli lạ.
+**Bàn tiếp:** ĐÃ LÀM BƯỚC 1 (19/11, chưa cài): cửa mở phiên TỪ CHỐI acc codex — ensure_account_usable + nhánh codex trong pipeline /new không còn mở cửa sổ; câu từ chối «Codex đã bỏ khỏi huba (19/11)…»; log codex_refused. Test mới sessions::codex_bi_tu_choi_o_cua_mo_phien (đỏ nếu gỡ cửa chặn). lib 155/155 · clippy -D warnings 0. CHƯA LÀM bước 2–4: 469 dòng/14 tệp còn trong mã + 13 tệp test — gỡ trọn ở lượt riêng (đụng snapshot/pipeline/keys/quota/accounts_page nên phải xoá cùng lúc test).
 
 **Tại:** U1/bước1, U3/bước1
 

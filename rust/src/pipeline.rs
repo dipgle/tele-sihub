@@ -15796,45 +15796,25 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                             // `/new acc10` nhận hai tin ngược nhau (từ chối + «Đang mở…»).
                             // Nay: kiểm tường → mở cửa sổ thật → chuyển con trỏ vào nó.
                             // Khoá vẫn là khoá (không hỏi mở hộ ở đường này).
-                            let codex_row = account.as_deref().and_then(|a| {
+                            // 🤖 Codex ĐÃ BỎ khỏi huba (Quang 19/11 «cái gì liên quan bỏ hết»):
+                            // cửa mở phiên TỪ CHỐI, không mở cửa sổ, không chạy driver.
+                            // Tường/driver codex còn trong mã để gỡ trọn ở lượt riêng (P21).
+                            let codex_tu_choi = account.as_deref().and_then(|a| {
                                 cfg.claude_accounts
                                     .iter()
                                     .find(|r| r.name == a && r.is_codex())
-                                    .cloned()
-                            });
-                            let codex_tu_choi = codex_row.map(|row| {
-                                if row.locked {
-                                    return crate::sessions::account_locked_text(cfg, &row.name);
-                                }
-                                match crate::sessions::open_codex_window(cfg, &row, &d, task) {
-                                    Err(e) => {
-                                        let why = crate::logging::err_chain(&e);
+                                    .map(|row| {
                                         logging::warn(
-                                            "codex_window_refused",
-                                            json!({ "account": row.name, "err": why }),
+                                            "codex_refused",
+                                            json!({ "account": row.name,
+                                                    "why": "Codex đã bỏ khỏi huba 19/11 — chỉ còn Claude và OpenCode" }),
                                         );
-                                        format!("⚠ không mở codex bằng {}: {why}", row.name)
-                                    }
-                                    Ok((_w, tty, tuong)) => {
-                                        let id = crate::sessions::shell_id(&tty);
-                                        let theo = match db.set_cursor(FOCUS_SESSION_KEY, &id) {
-                                            Ok(()) => "đang theo nó — gõ chữ ở đây là vào codex · /shot để nhìn màn".to_string(),
-                                            Err(e) => {
-                                                logging::error(
-                                                    "focus_after_codex_window_failed",
-                                                    json!({ "err": e.to_string(), "id": id }),
-                                                );
-                                                "⚠ con trỏ CHƯA chuyển được — bấm nó trong /terminal trước khi gõ".to_string()
-                                            }
-                                        };
                                         format!(
-                                            "🤖 Đã mở codex bằng {} ({tty}) ở {} — {theo}.\n{tuong}\n\
-                                             ⚠ /session chưa liệt kê phiên codex — nó nằm trong /terminal.",
-                                            row.name,
-                                            d.display()
+                                            "⛔ acc `{}` dùng Codex — CLI này đã bỏ khỏi huba (19/11).\n\
+                                             Chỉ còn Claude và OpenCode. Lịch sử codex cũ giữ đọc lại.",
+                                            row.name
                                         )
-                                    }
-                                }
+                                    })
                             });
                             let tu_choi = codex_tu_choi.or_else(|| {
                                 khoa.as_deref().and_then(|a| {

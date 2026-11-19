@@ -10025,7 +10025,7 @@ pub fn ensure_account_usable(cfg: &Config, account: Option<&str>) -> Result<()> 
 /// ([`open_codex_window`]) — đường duy nhất dựng + KIỂM tường (luật 1); các
 /// đường kia dựng dòng lệnh kiểu Claude, chạy codex qua đó là chạy không tường.
 pub const CODEX_CHUA_MO_PHIEN: &str =
-    "phiên codex chỉ mở bằng /new <tên> (cửa sổ có tường: sandbox + cổng lệnh cấm) — đường này (bàn giao/phiên nền) chưa hỗ trợ codex";
+    "Codex đã bỏ khỏi huba (19/11) — chỉ còn Claude và OpenCode; lịch sử cũ giữ đọc lại.";
 
 /// Câu từ chối cho một tài khoản đang khoá — MỘT chỗ dựng, để `/new`,
 /// `/handover`, `huba handover` và cửa [`ensure_account_usable`] nói cùng một
