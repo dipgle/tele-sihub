@@ -55,8 +55,12 @@ Terminal nhúng/gốc ── lease + binding đã xác minh ──────�
   Telegram hoặc backend JavaScript cho cùng việc.
 - Tách `ConversationSource`, `SessionDriver`, `Host`, `Channel`, `ApplicationService`.
   Thêm model/provider không mặc nhiên cần thêm driver CLI.
-- **Đường lệnh chỉ có HAI cửa: UI (desktop) hoặc Telegram** — không kênh thứ ba,
-  không route ghi qua MCP/CLI/HTTP khác (Quang 19/11).
+- **Hôm nay đường lệnh có HAI cửa đang SỐNG: UI (desktop) hoặc Telegram** — không
+  route ghi qua MCP/CLI/HTTP khác (Quang 19/11). 🔴 **Nhưng cổng KÊNH phải ĐỘNG**
+  (Quang 19/11 «để cổng động để có thể gắn app mobile khác»): `Channel` là một cổng
+  có hợp đồng, Telegram chỉ là **một adapter cắm vào**; app mobile sau này là
+  **adapter thứ ba, cùng bảng lệnh `commands::ROUTES` và cùng gate**, không viết lại
+  lõi. Hôm nay KHÔNG bật cửa nào thêm — chỉ dựng đúng cái cổng (P22).
 - CLI hỗ trợ: **Claude CLI + OpenCode**. **Codex BỎ HẲN** (Quang 19/11 «bỏ hẳn codex
   đi»): không mở phiên mới, không driver, không route; tài khoản codex hiện có
   (`acc10` trong `huba.config.json`) chuyển sang trạng thái *không hỗ trợ* — vẫn
@@ -338,6 +342,7 @@ filter/revision/coverage; unknown khác0, không thêm billing/tracker/model tó
 | P19 | Rủi ro | Toàn bộ lịch sử trong ô chat: hiệu năng, bộ nhớ, gap, tìm kiếm |
 | P20 | Cần chốt | Cột đánh dấu câu hỏi để focus nhanh |
 | P21 | Quyết định mới | Bỏ hẳn Codex: phạm vi xoá, dữ liệu cũ, đường di cư |
+| P22 | Cần dựng cổng | Cổng kênh động: Telegram hôm nay, app mobile sau (chưa bật) |
 
 HTML gắn từng Pxx vào đúng bước sơ đồ và có bằng chứng, hướng đề xuất, điểm bàn;
 đỏ/cam/tím/vàng không được hiểu tất cả là lỗi đã tái hiện.
@@ -530,3 +535,43 @@ liệt kê theo lượt, lượt đang chờ đứng đầu. Nguồn = câu hỏ
 lời: trả lời vẫn đi đúng route và qua gate quyền.
 
 
+
+## 16. Cổng kênh ĐỘNG — Telegram hôm nay, app mobile sau (P22)
+
+Quang 19/11: *«tạm thời app để sau, giờ làm như thiết kế hiện tại trước đã, nhưng
+vẫn phải để cổng động để có thể gắn app mobile khác»*. Nghĩa là: **không dựng app
+bây giờ**, nhưng lõi phải có **một cổng** để app cắm vào mà không sửa lõi.
+
+**Hợp đồng cổng (thứ phải có trước khi viết bất kỳ adapter mới nào)**
+- `trait Channel` với 4 nhóm: **nhận** lệnh (`Order { text, sender, media, callback }`),
+  **gửi** (`Outbound { text, buttons, media, reply_to }`), **ack** (react / sửa tin /
+  tin mới — mỗi kênh tự chọn cách), **khai năng lực** (`buttons`, `edit`, `react`,
+  `media`, `streaming`, `max_chars`, `max_file`).
+- **Xác thực là của adapter, quyết định là của lõi**: adapter trả `principal`; lõi
+  so với chủ máy (P13: một người). Telegram: `chat_id`. UI desktop: UID + pairing.
+  App mobile (sau): cặp khoá thiết bị. **Adapter không được tự cho qua.**
+- **Lõi giữ nguyên**: dispatcher + `commands::ROUTES` (`CLAUDE.md:184–186` — «the real
+  table») + chống trùng (`tin_den`) + **mọi route ghi**. Adapter KHÔNG có bảng lệnh
+  riêng, KHÔNG tự chạy lệnh.
+- **Năng lực thiếu thì NÓI**: kênh không có nút bấm ⇒ trả «kênh này không hỗ trợ nút,
+  gõ `/…`» thay vì im (luật 3). Không hạ cấp im lặng.
+- **Push là năng lực của adapter**: adapter app phải tự lo push (hoặc khai `push:
+  false` và chấp nhận chỉ đọc khi mở app). Lõi không biết FCM/APNs là gì.
+- **Media**: bytes/ref/path + manifest + receipt theo năng lực (P09); không nhận
+  «có path» là «model đã nhận bytes».
+
+**Nghiệm thu cổng (làm được ngay, chưa cần app)**
+1. Adapter giả trong test (`tests/`) nhận một câu, lõi chạy route, trả câu — chứng
+   minh thêm kênh **không** sửa `pipeline`/`commands`/`sessions`.
+2. Đối chứng ngược: gỡ đăng ký adapter ⇒ cổng đỏ; cấy adapter tự chạy lệnh riêng
+   ⇒ cổng đỏ (`commands::ROUTES` là nguồn duy nhất).
+3. Kênh thiếu năng lực: gọi thử nút bấm ⇒ câu «không hỗ trợ», có log, không im.
+
+**UI mobile là TỰ DỰNG** (Quang 19/11 «sẽ tự dựng ui mobile»): không dùng lại trang
+tfl5, không phụ thuộc UI bên thứ ba. Vì vậy cổng `Channel` phải **UI-agnostic** —
+vỏ mobile (PWA / Tauri mobile / native, chọn sau ở P11) chỉ là một adapter cắm vào,
+cùng `commands::ROUTES`, cùng gate, cùng bộ render atomic-CSS của nhà. Đổi vỏ
+không được kéo theo sửa lõi; nếu phải sửa lõi thì cổng đã sai thiết kế.
+
+**Điều KHÔNG làm bây giờ**: không dựng app mobile, không mở thêm đường mạng, không
+bật cửa thứ ba đang sống. P17 vẫn giữ thứ tự Ubuntu trước.

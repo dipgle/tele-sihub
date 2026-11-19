@@ -1,5 +1,19 @@
 # Xác minh lại bản chốt trên hai engine — 17/11/2026 09:55+07
 
+## 19/11 12:25+07 — P22 cổng kênh động + UI mobile tự dựng: chạy lại hai engine
+
+§16 mới + P22: **cổng `Channel` động** (Telegram hôm nay; UI mobile **tự dựng** sau,
+cắm vào cùng `commands::ROUTES` + cùng gate; **không bật cửa nào thêm hôm nay**).
+`design.json` nay **22 issue**; census P01..P22.
+
+| Đo trên bản mới | Kết quả |
+|---|---|
+| `index.html` 359.754 B · `5ab301226b425661…` | Chromium **và** WebKit cùng hash |
+| Unit | 17/17, mã 0 |
+| WebKit `.tmp/review-flows-20261119g-webkit.log` | `GATE_EXIT=0` · 19 flow/30 thành phần/22 UC/**22 issue** · console0 · remote0 |
+| Chromium **lượt 1** `.tmp/review-flows-20261119g-chromium.log` | **mã 124 — HẾT GIỜ ở cổng `cong-node`** ⇒ KHÔNG phải xanh, không dùng làm bằng chứng |
+| Chromium **lượt 2** `.tmp/review-flows-20261119g2-chromium.log` | `GATE_EXIT=0`, cùng mẫu số, cùng hash `5ab30122…` |
+
 ## 19/11 09:15+07 — thêm P13–P18 (rà soát 19/11): cả hai engine ĐỌC LẠI bản mới
 
 `docs/thiet-ke-tong-the-v2.md` thêm **§13** + `design.json` thêm **P13–P18**

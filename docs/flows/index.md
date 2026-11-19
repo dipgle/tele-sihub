@@ -260,6 +260,16 @@ Xem HTML: W0 bàn hai vùng, T0 terminal và các Pxx liên kết tới từng b
 
 **Tại:** U1/bước1, U3/bước1
 
+### P22 · Cổng kênh ĐỘNG + UI mobile TỰ DỰNG (chưa bật cửa nào hôm nay) — CẦN BÀN / CHỐT
+
+**Bằng chứng/phạm vi:** Quang 19/11: «tạm thời app để sau, giờ làm như thiết kế hiện tại trước đã, nhưng vẫn phải để cổng động để có thể gắn app mobile khác». Hiện trạng: telegram.rs là kênh DUY NHẤT được nối; lệnh đi qua commands::ROUTES (CLAUDE.md:184–186), chống trùng ở tin_den, xác thực ở update_sender theo chat id (CLAUDE.md:160–173). tfl5/mobile đã bị bỏ vì là trang xem: 0 lệnh trong 2 ngày trong khi 9.553 lượt đẩy snapshot + 7.030 poll (memory/ra-soat-2026-08-14.md).
+
+**Đề xuất:** Dựng cổng Channel có hợp đồng: nhận (Order) · gửi (Outbound có buttons/media/reply_to) · ack (react/sửa/tin mới, mỗi kênh tự chọn) · khai năng lực (buttons/edit/react/media/streaming/max_chars/max_file/push). Adapter trả principal, LÕI quyết định (một chủ máy — P13). Lõi giữ dispatcher + commands::ROUTES + tin_den; adapter không có bảng lệnh riêng, không tự chạy lệnh. Thiếu năng lực thì NÓI («kênh này không hỗ trợ nút…»), không im. Push là năng lực của adapter (app phải tự lo hoặc khai push:false). Media theo P09.
+
+**Bàn tiếp:** Nghiệm thu: adapter GIẢ trong tests/ nhận 1 câu → lõi chạy route → trả câu, chứng minh thêm kênh không sửa pipeline/commands/sessions; đối chứng ngược gỡ đăng ký ⇒ đỏ, adapter tự chạy lệnh riêng ⇒ đỏ. KHÔNG dựng app, không mở đường mạng, không bật cửa thứ ba đang sống; P17 vẫn Ubuntu trước. UI mobile là do CHÚNG TA tự dựng (Quang 19/11 «sẽ tự dựng ui mobile»), không dùng lại trang tfl5, không phụ thuộc UI bên thứ ba; cổng Channel phải UI-AGNOSTIC để vỏ đó cắm vào mà không sửa lõi. Chọn nền vỏ (PWA/Tauri mobile/native) vẫn để mở — thuộc P11/P22, chưa chốt.
+
+**Tại:** U3/bước1, D2/bước1
+
 ## Thành phần tham gia một phiên — ai làm việc gì?
 
 Đây là các vai trò logic; không đồng nghĩa mỗi vai trò phải là một tiến trình/dịch vụ. Nhiều vai trò nằm chung hubad hoặc CLI. Thành phần tùy chọn chỉ tham gia khi UC/capability cần; không bắt một tin chào đi qua mọi thành phần.
