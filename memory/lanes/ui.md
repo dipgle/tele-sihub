@@ -1,5 +1,24 @@
 # huba/ui
 
+## 2026-11-20 00:10 +07 — vào làn: cây bẩn của phiên LÕI đã chết, chưa làm gì
+
+Quét: sổ làn 17/11, TODO 18/11, HEAD `79aacc7` (19/11 12:24). Cây có ~110 `M` · 9 `D` ·
+20 `??` (rust/src 13 tệp + 9 test codex xoá + docs/flows + thiet-ke-tong-the-v2 + 82 ảnh
+previews + `huba.config.json`), mtime 19/11 14:00–14:26. Tác giả ĐO ĐƯỢC: phiên opencode
+acc8 `ses_e111663e6ffe2pUm1tDcrC0v08` (đề «huba», làn LÕI, deepseek), hàng cuối seq3413
+14:26:59 = lệnh review browser `status:error`; khớp mtime `.tmp/review-flows-20261119h-chromium.log`
+(«Target page… closed», GATE_EXIT=1). Không còn tiến trình (`pgrep` 00:08). Việc dở = P21
+bước 2 «bỏ hết Codex»; lượt test trọn 14:17 `.tmp/test-bo-codex-lan2-20261119.log` đỏ 4
+đích (accounts_call_env 3 bài · stop_job_really_stops · telegram · watch); 14:22 phiên tự
+ghi «targeted green», chưa có lượt trọn sau đó. Chưa commit/cài/đẩy.
+Không phải module này ⇒ KHÔNG gom, KHÔNG sửa; báo người ra lệnh. Việc UI tự đóng được duy
+nhất (TODO:30 nhãn phiên gốc) đụng đúng `sessions.rs`/`opencode.rs` đang bẩn ⇒ chờ cây sạch.
+Nợ khác của làn đều ⛔ (duyệt P04/P06/P07/P15/P20/P22 · A/B trace · helper hòm thư ngoài cây ·
+bấm `/session` thật). Nền: không có.
+00:16 người ra lệnh chọn «mở lại phiên lõi» ⇒ brief `.tmp/brief-huba-ke-nhiem-20261120-0015.md`
+(1824 B), `acc-mo-vai.sh` mã 0: acc6 · pane %52 · pts/22 · CLI_PID 2348424 sống, đề bài
+trỏ đúng brief (đo `ps` + `tmux capture-pane`). UI chờ phiên lõi báo cây sạch rồi làm TODO.md:30.
+
 ## 2026-11-17 11:05 +07 — hòm thư huba: đường nào, ai dựng, vì sao tên tuỳ tiện
 
 Hà hỏi «sao lại có đường `/tmp/claude-1000/dwork-review/ses_e1d90c5d…`». Đo, không suy:
