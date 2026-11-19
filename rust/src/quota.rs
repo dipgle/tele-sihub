@@ -504,10 +504,6 @@ impl Quota {
         self.say_cho(now_ms, true)
     }
 
-    /// [`Quota::say`] cho một hàng mà nguồn của nó CÓ THỂ có bảng theo model hay không.
-    /// `false` (opencode / codex — nguồn chỉ có trần tuần/5 giờ) ⟹ bỏ câu khai mẫu số
-    /// «model: nguồn không có hàng nào»: với nguồn ấy câu đó không bao giờ đổi được trạng
-    /// thái (Hà 15/11, ảnh `/accounts` acc9), nên nó là nhiễu chứ không phải phép đo.
     pub fn say_cho(&self, now_ms: i64, co_bang_model: bool) -> String {
         if let Some(why) = &self.why_unknown {
             return format!("chưa đo được — {why}");
@@ -1294,11 +1290,10 @@ pub fn rank_all(cfg: &crate::config::Config, now_ms: i64) -> Vec<Ranked> {
             let opencode = cfg.claude_accounts_or_ambient().iter().any(|a| {
                 a.name == q.account && a.is_opencode() && !is_go_plan(a) && !is_chatgpt_opencode(a)
             });
-            // opencode-ChatGPT xếp như codex: trần THẬT của gói ChatGPT, bản đọc cũ ⟹ chưa sẵn sàng.
             let codex = cfg
                 .claude_accounts_or_ambient()
                 .iter()
-                .any(|a| a.name == q.account && (a.is_codex() || is_chatgpt_opencode(a)));
+                .any(|a| a.name == q.account && is_chatgpt_opencode(a));
             let codex_unmeasured = codex
                 && (q.fetched_at_ms.is_none_or(|t| t > now_ms)
                     || [
@@ -1309,11 +1304,6 @@ pub fn rank_all(cfg: &crate::config::Config, now_ms: i64) -> Vec<Ranked> {
                     .any(|(pct, reset)| {
                         pct.is_none() || ban_doc_cu(q.fetched_at_ms, *reset, now_ms)
                     }));
-            // codex: xếp bằng hạn mức THẬT (`codex_quota`) như mọi acc gói — trước
-            // 15/11 bị ép «khoá» (lý do cũ «huba chưa mở phiên codex»), nên khi các
-            // acc Claude khoá hết thì không đường chọn nào còn ai (Quang «acc10 vứt
-            // cho chó gặm à»). Đường mở nhận acc codex: `/new` và bàn giao
-            // (`sessions::start_fresh_after_handover` ⟹ `open_codex_window`).
             let r = if cfg.account_locked(&q.account) {
                 Rank::Locked
             } else if opencode || dung_api_key(cfg, &q.account) {
@@ -1321,8 +1311,6 @@ pub fn rank_all(cfg: &crate::config::Config, now_ms: i64) -> Vec<Ranked> {
                 // cấu hình, và không có sổ hạn mức để so. `-a` vẫn mở được.
                 Rank::ApiKey
             } else if codex_unmeasured {
-                // Unknown vẫn là ứng viên Claude legacy; Codex chưa có bản đo
-                // tươi thì chưa sẵn sàng TỰ chọn, không bịa 0% sau reset.
                 Rank::NotReady
             } else {
                 rank(&q, now_ms)
@@ -1362,45 +1350,10 @@ pub fn dung_api_key(cfg: &crate::config::Config, ten: &str) -> bool {
     cfg.claude_accounts_or_ambient()
         .iter()
         .find(|a| a.name == ten)
-        .is_some_and(|a| {
-            if a.is_codex() {
-                matches!(codex_auth(a), Ok(true))
-            } else {
-                crate::api_key::nhan(&crate::api_key::thu_muc(a)).is_some()
-            }
-        })
+        .is_some_and(|a| crate::api_key::nhan(&crate::api_key::thu_muc(a)).is_some())
 }
 
 /// true = API key, false = đăng nhập ChatGPT. Không ghi nội dung auth vào log.
-fn codex_auth(a: &crate::config::ClaudeAccountCfg) -> Result<bool, &'static str> {
-    let text = std::fs::read_to_string(crate::accounts::codex_home(a).join("auth.json"))
-        .map_err(|_| "codex: chưa đọc được đăng nhập — đăng nhập lại bằng /accounts")?;
-    let auth: Value = serde_json::from_str(&text)
-        .map_err(|_| "codex: tệp đăng nhập hỏng — đăng nhập lại bằng /accounts")?;
-    if auth["OPENAI_API_KEY"]
-        .as_str()
-        .is_some_and(|s| !s.is_empty())
-        || matches!(auth["auth_mode"].as_str(), Some("apikey" | "api_key"))
-    {
-        return Ok(true);
-    }
-    match auth["auth_mode"].as_str() {
-        Some("chatgpt")
-            if ["access_token", "refresh_token"].iter().all(|k| {
-                auth["tokens"][k]
-                    .as_str()
-                    .is_some_and(|s| !s.trim().is_empty())
-            }) =>
-        {
-            Ok(false)
-        }
-        Some("chatgpt") => {
-            Err("codex: đăng nhập ChatGPT thiếu token — đăng nhập lại bằng /accounts")
-        }
-        _ => Err("codex: chưa xác định được loại đăng nhập ChatGPT"),
-    }
-}
-
 /// Bản đọc thô của mọi tài khoản, theo đúng thứ tự cấu hình.
 ///
 /// 🔴 Tách khỏi [`rank_all`] vì `runtime::accounts_text` cần bản THÔ (nó in cả
@@ -1456,9 +1409,6 @@ pub fn read_all(cfg: &crate::config::Config) -> Vec<Quota> {
             if let Some(q) = read_acc(a) {
                 return q;
             }
-            if a.is_codex() {
-                return codex_quota(a);
-            }
             if is_chatgpt_opencode(a) {
                 return chatgpt_opencode_quota(a);
             }
@@ -1485,14 +1435,10 @@ pub fn is_go_plan(a: &crate::config::ClaudeAccountCfg) -> bool {
             .is_some_and(|m| m.starts_with("opencode-go/"))
 }
 
-/// Hàng opencode đăng nhập ChatGPT (model `openai/…`) — gói THUÊ BAO ChatGPT, cùng
-/// trần với codex trên cùng tài khoản (Hà 15/11 chọn hỏi thẳng máy chủ).
 pub fn is_chatgpt_opencode(a: &crate::config::ClaudeAccountCfg) -> bool {
     crate::accounts::opencode_login_provider(a) == Some("openai")
 }
 
-/// `Quota` của một hàng opencode-ChatGPT: `GET /wham/usage` (`opencode::chatgpt_rate_limits`)
-/// đổi sang khuôn codex rồi đi CHUNG [`codex_quota_tu`]. Mốc đọc = lúc máy chủ trả lời.
 pub fn chatgpt_opencode_quota(a: &crate::config::ClaudeAccountCfg) -> Quota {
     let (doc_luc, r) = crate::opencode::chatgpt_rate_limits(a, now_ms());
     match r {
@@ -1573,43 +1519,6 @@ pub fn go_quota(
     q
 }
 
-/// `Quota` của một hàng codex từ `rate_limits` mà CHÍNH codex ghi vào nhật ký phiên
-/// (`accounts::codex_rate_limits`).
-///
-/// 🔴 Quang 15/11: *«thế tài khoản acc10 vứt cho chó gặm à»* · *«có vấn đề gì ở chỗ lọc
-/// tài khoản vậy mà suốt từ hôm qua tới giờ không chạy được gì»*. `rank_all` xếp MỌI
-/// hàng codex là «khoá» (lý do cũ: huba chưa mở phiên codex — hết đúng từ `9d7b1ce`),
-/// nên khi chủ máy khoá 9 acc Claude thì bàn giao tự động / `/new` không còn ai để chọn
-/// (log 14/11 23:58Z → 15/11 01:01Z: 6 lượt `auto_handover_window_failed`).
-pub fn codex_quota(a: &crate::config::ClaudeAccountCfg) -> Quota {
-    match codex_auth(a) {
-        Ok(false) => {}
-        Ok(true) => return khong_do_duoc(&a.name, "codex: API key — không tự chọn"),
-        Err(why) => {
-            let mut q = khong_do_duoc(&a.name, why);
-            q.chua_dung_duoc = Some(why.to_string());
-            return q;
-        }
-    }
-    match crate::accounts::codex_rate_limits(a) {
-        Ok(Some((rl, ts))) => codex_quota_tu(&a.name, &rl, &ts),
-        Ok(None) => khong_do_duoc(
-            &a.name,
-            "codex: chưa có lượt nào ghi hạn mức (mở một phiên là có số)",
-        ),
-        Err(e) => khong_do_duoc(&a.name, &format!("codex: {e}")),
-    }
-}
-
-/// Phần THUẦN của [`codex_quota`] — khuôn đo 14/11 (codex-cli 0.169, gói `prolite`):
-/// `{"primary":{"used_percent":31.0,"window_minutes":10080,"resets_at":<giây>},
-/// "secondary":null,"rate_limit_reached_type":null}`.
-///
-/// Phân cửa sổ theo `window_minutes`: ≥ 28 ngày ⟹ THÁNG · ≥ 1 ngày ⟹ TUẦN · ngắn hơn ⟹
-/// 5 GIỜ. 🔴 Thiếu ô nào thì GÁN NGƯỢC TỪ TRÊN XUỐNG (Quang 15/11: *«5h bằng đúng hạn
-/// tuần» · «nếu không có tuần thì lấy hạn tháng gán vào → cứ gán ngược từ trên xuống»*):
-/// tuần ⟸ tháng, 5 giờ ⟸ tuần. Không gán từ dưới lên, không bịa 0 % cho ô không có.
-/// `rate_limit_reached_type` có giá trị ⟹ 100 %.
 pub fn codex_quota_tu(account: &str, rl: &Value, ts: &str) -> Quota {
     let chan = !rl["rate_limit_reached_type"].is_null();
     let mut thang: Option<(i64, Option<String>)> = None;

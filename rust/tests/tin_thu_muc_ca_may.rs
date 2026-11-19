@@ -1,9 +1,3 @@
-//! «Tin thư mục» là chuyện của MÁY (Quang 17/11): một lời khai — gốc workspace —
-//! dịch xuống sổ riêng của tài khoản sắp mở, CLI nào cũng qua MỘT cửa.
-//!
-//! Ca thật 17/11 (Ubuntu): `/new acc3` — sổ acc3 chưa tin `/mnt/data/projects`,
-//! claude 2.1.326 vẽ hộp KHÔNG đánh số, con trỏ sẵn ở «No, exit»; huba không thấy
-//! hộp, gõ đề bài + Enter ⟹ phiên chết. Trước bản này chỉ codex có ghi sẵn.
 use huba::accounts::{claude_het_hoi_doc_ngoai_json, claude_trust_json, tin_thu_muc, TinCay};
 use huba::config::{ClaudeAccountCfg, Config};
 use serde_json::Value;
@@ -180,22 +174,6 @@ fn claude_chua_co_so_thi_khong_tao_thay_cli() {
 }
 
 #[test]
-fn codex_ghi_config_toml_theo_dung_thu_muc() {
-    let goc = tempfile::tempdir().unwrap();
-    let home = tempfile::tempdir().unwrap();
-    let a = acc("acc10", Some("codex"), home.path());
-    let cfg = cfg_voi(goc.path(), vec![a.clone()]);
-    assert_eq!(tin_thu_muc(&cfg, Some(&a), goc.path()), Ok(TinCay::VuaGhi));
-    let toml = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
-    assert!(
-        toml.contains(&format!("[projects.\"{}\"]", that(goc.path()))),
-        "{toml}"
-    );
-    assert!(toml.contains("trust_level = \"trusted\""));
-    assert_eq!(tin_thu_muc(&cfg, Some(&a), goc.path()), Ok(TinCay::DaCo));
-}
-
-#[test]
 fn opencode_khong_co_hop_va_ngoai_goc_khong_ghi() {
     let goc = tempfile::tempdir().unwrap();
     let ngoai = tempfile::tempdir().unwrap();
@@ -261,7 +239,7 @@ fn moi_cho_mo_phien_deu_qua_cua_trust() {
 fn doi_chung_go_mot_cua_thi_cong_do() {
     // Gỡ lời gọi ở MỘT chỗ ⟹ cổng phải chỉ ra đúng chỗ ấy.
     let hong = SESSIONS.replacen(
-        "crate::accounts::tin_truoc_khi_mo(cfg, Some(acc), dir);",
+        "crate::accounts::tin_truoc_khi_mo(cfg, Some(&acc), root);",
         "",
         1,
     );

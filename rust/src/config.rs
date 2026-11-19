@@ -311,11 +311,6 @@ pub struct Config {
     /// expanded by the shell that runs the launch line.
     #[serde(default = "default_opencode_cli")]
     pub opencode_cli: String,
-    /// The `codex` executable (OpenAI Codex CLI) used by accounts whose `cli` is
-    /// `codex`. Same reason as `opencode_cli`: a path, not a bare name — the
-    /// daemon's PATH is the short service one.
-    #[serde(default = "default_codex_cli")]
-    pub codex_cli: String,
     /// Accounts to enumerate. Empty = just the ambient account, which is the
     /// only thing true on a fresh machine; this Mac has three, declared in
     /// `huba.config.json`. Mechanism, not policy — the code must not know a
@@ -411,7 +406,6 @@ impl Default for Config {
             notify: NotifyCfg::default(),
             claude_cli: default_claude_cli(),
             opencode_cli: default_opencode_cli(),
-            codex_cli: default_codex_cli(),
             claude_accounts: vec![],
             claude_transcript_root: String::new(),
             new_in_terminal: true,
@@ -499,21 +493,7 @@ pub fn validate(cfg: &Config) -> Result<()> {
     if cfg.opencode_cli.trim().is_empty() {
         problems.push("opencode_cli must not be empty".into());
     }
-    if cfg.codex_cli.trim().is_empty() {
-        problems.push("codex_cli must not be empty".into());
-    }
     for a in &cfg.claude_accounts {
-        if let Some(cli) = a.cli.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-            if !["claude", "opencode", "codex"]
-                .iter()
-                .any(|k| cli.eq_ignore_ascii_case(k))
-            {
-                problems.push(format!(
-                    "tài khoản `{}`: cli `{cli}` không hợp lệ (chỉ `claude`, `opencode` hoặc `codex`)",
-                    a.name
-                ));
-            }
-        }
         if let Some(Value::Object(_)) = &a.opencode_config {
             // ổn
         } else if a.opencode_config.is_some() {
@@ -798,11 +778,6 @@ pub fn default_claude_cli() -> String {
 pub fn default_opencode_cli() -> String {
     "$HOME/.opencode/bin/opencode".into()
 }
-
-pub fn default_codex_cli() -> String {
-    "$HOME/.npm-global/bin/codex".into()
-}
-
 /// One Claude CLI account. `config_dir` empty/absent means the AMBIENT account:
 /// the CLI selects it by `CLAUDE_CONFIG_DIR` being unset, and setting the
 /// variable to the default directory reports "not logged in" — so this is a
@@ -905,18 +880,15 @@ impl ClaudeAccountCfg {
             .is_some_and(|v| v.eq_ignore_ascii_case("opencode"))
     }
 
-    /// Hàng này là OpenAI Codex CLI (`codex`, đăng nhập ChatGPT).
-    ///
-    /// 🔴 Quang 14/11: *"cài cli của chatgpt đi để thêm acc10"* · *"Phải đăng nhập
-    /// lệnh giống claude"*. Đăng nhập: `/accounts <tên> -l` (`account_login`). Mở
-    /// phiên (từ `9d7b1ce`): tường = `accounts::CODEX_WALL_FLAGS` +
-    /// `CODEX_WALL_CONFIG` + hook PreToolUse gọi cổng chung. Danh sách phiên:
-    /// `codex_sessions`.
-    pub fn is_codex(&self) -> bool {
-        self.cli
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|v| v.eq_ignore_ascii_case("codex"))
+    /// CLI của hàng này có còn được hỗ trợ không: `claude` (mặc định) hoặc
+    /// `opencode`. Mọi tên khác — kể cả `codex` còn nằm trong `huba.config.json`
+    /// của máy cũ — là **KHÔNG hỗ trợ**: cửa mở phiên TỪ CHỐI kèm câu nói rõ,
+    /// không rơi về đường Claude (Quang 19/11 «bỏ hẳn codex đi»).
+    pub fn is_supported(&self) -> bool {
+        match self.cli.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            None => true,
+            Some(v) => v.eq_ignore_ascii_case("claude") || v.eq_ignore_ascii_case("opencode"),
+        }
     }
 
     /// Hàng này chạy `claude` — mọi sổ của Claude (`claude agents`, `/usage`,
@@ -924,15 +896,13 @@ impl ClaudeAccountCfg {
     /// `!is_claude()` thay vì `is_opencode()` để CLI thứ ba không lọt vào đường
     /// Claude.
     pub fn is_claude(&self) -> bool {
-        !self.is_opencode() && !self.is_codex()
+        self.is_supported() && !self.is_opencode()
     }
 
     /// Nhãn CLI đã chuẩn hoá — dùng cho trang và `--print`.
     pub fn cli_name(&self) -> &'static str {
         if self.is_opencode() {
             "opencode"
-        } else if self.is_codex() {
-            "codex"
         } else {
             "claude"
         }

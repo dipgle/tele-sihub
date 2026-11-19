@@ -1,14 +1,3 @@
-//! Tin chữ trơn dài hơn trần Telegram phải đi thành NHIỀU tin, không chết im.
-//!
-//! 🔴 Quang 15/11: *«lệnh accounts sao không chạy nữa»*. Đo log hubd 00:19:17Z:
-//! `/accounts` chạy xong (`command_done`), rồi `telegram_ack_failed: Bad Request:
-//! message is too long` — 10 tài khoản (thêm acc10 codex) đẩy câu trả lời quá 4096
-//! ký tự, `send_text` gửi MỘT `sendMessage` nên Telegram từ chối cả tin. Người ra
-//! lệnh không nhận được gì.
-//!
-//! Đo trên thân `sendMessage` mà `send_text` gửi đi (`plain_message_bodies`) —
-//! không có máy chủ Telegram giả (địa chỉ API gõ cứng, xem `one_retry_loop.rs`).
-
 use huba::telegram::Inbox;
 
 /// Trần Telegram cho `text` (đếm ký tự UTF-16; chữ Việt/emoji trong BMP ⟹ = số ký tự).

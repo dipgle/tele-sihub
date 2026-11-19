@@ -877,9 +877,6 @@ fn box_close(rest: &str) -> Option<(usize, usize)> {
 /// trống ấy (`auto_unstick_box_firing text_len=194`). Bảng ấy nằm ngoài ô, nên
 /// sửa ở chỗ cắt vùng — không thêm một cụm chữ nữa vào bộ lọc.
 pub fn box_inner(screen: &str) -> Option<&str> {
-    if let Some((start, end)) = codex_box(screen) {
-        return screen[start..end].trim_start().strip_prefix('›');
-    }
     let rest = &screen[box_start(screen)?..];
     let top_end = rest.find('\n').map_or(rest.len(), |n| n + 1);
     let end = box_close(rest).map_or(rest.len(), |(start, _)| start);
@@ -913,9 +910,6 @@ pub fn box_inner(screen: &str) -> Option<&str> {
 /// `pub` vì nó là cái neo DUY NHẤT cho câu hỏi ấy — chỗ nào cần biết "màn có ô
 /// nhập không" thì hỏi đây, đừng tự dò lấy một hình dạng thứ ba.
 pub fn box_start(screen: &str) -> Option<usize> {
-    if let Some((start, _)) = codex_box(screen) {
-        return Some(start);
-    }
     if let Some(i) = screen.rfind('╭') {
         return Some(i);
     }
@@ -952,47 +946,6 @@ pub fn box_start(screen: &str) -> Option<usize> {
             }
         })
     })
-}
-
-/// Codex không vẽ viền Claude: ô bắt đầu bằng › và dừng trước hàng model.
-/// Neo cả dấu nhắc lẫn chân màn thật (ảnh /shot 15/11); một › trong đầu ra
-/// shell hay tin liên phiên Claude không đủ để cho phép gửi Enter.
-fn codex_box(screen: &str) -> Option<(usize, usize)> {
-    let footer_line = |t: &str| {
-        (t.contains(" · ")
-            && (t.starts_with("GPT-")
-                || t.starts_with("gpt-")
-                || t.contains(" · Main [")
-                || t.contains(" · Plan [")))
-            || t.contains("% context left")
-            || t.starts_with("? for shortcuts")
-    };
-    let mut lines = Vec::new();
-    let mut at = 0;
-    for line in screen.split_inclusive('\n') {
-        lines.push((at, line.trim()));
-        at += line.len();
-    }
-    let footer = lines.iter().rposition(|(_, t)| footer_line(t))?;
-    if lines[footer + 1..].iter().any(|(_, t)| {
-        !t.is_empty()
-            && !t.starts_with('⚠')
-            && !t.contains("for shortcuts")
-            && !t.contains("for agents")
-            && *t != "esc to interrupt"
-    }) {
-        return None;
-    }
-    // Nếu có cả hàng model lẫn hàng phím tắt, cắt ở hàng model đầu tiên
-    // SAU dấu nhắc, không đưa chân màn vào nội dung cần gửi.
-    let prompt = lines[..footer]
-        .iter()
-        .rposition(|(_, t)| t.starts_with('›'))?;
-    let end = lines[prompt + 1..=footer]
-        .iter()
-        .find(|(_, t)| footer_line(t))?
-        .0;
-    Some((lines[prompt].0, end))
 }
 
 pub fn box_region(screen: &str) -> String {
@@ -1034,10 +987,6 @@ pub const BOX_TEXT_MIN_CHARS: usize = 2;
 /// Trả về chữ đã dọn (bỏ khung, dấu nhắc, dòng trạng thái), để chỗ gọi vừa
 /// dựng được nhãn nút vừa biết có đáng dựng hay không.
 pub fn input_box_text(screen: &str) -> Option<String> {
-    if let Some(text) = crate::codex_sessions::composer_text(screen) {
-        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        return (text.chars().count() >= BOX_TEXT_MIN_CHARS).then_some(text);
-    }
     // 🔴 KHÔNG CÓ Ô NHẬP thì trả `None` — đó là một câu trả lời, không phải một
     // chỗ để đoán (vá 2026-09-09).
     //
@@ -1094,9 +1043,6 @@ pub fn input_box_text(screen: &str) -> Option<String> {
         buf.push_str(t);
     }
     let out = buf.trim().to_string();
-    if codex_box(screen).is_some() && out == "Ask Codex to do anything" {
-        return None;
-    }
     (out.chars().count() >= BOX_TEXT_MIN_CHARS).then_some(out)
 }
 
@@ -1133,52 +1079,17 @@ pub fn squash_box(s: &str) -> String {
 /// một dòng của ô nhập.
 pub fn still_in_box(screen: &str, typed: &str) -> bool {
     let squash = squash_box;
-    // Codex rút gọn paste dài bằng số ký tự Unicode (đo UI thật: 2923 ký tự,
-    // 2946 byte -> [Pasted Content 2923 chars]). Chỉ nhận đúng một nhãn có
-    // cỡ khớp khối vừa dán; không Enter một paste khác hay bản nháp ghép thêm.
-    if let Some(text) = crate::codex_sessions::composer_text(screen) {
-        let flat = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
-        let expected = flat(typed);
-        return !expected.is_empty()
-            && (text == format!("[Pasted Content {} chars]", typed.chars().count())
-                || flat(text) == expected);
-    }
-    // ⚠ CHỈ soi trong Ô NHẬP, không soi cả màn.
-    //
-    // Đây là chỗ phép đo suýt trỏ sai: gửi đi RỒI thì `claude` in lại chính câu
-    // ấy vào phần hội thoại phía trên — chữ vẫn còn trên màn, mà ý nghĩa ngược
-    // hẳn. Soi cả màn thì huba đọc "đã gửi" thành "còn nằm trong ô", rồi bắn một
-    // Enter thừa và báo sai cho chủ máy. Ô nhập là khối đóng khung cuối cùng.
-    // 🔴 KHÔNG CÓ Ô NHẬP THÌ KHÔNG CÓ GÌ "CÒN NẰM TRONG Ô" — Hà 2026-08-25:
-    // *"gõ 1 lệnh mà có 4 lần enter"*.
-    //
-    // `box_region` rơi về **bốn dòng cuối** khi `box_start` không thấy khung.
-    // Đường lùi ấy đúng cho màn `claude` mà phép dò khung trượt; nó SAI hẳn cho
-    // một cửa sổ shell trần: ở đó `do script` đã gửi lệnh rồi, và dòng lệnh vừa
-    // gõ **nằm lại trên màn vĩnh viễn** dưới dấu nhắc (`… projects % cd
-    // projects`). Nên phép kiểm luôn trả "còn trong ô", và `type_and_send` bắn
-    // thêm hai cú Enter — đúng mấy dấu nhắc trống Hà chụp được.
-    //
-    // Không thấy khung ⟹ trả `false`. Vừa vá đúng ca này, vừa bỏ một cú Enter
-    // BẮN MÙ: quyết định bấm Enter dựa trên bốn dòng cuối của một màn không rõ
-    // hình dạng chính là thứ `CLAUDE.md` §13 cấm — một Enter lạc thì không lùi
-    // lại được (ca `☐ RPC pool` → `☒` của phiên amm).
-    let codex = codex_box(screen).is_some();
     if box_start(screen).is_none() {
         return false;
     }
-    let screen = if codex {
-        box_inner(screen).unwrap_or_default().to_string()
-    } else {
-        box_region(screen)
-    };
+    let screen = box_inner(screen).unwrap_or_default().to_string();
     let t = squash(typed);
     let n = t.chars().count();
-    // Chỉ Codex nhận câu ngắn khớp TRỌN ô (kể cả /quit). Claude giữ ngưỡng cũ;
-    // Quang 15/11 xác nhận lỗi chỉ xảy ra trên Codex, Claude đang bình thường.
     let seen = squash(&screen);
     if n < 6 {
-        return codex && n > 0 && seen == t;
+        // Câu RẤT ngắn không bao giờ được coi là "còn trong ô": chuỗi "ok" khớp
+        // tình cờ ở khắp màn. (Trước 19/11 nhánh này chỉ đúng cho Codex — đã bỏ.)
+        return false;
     }
     // 🔴 HAI ĐẦU, không riêng đuôi — 2026-08-16. Hà, ảnh chụp phiên `[games]`:
     // *"Sao lại có lệnh ở ô chờ trong tin thế này"*. Log cùng lúc:
@@ -1204,9 +1115,7 @@ pub fn still_in_box(screen: &str, typed: &str) -> bool {
     //
     // Chỉ áp cho khối NHIỀU DÒNG: đó đúng là thứ TUI rút gọn, và giới hạn ấy
     // giữ cho một câu một dòng không bao giờ ăn nhầm cái nhãn của lượt trước.
-    if typed.contains('\n')
-        && (seen.contains("[Pastedtext") || (codex && seen.contains("[PastedContent")))
-    {
+    if typed.contains('\n') && seen.contains("[Pastedtext") {
         return true;
     }
     if seen.contains(&tail) || seen.contains(&head) {
@@ -2974,15 +2883,6 @@ pub fn send_exit(window: i64) -> Result<()> {
     // chính opencode 2.2.7 (bảng phím trong binary): `"app.exit":
     // "ctrl+c,ctrl+d,<leader>q"`. Hai cú Ctrl+C: ô còn chữ ⟹ cú đầu xoá, cú sau
     // thoát; ô trống ⟹ cú đầu thoát, cú sau rơi vào shell (vô hại).
-    // codex: `/quit` + Enter (đo 14/11, codex-cli 0.169.0 — thoát về shell).
-    if tab_runs(window, "codex").unwrap_or(false) {
-        let how = type_and_send(window, "/quit")?;
-        crate::logging::info(
-            "keys_exit_sent",
-            serde_json::json!({ "window": window, "cli": "codex", "landed": format!("{how:?}") }),
-        );
-        return Ok(());
-    }
     match tab_runs(window, "opencode") {
         Ok(true) => return send_exit_opencode(window),
         Ok(false) => {}
@@ -3417,48 +3317,6 @@ end tell"#
 pub fn exit_and_close_shell(window: i64, cho: std::time::Duration) -> Result<Closed> {
     // Tab đã chết thì không có gì để thoát — gõ `exit` vào `[Process completed]`
     // là gõ vào chỗ không ai đọc.
-    // 🔴 codex đứng trước shell: `exit` trần là một câu CHAT gửi model (Quang 14/11,
-    // ảnh 14:52: «› exit» ⟹ «Goodbye.», codex vẫn chạy). Đo cùng ngày: `/quit` +
-    // Enter ⟹ codex thoát về shell. Thoát codex trước, rồi mới `exit` shell.
-    match tab_runs(window, "codex") {
-        Ok(true) => {
-            let how = type_and_send(window, "/quit")?;
-            if how != Delivered::Gone {
-                return Err(anyhow!(
-                    "Codex chưa nhận /quit ({how:?}) — chưa gõ exit của shell"
-                ));
-            }
-            let han = std::time::Instant::now();
-            let mut running = true;
-            while han.elapsed() < cho {
-                std::thread::sleep(std::time::Duration::from_millis(400));
-                running = tab_runs(window, "codex")?;
-                if !running {
-                    break;
-                }
-            }
-            crate::logging::info(
-                "keys_codex_quit_sent",
-                serde_json::json!({ "window": window,
-                                    "con_chay": running }),
-            );
-            if running {
-                return Err(anyhow!(
-                    "Codex chưa thoát sau {}s — chưa gõ exit của shell",
-                    cho.as_secs()
-                ));
-            }
-        }
-        Ok(false) => {}
-        Err(e) => {
-            crate::logging::warn(
-                "keys_exit_cli_unknown",
-                serde_json::json!({ "window": window, "err": e.to_string(),
-                                    "effect": "không hỏi được tab chạy gì — chưa gõ exit của shell" }),
-            );
-            return Err(e);
-        }
-    }
     if tab_proc_count(window).unwrap_or(1) > 0 {
         type_into(window, "exit")?;
         let han = std::time::Instant::now();
@@ -4085,27 +3943,6 @@ pub fn clear_queue(window: i64) -> Result<(usize, usize)> {
 /// vì nó còn ghi log từng lượt bấm; hai chỗ phải kể CÙNG một câu chuyện — sửa
 /// một bên thì sang bên kia đọc lại.
 pub fn type_and_send(window: i64, text: &str) -> Result<Delivered> {
-    #[cfg(target_os = "linux")]
-    if tab_runs(window, "codex")? {
-        let before = screen_text(window)?;
-        match crate::codex_sessions::composer_text(&before) {
-            Some("") => {}
-            Some(_) => {
-                logging::warn(
-                    "codex_paste_held_draft",
-                    json!({"window":window,"effect":"ô có bản nháp, KHÔNG nối thêm kết quả"}),
-                );
-                anyhow::bail!("ô Codex có bản nháp — chưa dán thêm kết quả");
-            }
-            None => {
-                logging::warn(
-                    "codex_paste_held_blind",
-                    json!({"window":window,"effect":"chưa đọc được ô nhập, KHÔNG dán mù"}),
-                );
-                anyhow::bail!("chưa đọc được ô nhập Codex — chưa dán kết quả");
-            }
-        }
-    }
     type_into(window, text)?;
     finish_send(window, text)
 }
@@ -4113,23 +3950,6 @@ pub fn type_and_send(window: i64, text: &str) -> Result<Delivered> {
 /// Kiểm sau cú dán, rồi Enter bù CHỈ khi còn thấy đúng khối. Tách để đối
 /// chứng UI thật có thể cố tình hụt Enter đầu, dùng cùng đường cứu production.
 pub fn finish_send(window: i64, text: &str) -> Result<Delivered> {
-    #[cfg(target_os = "linux")]
-    let mut codex = match tab_runs(window, "codex") {
-        Ok(b) => b,
-        Err(e) => {
-            logging::warn(
-                "keys_send_cli_blind",
-                json!({"window":window,"err":e.to_string()}),
-            );
-            return Ok(Delivered::Unverified(format!(
-                "không xác định được CLI: {e}"
-            )));
-        }
-    };
-    // Bản tab_runs ngoài Linux dùng AppleScript. Không gọi nó trên Windows;
-    // chrome Codex đọc được bên dưới vẫn bật phép kiểm Codex trên mọi hệ.
-    #[cfg(not(target_os = "linux"))]
-    let mut codex = false;
     for wait_ms in [400u64, 1000] {
         std::thread::sleep(std::time::Duration::from_millis(wait_ms));
         let screen = match screen_text(window) {
@@ -4145,8 +3965,7 @@ pub fn finish_send(window: i64, text: &str) -> Result<Delivered> {
                 return Ok(Delivered::Unverified(format!("không đọc được màn: {e}")));
             }
         };
-        codex |= crate::codex_sessions::composer_text(&screen).is_some();
-        match delivery_on_screen(&screen, text, codex) {
+        match delivery_on_screen(&screen, text) {
             Delivered::Gone => return Ok(Delivered::Gone),
             other @ Delivered::Unverified(_) => return Ok(other),
             Delivered::StillInBox => {}
@@ -4168,7 +3987,7 @@ pub fn finish_send(window: i64, text: &str) -> Result<Delivered> {
     std::thread::sleep(std::time::Duration::from_millis(600));
     match screen_text(window) {
         Ok(s) => {
-            let verdict = delivery_on_screen(&s, text, codex);
+            let verdict = delivery_on_screen(&s, text);
             if verdict != Delivered::StillInBox {
                 return Ok(verdict);
             }
@@ -4183,19 +4002,7 @@ pub fn finish_send(window: i64, text: &str) -> Result<Delivered> {
     }
 }
 
-/// Codex không nhận ra ô nhập không có nghĩa là ô trống. Khi có chữ KHÁC
-/// cũng không được Enter hộ bản nháp; nhật ký sẽ quyết định đã nhận khối chưa.
-pub fn delivery_on_screen(screen: &str, typed: &str, codex: bool) -> Delivered {
-    if codex {
-        match crate::codex_sessions::composer_text(screen) {
-            Some("") => return Delivered::Gone,
-            Some(_) if still_in_box(screen, typed) => return Delivered::StillInBox,
-            Some(_) => {
-                return Delivered::Unverified("ô Codex có chữ khác — không bấm Enter".into())
-            }
-            None => return Delivered::Unverified("chưa nhận diện được ô nhập Codex".into()),
-        }
-    }
+pub fn delivery_on_screen(screen: &str, typed: &str) -> Delivered {
     if still_in_box(screen, typed) {
         Delivered::StillInBox
     } else {
@@ -4203,30 +4010,12 @@ pub fn delivery_on_screen(screen: &str, typed: &str, codex: bool) -> Delivered {
     }
 }
 
-/// Chọn đường gửi SAU khi đã thấy chữ còn trong ô. Claude/shell giữ đường cũ;
-/// chỉ màn Codex đã nhận đủ dấu nhắc + footer mới đổi sang phím Enter rời.
-pub fn text_enter_way(screen: &str) -> KeyWay {
-    if codex_box(screen).is_some() {
-        KeyWay::Bare
-    } else {
-        KeyWay::Written
-    }
+pub fn text_enter_way(_screen: &str) -> KeyWay {
+    KeyWay::Written
 }
 
-pub fn enter_after_text(window: i64, screen: &str) -> Result<()> {
-    if text_enter_way(screen) == KeyWay::Written {
-        return press(window, "enter");
-    }
-    match press_enter(window) {
-        EnterHow::Failed(why) => Err(anyhow!(why)),
-        how => {
-            logging::info(
-                "keys_send_enter",
-                json!({ "window": window, "cli": "codex", "how": format!("{how:?}") }),
-            );
-            Ok(())
-        }
-    }
+pub fn enter_after_text(window: i64, _screen: &str) -> Result<()> {
+    press(window, "enter")
 }
 
 /// Chữ huba vừa gõ ĐÃ ĐI CHƯA — ba kết cục, không gộp.

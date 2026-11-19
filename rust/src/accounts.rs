@@ -105,164 +105,6 @@ pub fn opencode_profile_dir(acc: &ClaudeAccountCfg) -> PathBuf {
     }
 }
 
-/// `CODEX_HOME` của một hàng codex: `config_dir` nếu khai, không thì
-/// `~/.codex-<tên>`. Một thư mục một tài khoản — `auth.json` (đăng nhập
-/// ChatGPT) nằm trong đó, nên hai acc codex không bao giờ chung một lượt đăng
-/// nhập. Đo 14/11 (codex-cli 0.169.0): `CODEX_HOME` trỏ vào thư mục CHƯA có ⟹
-/// `Error loading configuration … path does not exist`, exit 1 — nên
-/// [`ensure_dirs`] tạo nó trước mọi lượt chạy.
-pub fn codex_home(acc: &ClaudeAccountCfg) -> PathBuf {
-    match some(&acc.config_dir) {
-        Some(d) => expand_home(Path::new(d)),
-        None => match home_dir() {
-            Some(h) => h.join(format!(".codex-{}", acc.name)),
-            None => PathBuf::from(format!(".codex-{}", acc.name)),
-        },
-    }
-}
-
-/// Cờ TƯỜNG của mọi phiên codex huba mở — luật 1, bản codex (14/11):
-/// · `-s workspace-write`: chỉ GHI trong thư mục làm việc (+ /tmp), KHÔNG mạng
-///   (đo 14/11: banner `sandbox: workspace-write [workdir, /tmp, $TMPDIR]`);
-/// · `-a never`: không hộp thoại xin quyền — điện thoại không bấm được; lệnh bị
-///   sandbox chặn trả lỗi về model;
-/// · `--dangerously-bypass-hook-trust`: hook DUY NHẤT trong `CODEX_HOME` là hook
-///   cổng bảo mật do chính huba ghi ([`ensure_codex_wall`]) — không có hộp «tin
-///   cậy hook» nào chờ một người không ngồi ở máy.
-pub const CODEX_WALL_FLAGS: [&str; 5] = [
-    "-s",
-    "workspace-write",
-    "-a",
-    "never",
-    "--dangerously-bypass-hook-trust",
-];
-
-/// Phần TƯỜNG đi bằng `-c` (TOML), đứng CUỐI dòng lệnh — sau `extra_args` của
-/// hàng — để ô cấu hình không mở lại được (luật 1: không nới tường cho vừa tính
-/// năng). Đo 14/11 (codex-cli 0.169.0), hai chiều trên lượt thật:
-/// · `web_search="disabled"`: mặc định codex TỰ tìm web (phiên pts/11 «Searched
-///   the web»; `exec` trả «ripgrep 15.2.0») — có cờ ⟹ không còn công cụ web;
-/// · `features.apps=false`: tắt MCP mặc định `codex_apps` (308 công cụ connector
-///   ChatGPT). `codex_tui` (quản luồng của chính codex) KHÔNG tắt được bằng cấu
-///   hình — `mcp_servers.codex_tui.enabled=false` ⟹ «invalid transport», codex
-///   không khởi động.
-pub const CODEX_WALL_CONFIG: [&str; 2] = ["web_search=\"disabled\"", "features.apps=false"];
-
-/// Các giá trị `-c` gắn MCP codetrail cho codex (binary từ [`codex_mcp_bin`]); rỗng khi
-/// không tìm thấy binary — [`ensure_codex_wall`] đã từ chối mở trước đó. THUẦN (trừ
-/// một lượt hỏi đĩa để ghi log).
-pub fn codex_mcp_codetrail_args_cho(account: &str, bin: &str) -> Vec<String> {
-    let bin = bin.trim();
-    if bin.is_empty() {
-        return Vec::new();
-    }
-    if !Path::new(bin).is_file() {
-        crate::logging::warn(
-            "codex_mcp_codetrail_missing",
-            json!({ "account": account, "path": bin,
-                    "effect": "codex sẽ báo MCP project-agent hỏng — cài lại gói huba (kem/bin/project-agent)" }),
-        );
-    }
-    let ws = home_dir()
-        .map(|h| h.join("projects").to_string_lossy().to_string())
-        .unwrap_or_default();
-    let toml_str = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
-    vec![
-        format!("mcp_servers.project-agent.command={}", toml_str(bin)),
-        format!(
-            "mcp_servers.project-agent.env={{PROJECTS_ROOT={}}}",
-            toml_str(&ws)
-        ),
-        // 🔴 Quang 14/11 (ảnh phiên aihub): *"tài khoản 10 không nhận được thông tin
-        // mcp tool?"*. Công cụ CÓ tới model, nhưng `-a never` (tường) + không khoá này
-        // ⟹ mọi lời gọi «MCP tool call requires approval, but approval policy is
-        // never». Đo hai chiều 14/11: có khoá ⟹ get_context_brief chạy. Ngang phiên
-        // Claude (MCP gọi không hỏi); hook PreToolUse vẫn soi từng lời gọi.
-        "mcp_servers.project-agent.default_tools_approval_mode=\"approve\"".to_string(),
-    ]
-}
-
-/// Effort mặc định của phiên codex khi hàng acc không khai `effort`.
-///
-/// Quang 14/11: *"GPT đang để mặc định là low sửa thành high đi"*. Mặc định
-/// TRONG MÃ chỉ là sàn an toàn; mức thật là ô `effort` của hàng tài khoản (trang
-/// quản lý sửa được) — cùng khuôn với [`OPENCODE_VARIANT_MAC_DINH`].
-pub const CODEX_EFFORT_MAC_DINH: &str = "high";
-
-/// Dòng lệnh codex của một hàng:
-/// `CODEX_HOME=<thư mục> <codex_cli> <tường> [-m <model>] -c model_reasoning_effort=<mức> <extra_args>`.
-fn codex_launch_line(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
-    let mut parts = vec![
-        assign_path("CODEX_HOME", &codex_home(acc).to_string_lossy()),
-        path_token(&cfg.codex_cli),
-    ];
-    parts.extend(CODEX_WALL_FLAGS.iter().map(|s| s.to_string()));
-    if let Some(m) = some(&acc.model) {
-        parts.push("-m".to_string());
-        parts.push(value_token(m));
-    }
-    let muc = some(&acc.effort).unwrap_or(CODEX_EFFORT_MAC_DINH);
-    parts.push("-c".to_string());
-    // Giá trị `-c` là TOML: chuỗi phải có nháy kép, cả cụm bọc nháy đơn cho shell.
-    parts.push(shell_quote(&format!(
-        "model_reasoning_effort=\"{}\"",
-        muc.replace('"', "")
-    )));
-    // `CLAUDE.md` của dự án như Claude đọc (codex mặc định chỉ `AGENTS.md`); trần
-    // 128 KiB vì luật gốc đã 34 KB > 32 KiB mặc định (đo 14/11: `/status` ⟹
-    // `Agents.md: CLAUDE.md`).
-    parts.push("-c".to_string());
-    parts.push(shell_quote(
-        "project_doc_fallback_filenames=[\"CLAUDE.md\"]",
-    ));
-    parts.push("-c".to_string());
-    parts.push(shell_quote("project_doc_max_bytes=131072"));
-    // MCP codetrail (Quang 14/11 «gắn mcp codetrail nữa») — cùng nguồn với opencode:
-    // `HUBA_MCP_PROJECT_AGENT` (gói Linux: `kem/bin/project-agent`). Truyền bằng `-c`
-    // mỗi lượt mở, không ghi config.toml.
-    for c in codex_mcp_codetrail_args_cho(&acc.name, &codex_mcp_bin(&cfg.workspace_root)) {
-        parts.push("-c".to_string());
-        parts.push(shell_quote(&c));
-    }
-    for a in &acc.extra_args {
-        parts.push(value_token(a));
-    }
-    for c in CODEX_WALL_CONFIG {
-        parts.push("-c".to_string());
-        parts.push(shell_quote(c));
-    }
-    parts.join(" ")
-}
-
-/// Khối TOML khai thư mục `dir` là tin cậy — `None` khi `config.toml` đã có bảng
-/// của thư mục ấy (KHÔNG đè quyết định đã lưu, kể cả «untrusted»). Hàm THUẦN.
-///
-/// 🔴 Quang 14/11 (ảnh «Folder access — Trust this folder?»): *"model nào lần đầu
-/// cũng báo như này"*. Hộp ấy chờ một phím trên màn không ai nhìn. Đo cùng ngày
-/// (codex-cli 0.169.0, hai kho git mới): `-c 'projects."<dir>".trust_level="trusted"'`
-/// KHÔNG tắt được hộp — codex chỉ tin quyết định đã LƯU trong `config.toml`, đúng
-/// chỗ nó tự ghi khi người bấm «Trust» (`[projects."/mnt/data/projects"]`).
-pub fn codex_trust_block(existing: &str, dir: &str) -> Option<String> {
-    let khoa = dir.replace('\\', "\\\\").replace('"', "\\\"");
-    let dau = format!("[projects.\"{khoa}\"]");
-    if existing.lines().any(|l| l.trim() == dau) {
-        return None;
-    }
-    let mut out = String::new();
-    if !existing.is_empty() && !existing.ends_with('\n') {
-        out.push('\n');
-    }
-    out.push_str(&format!("\n{dau}\ntrust_level = \"trusted\"\n"));
-    Some(out)
-}
-
-/// `.claude.json` với gốc `dir` đã «tin cậy» — `Ok(None)` khi sổ đã ghi tin rồi.
-/// Hàm THUẦN. Chỉ chạm ĐÚNG một khoá (`projects[dir].hasTrustDialogAccepted`);
-/// mọi khoá khác (đăng nhập, hạn mức, quyền đã cho) giữ nguyên giá trị. Sổ hỏng
-/// ⟹ `Err`, KHÔNG ghi đè: viết lại một sổ đọc không ra là xoá đăng nhập.
-///
-/// ⚠ `serde_json` của crate không bật `preserve_order` ⟹ khoá in lại theo thứ tự
-/// chữ cái. Claude không dựa vào thứ tự, và lần tự ghi kế tiếp của nó in lại.
 pub fn claude_trust_json(existing: &str, dir: &str) -> Result<Option<String>, String> {
     let mut v: Value =
         serde_json::from_str(existing).map_err(|e| format!("sổ .claude.json hỏng: {e}"))?;
@@ -359,21 +201,6 @@ fn ghi_nguyen_tu(p: &Path, noi_dung: &str) -> Result<(), String> {
     })
 }
 
-/// 🔴 «Tin thư mục» là chuyện của MÁY, không phải của tài khoản hay CLI (Quang
-/// 17/11: *"nó phải là chung trên cả máy tính"* · *"công việc là chung không cần
-/// quan tâm dùng cli hay model nào"* · *"mỗi lần mở acc mới lại phải đi định
-/// nghĩa … là đi ngược logic"*).
-///
-/// Máy khai tin ĐÚNG MỘT chỗ: gốc workspace (`cfg.workspace_root`) — mọi dự án
-/// nằm dưới nó. Mỗi CLI lại cất «đã tin» trong sổ RIÊNG của từng tài khoản, theo
-/// đường tuyệt đối (claude: `<config_dir>/.claude.json`; codex:
-/// `CODEX_HOME/config.toml`), nên tài khoản mới / máy mới luôn hỏi lại. Hàm này là
-/// CỬA DUY NHẤT dịch quyết định của máy xuống sổ của tài khoản sắp mở, gọi ngay
-/// trước mọi lượt mở phiên — chỗ gọi không phân biệt CLI.
-///
-/// Đo 17/11 (Ubuntu): `/new acc3` — acc3 chưa tin `/mnt/data/projects` (8 sổ, chỉ
-/// acc6·acc9 có), claude 2.1.326 vẽ hộp KHÔNG đánh số, con trỏ sẵn ở «No, exit»;
-/// huba không nhận ra hộp, gõ đề bài + Enter ⟹ chọn «No» ⟹ phiên chết.
 pub fn tin_thu_muc(
     cfg: &Config,
     acc: Option<&ClaudeAccountCfg>,
@@ -387,21 +214,6 @@ pub fn tin_thu_muc(
     }
     match acc {
         Some(a) if a.is_opencode() => Ok(TinCay::KhongCoHop),
-        // codex khoá «tin» theo ĐÚNG thư mục dự án (không thừa kế từ cha) ⟹ ghi `dir`.
-        Some(a) if a.is_codex() => {
-            let p = codex_home(a).join("config.toml");
-            let co = match std::fs::read_to_string(&p) {
-                Ok(t) => t,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-                Err(e) => return Err(format!("không đọc được {}: {e}", p.display())),
-            };
-            let Some(them) = codex_trust_block(&co, &dir.to_string_lossy()) else {
-                return Ok(TinCay::DaCo);
-            };
-            ghi_nguyen_tu(&p, &format!("{co}{them}"))?;
-            Ok(TinCay::VuaGhi)
-        }
-        // claude tin cả cây con của thư mục đã tin ⟹ ghi GỐC một lần là đủ mọi dự án.
         _ => {
             let cfg_dir = acc
                 .and_then(|a| some(&a.config_dir))
@@ -482,238 +294,13 @@ pub fn tin_truoc_khi_mo(cfg: &Config, acc: Option<&ClaudeAccountCfg>, dir: &Path
     }
 }
 
-/// Cổng bảo mật chung (`cong_bao_mat.py`) — nằm CẠNH plugin opencode
-/// ([`opencode_security_plugin`]), tức cùng một bản cài cho cả hai CLI.
-pub fn codex_gate() -> PathBuf {
-    let plugin = PathBuf::from(opencode_security_plugin());
-    plugin
-        .parent()
-        .map(|p| p.join("cong_bao_mat.py"))
-        .unwrap_or_else(|| PathBuf::from("cong_bao_mat.py"))
-}
-
-/// Script dùng chung nằm CẠNH cổng bảo mật ([`codex_gate`]) — cùng một bản cài:
-/// máy có cây workspace ⟹ `~/projects/scripts/`; máy cài bằng gói Linux ⟹
-/// `kem/scripts/` (gói chép đủ). Không tính từ gốc workspace: máy cài bằng gói
-/// KHÔNG có `<gốc>/scripts/` (14/11 — «cài máy mới không phải sửa lại gì»).
 pub fn script_canh_cong(ten: &str) -> PathBuf {
-    codex_gate().with_file_name(ten)
+    PathBuf::from(opencode_security_plugin()).with_file_name(ten)
 }
 
 /// Khâu CHUNG soạn đoạn mở đầu phiên (mọi CLI): `mo-dau-phien.py` cạnh cổng.
 pub fn mo_dau_script() -> PathBuf {
     script_canh_cong("mo-dau-phien.py")
-}
-
-/// Binary MCP codetrail cho phiên codex: `HUBA_MCP_PROJECT_AGENT` (gói Linux), không
-/// có ⟹ ĐÚNG lệnh `<gốc>/.mcp.json` khai cho phiên Claude (`${HOME}`/`~` mở ra).
-/// Rỗng ⟹ không tìm thấy — [`ensure_codex_wall`] từ chối mở (MCP là bắt buộc).
-///
-/// 🔴 14/11: biến môi trường chỉ bộ cài Linux đặt ⟹ sang Mac phiên codex mất MCP
-/// không ai hay. Nguồn mặc định phải là thứ git mang theo.
-pub fn codex_mcp_bin(goc: &Path) -> String {
-    let env = std::env::var("HUBA_MCP_PROJECT_AGENT").unwrap_or_default();
-    if !env.trim().is_empty() {
-        return env.trim().to_string();
-    }
-    let p = goc.join(".mcp.json");
-    let cmd = std::fs::read_to_string(&p)
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| {
-            v["mcpServers"]["project-agent"]["command"]
-                .as_str()
-                .map(str::to_string)
-        })
-        .unwrap_or_default();
-    if cmd.is_empty() {
-        return String::new();
-    }
-    let home = home_dir()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let cmd = cmd.replace("${HOME}", &home).replace("$HOME", &home);
-    crate::config::expand_home(Path::new(&cmd))
-        .to_string_lossy()
-        .to_string()
-}
-
-/// Nội dung `CODEX_HOME/hooks.json`: MỘT hook `PreToolUse` cho MỌI công cụ, gọi
-/// cổng chung. Cổng thoát khác 0 (kể cả 3 = policy hỏng) ⟹ hook thoát 2 = CHẶN
-/// (fail-closed). Khuôn đo 14/11 trên codex-cli 0.169.0 (payload `tool_name`/
-/// `tool_input` như Claude Code). Hàm THUẦN.
-///
-/// `goc` = gốc workspace: thêm hook `SessionStart` gọi khâu chung
-/// `mo-dau-phien.py` CẠNH cổng (`--codex-hook`: `systemMessage` HIỆN lên màn như khối khởi
-/// động của phiên Claude, `additionalContext` tới model) + hook nhắc chuyển phiên.
-pub fn codex_hooks_json(gate: &Path, goc: Option<&Path>, mcp: &str) -> Value {
-    let lenh = format!(
-        "python3 {} --codex-pretooluse; r=$?; [ \"$r\" -eq 0 ] || exit 2",
-        shell_quote(&gate.to_string_lossy())
-    );
-    let mut v = json!({
-        "hooks": {
-            "PreToolUse": [
-                { "matcher": "*", "hooks": [ { "type": "command", "command": lenh } ] }
-            ]
-        }
-    });
-    let canh = |ten: &str| gate.with_file_name(ten);
-    if let Some(goc) = goc {
-        let mut mo_dau = format!(
-            "python3 {} --cli codex --goc {} --codex-hook",
-            shell_quote(&canh("mo-dau-phien.py").to_string_lossy()),
-            shell_quote(&goc.to_string_lossy())
-        );
-        if !mcp.is_empty() {
-            mo_dau.push_str(&format!(" --mcp {}", shell_quote(mcp)));
-        }
-        v["hooks"]["SessionStart"] =
-            json!([ { "hooks": [ { "type": "command", "command": mo_dau } ] } ]);
-        // Nhắc chuyển phiên khi ngữ cảnh ≥ 50 % — CÙNG script phiên Claude dùng
-        // (`.claude/settings.json` Stop + UserPromptSubmit).
-        // Đo 14/11 codex-cli 0.169.0: hai sự kiện ấy bắn y khuôn Claude
-        // (`transcript_path`, `stop_hook_active`); `decision: block` và
-        // `additionalContext` đều tới model. Script đọc `model_context_window` do
-        // codex tự khai trong rollout.
-        let nhac = format!(
-            "python3 {}",
-            shell_quote(&canh("nhac-chuyen-phien.py").to_string_lossy())
-        );
-        let h = json!([ { "hooks": [ { "type": "command", "command": nhac } ] } ]);
-        v["hooks"]["Stop"] = h.clone();
-        v["hooks"]["UserPromptSubmit"] = h;
-    }
-    v
-}
-
-// 🔴 14/11 (Mac): script nạp luật từng VIẾT SẴN ở đây (`huba-nap-luat.py`, `44d6bd8`) và
-// chỉ được dựng khi `HUBA_LUAT_GOC` có — biến chỉ bộ cài Linux đặt ⟹ sang Mac phiên
-// codex mở ra không có luật. Nghiệm thu khi ấy là «model chép lại khối khởi động» — đo
-// NGỮ CẢNH, không đo MÀN: màn codex chỉ in hook qua `systemMessage`, chưa từng đặt.
-// Nay: khâu chung `scripts/mo-dau-phien.py` (mọi CLI), đường tính từ gốc workspace.
-
-/// Dựng + KIỂM tường của một hàng codex, trả câu nói được cho người. Gọi trước
-/// MỌI lượt mở phiên codex. `Err` ⟹ KHÔNG được mở.
-///
-/// Kiểm HAI CHIỀU mỗi lượt (luật «cổng phải đỏ được»): cổng xét một lệnh CẤM phải
-/// ra 2, một lệnh thường phải ra 0. Một cổng lúc nào cũng 0 (hỏng im) hay lúc nào
-/// cũng 2 (chặn hết) đều bị bắt ở đây, trước khi có cửa sổ nào.
-///
-/// 🔴 Quang 14/11: *«soạn luật đầu tiên cho phiên + mcp tool là bắt buộc trước khi
-/// dán vào ngữ cảnh»*. Trước khi dựng gì, chạy khâu chung [`mo_dau_script`]
-/// `--kiem` với ĐÚNG `CODEX_HOME` và ĐÚNG binary MCP sẽ gắn vào phiên: xác định
-/// được tài khoản · có luật gốc + `phien.sh` · MCP bắt tay thật ra ≥ 1 công cụ.
-/// Thiếu một ⟹ `Err`, không mở.
-pub fn ensure_codex_wall(acc: &ClaudeAccountCfg, goc: &Path) -> Result<String, String> {
-    let home = codex_home(acc);
-    std::fs::create_dir_all(&home)
-        .map_err(|e| format!("không tạo được CODEX_HOME {}: {e}", home.display()))?;
-    if !home.join("auth.json").is_file() {
-        return Err(format!(
-            "{} chưa đăng nhập ChatGPT — /accounts {} -l",
-            acc.name, acc.name
-        ));
-    }
-    let gate = codex_gate();
-    if !gate.is_file() {
-        return Err(format!("thiếu cổng bảo mật {}", gate.display()));
-    }
-    let mo_dau = mo_dau_script();
-    if goc.as_os_str().is_empty() || !mo_dau.is_file() {
-        return Err(format!(
-            "không có khâu soạn đoạn mở đầu {} — KHÔNG mở phiên (luật + MCP là bắt buộc)",
-            mo_dau.display()
-        ));
-    }
-    let mcp = codex_mcp_bin(goc);
-    let kiem = std::process::Command::new("python3")
-        .arg(&mo_dau)
-        .args(["--cli", "codex", "--kiem", "--goc"])
-        .arg(goc)
-        .args(["--mcp", &mcp])
-        .env("CODEX_HOME", &home)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("không chạy được {}: {e}", mo_dau.display()))?;
-    let noi = String::from_utf8_lossy(&kiem.stdout).trim().to_string();
-    if !kiem.status.success() {
-        crate::logging::error(
-            "codex_mo_dau_thieu",
-            json!({ "account": acc.name, "code": kiem.status.code(), "out": noi }),
-        );
-        return Err(format!(
-            "đoạn mở đầu phiên thiếu khâu bắt buộc — KHÔNG mở phiên:\n{noi}"
-        ));
-    }
-    // Bản cũ (`44d6bd8`) ghi script nạp luật vào CODEX_HOME — nay hook gọi khâu chung.
-    let cu = home.join("huba-nap-luat.py");
-    if cu.is_file() {
-        if let Err(e) = std::fs::remove_file(&cu) {
-            crate::logging::warn(
-                "codex_nap_luat_cu_con",
-                json!({ "path": cu.display().to_string(), "err": e.to_string() }),
-            );
-        }
-    }
-    let want = serde_json::to_string_pretty(&codex_hooks_json(&gate, Some(goc), &mcp))
-        .map_err(|e| format!("không dựng được hooks.json: {e}"))?;
-    let p = home.join("hooks.json");
-    let co = std::fs::read_to_string(&p).ok();
-    if co.as_deref() != Some(want.as_str()) {
-        if co.is_some() {
-            crate::logging::warn(
-                "codex_hooks_overwritten",
-                json!({ "account": acc.name, "path": p.display().to_string(),
-                        "why": "hooks.json khác bản tường của huba — ghi đè (CODEX_HOME do huba quản)" }),
-            );
-        }
-        std::fs::write(&p, &want).map_err(|e| format!("không ghi được {}: {e}", p.display()))?;
-    }
-    let thu = |lenh: &str| -> Result<i32, String> {
-        let payload = json!({ "tool_name": "Bash", "tool_input": { "command": lenh },
-                              "session_id": "huba-kiem-tuong" })
-        .to_string();
-        let mut c = std::process::Command::new("python3")
-            .arg(&gate)
-            .arg("--codex-pretooluse")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| format!("không chạy được cổng: {e}"))?;
-        if let Some(mut si) = c.stdin.take() {
-            use std::io::Write;
-            si.write_all(payload.as_bytes())
-                .map_err(|e| format!("không gửi được payload thử cho cổng: {e}"))?;
-        }
-        let st = c.wait().map_err(|e| format!("cổng không trả lời: {e}"))?;
-        Ok(st.code().unwrap_or(-1))
-    };
-    let cam = thu("sudo true")?;
-    let thuong = thu("echo huba-kiem-tuong")?;
-    if cam != 2 || thuong != 0 {
-        crate::logging::error(
-            "codex_wall_check_failed",
-            json!({ "account": acc.name, "gate": gate.display().to_string(),
-                    "lenh_cam": cam, "lenh_thuong": thuong }),
-        );
-        return Err(format!(
-            "cổng bảo mật trả sai khi kiểm (lệnh cấm ⟹ {cam}, cần 2 · lệnh thường ⟹ {thuong}, cần 0) — KHÔNG mở phiên"
-        ));
-    }
-    Ok(format!(
-        "tường: sandbox workspace-write (không mạng) + hook cổng {} (đã kiểm: cấm ⟹ chặn, thường ⟹ qua)\n{noi}",
-        gate.display()
-    ))
-}
-
-/// Dòng lệnh ĐĂNG NHẬP ChatGPT cho một hàng codex — luồng mã thiết bị
-/// (`login --device-auth`): CLI in một đường dẫn + một mã dùng một lần, người
-/// mở đường dẫn trên ĐIỆN THOẠI rồi gõ mã; CLI tự hỏi máy chủ tới khi xong.
-/// Không có mã nào phải chép NGƯỢC về máy (khác `claude auth login`).
-pub fn codex_login_line(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
-    format!("{} login --device-auth", codex_base_line(cfg, acc))
 }
 
 /// Bốn `XDG_*=$HOME/.opencode-<tên>/…` của một hàng opencode — MỘT nguồn cho dòng mở phiên,
@@ -731,12 +318,6 @@ fn opencode_xdg_assigns(acc: &ClaudeAccountCfg) -> Vec<String> {
     .collect()
 }
 
-/// Provider có luồng ĐĂNG NHẬP của một hàng opencode, suy từ tiền tố `model`.
-/// `None` = hàng không phải opencode, hoặc chạy khoá API (`env_file`) — không có gì để đăng nhập.
-///
-/// 📐 Đo 15/11 (opencode 2.2.7): `auth login openai` có `chatgpt-headless` = mã thiết bị
-/// (`https://auth.openai.com/codex/device`), CLI tự hỏi máy chủ, không chép gì NGƯỢC về máy.
-/// Chỉ `openai` được đo ⟹ chỉ `openai` được nhận; provider khác thêm khi đã đo luồng của nó.
 pub fn opencode_login_provider(acc: &ClaudeAccountCfg) -> Option<&'static str> {
     if !acc.is_opencode() {
         return None;
@@ -773,261 +354,6 @@ pub fn opencode_auth_list_line(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
     parts.join(" ")
 }
 
-/// Email ChatGPT của một hàng codex — claim `email` trong `tokens.id_token`
-/// (JWT) của `CODEX_HOME/auth.json`. Đo 14/11 (codex-cli 0.169.0): có `email`
-/// và `email_verified`. Chỉ đọc PHẦN THÂN của JWT, không kiểm chữ ký — đây là
-/// nhãn để người đọc biết acc nào là ai, không phải một phép xác thực.
-/// `None` = chưa đăng nhập (không có tệp) hoặc đọc hỏng — hỏng thì GHI LOG.
-pub fn codex_email(acc: &ClaudeAccountCfg) -> Option<String> {
-    let email = codex_claims(acc)?
-        .get("email")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .filter(|e| !e.is_empty());
-    if email.is_none() {
-        crate::logging::warn(
-            "codex_email_not_found",
-            json!({ "account": acc.name,
-                    "why": "auth.json có nhưng không đọc ra claim email trong tokens.id_token" }),
-        );
-    }
-    email
-}
-
-/// Phần thân (claims) của `tokens.id_token` trong `CODEX_HOME/auth.json`. `None` =
-/// chưa đăng nhập (không có tệp, im) hoặc đọc hỏng (GHI LOG). Không kiểm chữ ký.
-pub fn codex_claims(acc: &ClaudeAccountCfg) -> Option<Value> {
-    use base64::Engine;
-    let p = codex_home(acc).join("auth.json");
-    let text = match std::fs::read_to_string(&p) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(e) => {
-            crate::logging::warn(
-                "codex_auth_unreadable",
-                json!({ "account": acc.name, "path": p.display().to_string(), "err": e.to_string() }),
-            );
-            return None;
-        }
-    };
-    let claims = serde_json::from_str::<Value>(&text)
-        .ok()
-        .and_then(|v| {
-            v.pointer("/tokens/id_token")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .and_then(|jwt| jwt.split('.').nth(1).map(str::to_string))
-        .and_then(|body| {
-            base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .decode(body.trim_end_matches('='))
-                .ok()
-        })
-        .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok());
-    if claims.is_none() {
-        crate::logging::warn(
-            "codex_claims_unreadable",
-            json!({ "account": acc.name, "path": p.display().to_string(),
-                    "why": "auth.json có nhưng không giải được tokens.id_token" }),
-        );
-    }
-    claims
-}
-
-/// Bản đọc `rate_limits` MỚI NHẤT trong nhật ký phiên codex
-/// (`CODEX_HOME/sessions/**/rollout-*.jsonl`, dòng `payload.type = token_count`)
-/// kèm `timestamp` của dòng ấy. Đo 14/11 (codex-cli 0.169.0, acc10): `primary`
-/// `window_minutes 10080` (tuần) `used_percent 7.0` `resets_at` (giây epoch),
-/// `secondary: null`, `plan_type: "prolite"`.
-///
-/// `Ok(None)` = chưa có lượt nào ghi hạn mức (chưa chạy phiên nào) — KHÁC với
-/// `Err` (đọc thư mục/tệp hỏng). Số này do CHÍNH codex ghi ở lượt gần nhất: cũ
-/// bao nhiêu thì khai bấy nhiêu ([`codex_han_muc_say`] in tuổi).
-pub fn codex_rate_limits(acc: &ClaudeAccountCfg) -> Result<Option<(Value, String)>, String> {
-    let goc = codex_home(acc).join("sessions");
-    let mut tep = Vec::new();
-    let mut ngan = vec![goc.clone()];
-    while let Some(d) = ngan.pop() {
-        let it = match std::fs::read_dir(&d) {
-            Ok(it) => it,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound && d == goc => return Ok(None),
-            Err(e) => return Err(format!("không đọc được {}: {e}", d.display())),
-        };
-        for en in it {
-            let en = en.map_err(|e| format!("không đọc được {}: {e}", d.display()))?;
-            let p = en.path();
-            match en
-                .file_type()
-                .map_err(|e| format!("không đọc được {}: {e}", p.display()))?
-            {
-                t if t.is_dir() => ngan.push(p),
-                t if t.is_file() && p.extension().and_then(|x| x.to_str()) == Some("jsonl") => {
-                    tep.push(p);
-                }
-                _ => {}
-            }
-        }
-    }
-    // Fork chép lại sự kiện cũ vào file có mtime mới. So timestamp sự kiện,
-    // trên TẤT CẢ file; giới hạn 8 file theo mtime từng bỏ mất bản đo mới nhất.
-    use std::io::BufRead;
-    let mut newest: Option<(i64, Value, String)> = None;
-    for p in &tep {
-        let file =
-            std::fs::File::open(p).map_err(|e| format!("không đọc được {}: {e}", p.display()))?;
-        for dong in std::io::BufReader::new(file).lines() {
-            let dong = dong.map_err(|e| format!("không đọc được {}: {e}", p.display()))?;
-            if !dong.contains("\"rate_limits\"") {
-                continue;
-            }
-            let Ok(v) = serde_json::from_str::<Value>(&dong) else {
-                continue;
-            };
-            if v.pointer("/payload/type").and_then(Value::as_str) != Some("token_count") {
-                continue;
-            }
-            let rl = v
-                .pointer("/payload/rate_limits")
-                .cloned()
-                .unwrap_or(Value::Null);
-            if rl.is_object() {
-                let ts = v
-                    .get("timestamp")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let time = chrono::DateTime::parse_from_rfc3339(&ts)
-                    .map_err(|_| format!("mốc đo hạn mức codex hỏng: {}", p.display()))?
-                    .timestamp_millis();
-                if newest.as_ref().is_none_or(|n| time > n.0) {
-                    newest = Some((time, rl, ts));
-                }
-            }
-        }
-    }
-    Ok(newest.map(|(_, rl, ts)| (rl, ts)))
-}
-
-/// Câu hạn mức codex cho người đọc. Hàm THUẦN (`now_ms`, múi giờ máy cho mốc reset).
-/// `tuần 7% · ↻ 11:31 21/11 · gói prolite · đo 3 phút trước`.
-pub fn codex_han_muc_say(rl: &Value, ts: &str, now_ms: i64) -> String {
-    let cua = |k: &str| -> Option<String> {
-        let w = rl.get(k)?;
-        let phut = w.get("window_minutes").and_then(Value::as_i64)?;
-        let dung = w.get("used_percent").and_then(Value::as_f64)?;
-        let ten = match phut {
-            300 => "5 tiếng".to_string(),
-            10080 => "tuần".to_string(),
-            m if m % 1440 == 0 => format!("{} ngày", m / 1440),
-            m if m % 60 == 0 => format!("{} tiếng", m / 60),
-            m => format!("{m} phút"),
-        };
-        let reset = w
-            .get("resets_at")
-            .and_then(Value::as_i64)
-            .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
-            .map(|t| {
-                format!(
-                    " ↻ {}",
-                    t.with_timezone(&chrono::Local).format("%H:%M %d/%m")
-                )
-            })
-            .unwrap_or_default();
-        Some(format!("{ten} {dung:.0}%{reset}"))
-    };
-    let mut phan: Vec<String> = ["primary", "secondary"]
-        .iter()
-        .filter_map(|k| cua(k))
-        .collect();
-    if phan.is_empty() {
-        phan.push("không có cửa sổ hạn mức nào trong bản ghi".to_string());
-    }
-    if rl
-        .get("rate_limit_reached_type")
-        .is_some_and(|v| !v.is_null())
-    {
-        phan.push("⛔ ĐÃ KỊCH TRẦN".to_string());
-    }
-    if let Some(g) = rl.get("plan_type").and_then(Value::as_str) {
-        phan.push(format!("gói {g}"));
-    }
-    let tuoi = chrono::DateTime::parse_from_rfc3339(ts)
-        .ok()
-        .map(|t| (now_ms - t.timestamp_millis()).max(0) / 60_000)
-        .map(|p| match p {
-            0 => "đo vừa xong".to_string(),
-            p if p < 120 => format!("đo {p} phút trước"),
-            p if p < 2880 => format!("đo {} tiếng trước", p / 60),
-            p => format!("đo {} ngày trước", p / 1440),
-        })
-        .unwrap_or_else(|| "không rõ lúc đo".to_string());
-    phan.push(tuoi);
-    phan.join(" · ")
-}
-
-/// Hai dòng thông tin của một hàng codex cho `/accounts` (danh sách + chi tiết):
-/// danh tính (email · gói · hạn thuê bao) và hạn mức. Không bao giờ in token.
-pub fn codex_info_lines(acc: &ClaudeAccountCfg, now_ms: i64) -> Vec<String> {
-    let mut out = Vec::new();
-    match codex_claims(acc) {
-        None => out.push(format!(
-            "đăng nhập: CHƯA (hoặc auth.json hỏng) — /accounts {} -l",
-            acc.name
-        )),
-        Some(c) => {
-            let auth = c.get("https://api.openai.com/auth");
-            let s = |k: &str| {
-                auth.and_then(|a| a.get(k))
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            };
-            let mut d = vec![c
-                .get("email")
-                .and_then(Value::as_str)
-                .unwrap_or("(không có email)")
-                .to_string()];
-            if let Some(g) = s("chatgpt_plan_type") {
-                d.push(format!("gói {g}"));
-            }
-            if let Some(h) = s("chatgpt_subscription_active_until") {
-                d.push(format!("thuê bao tới {}", h.get(..10).unwrap_or(&h)));
-            }
-            out.push(format!("ChatGPT: {}", d.join(" · ")));
-        }
-    }
-    match codex_rate_limits(acc) {
-        Ok(Some((rl, ts))) => out.push(format!("hạn mức: {}", codex_han_muc_say(&rl, &ts, now_ms))),
-        Ok(None) => out.push(
-            "hạn mức: chưa có số — codex ghi sau lượt chạy đầu tiên của một phiên".to_string(),
-        ),
-        Err(e) => {
-            crate::logging::warn(
-                "codex_rate_limits_unreadable",
-                json!({ "account": acc.name, "err": e }),
-            );
-            out.push(format!("hạn mức: KHÔNG ĐỌC ĐƯỢC — {e}"));
-        }
-    }
-    out
-}
-
-/// `CODEX_HOME=<thư mục> <codex_cli>` — gốc cho `login …`; KHÔNG mang `extra_args` của phiên.
-pub fn codex_base_line(cfg: &Config, acc: &ClaudeAccountCfg) -> String {
-    format!(
-        "{} {}",
-        assign_path("CODEX_HOME", &codex_home(acc).to_string_lossy()),
-        path_token(&cfg.codex_cli)
-    )
-}
-
-/// Bộ chặn quyền cho opencode, suy từ CHÍNH `DENIED_TOOLS` của huba.
-///
-/// Một nguồn duy nhất: danh sách Claude ở `sessions.rs` là thứ `/new` vẫn dùng;
-/// nếu nó đổi mà bản opencode không đổi thì cửa sổ mở bằng hai CLI sẽ có hai
-/// bức tường khác nhau. Phép biến đổi:
-/// * `Bash(git push:*)` → shell pattern `git push *` (opencode V1: `permission.bash`).
-/// * `Bash(*deploy*)`   → shell pattern `*deploy*` (đã là pattern).
-/// * `WebFetch`/`WebSearch` → `webfetch`/`websearch: deny`.
 fn opencode_permission_wall() -> Value {
     let mut bash = serde_json::Map::new();
     bash.insert("*".to_string(), json!("allow"));
@@ -1460,9 +786,6 @@ pub fn launch_line(cfg: &Config, acc: Option<&ClaudeAccountCfg>) -> String {
     if acc.is_opencode() {
         return opencode_launch_line(cfg, acc);
     }
-    if acc.is_codex() {
-        return codex_launch_line(cfg, acc);
-    }
     let dir = some(&acc.config_dir);
     if structured_fields(acc).is_empty() {
         return match dir {
@@ -1581,13 +904,6 @@ pub fn launch_line_ps(cfg: &Config, acc: Option<&ClaudeAccountCfg>) -> String {
     if acc.is_opencode() {
         return opencode_launch_line_ps(cfg, acc);
     }
-    if acc.is_codex() {
-        return format!(
-            "$env:CODEX_HOME = {}; & {}",
-            ps_quote(&codex_home(acc).to_string_lossy()),
-            ps_quote(&cfg.codex_cli)
-        );
-    }
     let dir = some(&acc.config_dir);
     if structured_fields(acc).is_empty() {
         return match dir {
@@ -1693,12 +1009,6 @@ pub fn env_for_child(acc: &ClaudeAccountCfg) -> Vec<(String, Option<String>)> {
     if acc.is_opencode() {
         return opencode_env_for_child(acc);
     }
-    if acc.is_codex() {
-        return vec![(
-            "CODEX_HOME".to_string(),
-            Some(codex_home(acc).display().to_string()),
-        )];
-    }
     let dir = some(&acc.config_dir).map(|d| expand_home(Path::new(d)).display().to_string());
     let mut out = vec![("CLAUDE_CONFIG_DIR".to_string(), dir)];
     if let Some(b) = some(&acc.base_url) {
@@ -1799,15 +1109,6 @@ pub fn settings_patch(acc: &ClaudeAccountCfg) -> SettingsPatch {
             set: Vec::new(),
             unsupported: vec![
                 "opencode: cấu hình runtime đi qua OPENCODE_CONFIG_CONTENT, không dùng settings.json"
-                    .to_string(),
-            ],
-        };
-    }
-    if acc.is_codex() {
-        return SettingsPatch {
-            set: Vec::new(),
-            unsupported: vec![
-                "codex: cấu hình nằm ở CODEX_HOME/config.toml của codex, không dùng settings.json"
                     .to_string(),
             ],
         };
@@ -1940,13 +1241,11 @@ pub enum AccountWrite {
 pub fn upsert_account(cfg: &Config, row: ClaudeAccountCfg) -> Result<AccountWrite, String> {
     validate_row(&row.name)?;
     if let Some(cli) = some(&row.cli) {
-        if !["claude", "opencode", "codex"]
+        if !["claude", "opencode"]
             .iter()
             .any(|k| cli.eq_ignore_ascii_case(k))
         {
-            return Err(format!(
-                "CLI `{cli}` không hợp lệ (chỉ claude/opencode/codex)"
-            ));
+            return Err(format!("CLI `{cli}` không hỗ trợ (chỉ claude/opencode)"));
         }
     }
     if let Some(v) = &row.opencode_config {
@@ -2068,12 +1367,6 @@ pub fn ensure_dirs(acc: &ClaudeAccountCfg) -> Result<Vec<String>, String> {
             notes.push(format!("phân vùng opencode: {}", p.display()));
         }
         return Ok(notes);
-    }
-    if acc.is_codex() {
-        let p = codex_home(acc);
-        std::fs::create_dir_all(&p)
-            .map_err(|e| format!("không tạo được thư mục {}: {e}", p.display()))?;
-        return Ok(vec![format!("CODEX_HOME: {}", p.display())]);
     }
     if acc.config_dir.as_deref().unwrap_or("").trim().is_empty() {
         return Err(
@@ -2473,8 +1766,6 @@ pub fn probe(acc: &ClaudeAccountCfg, quota: Option<Quota>) -> Probe {
 
     let dir = if acc.is_opencode() {
         opencode_profile_dir(acc)
-    } else if acc.is_codex() {
-        codex_home(acc)
     } else {
         crate::api_key::thu_muc(acc)
     };
@@ -2544,12 +1835,6 @@ pub fn probe(acc: &ClaudeAccountCfg, quota: Option<Quota>) -> Probe {
             Ok(n) => (Some(n), None),
             Err(e) => (None, Some(e)),
         }
-    } else if acc.is_codex() {
-        // KHÔNG ĐO ĐƯỢC ≠ 0 phiên: huba chưa có bộ đọc phiên codex.
-        (
-            None,
-            Some("huba chưa đọc được phiên codex (chưa có bộ liệt kê)".to_string()),
-        )
     } else {
         (None, None)
     };
@@ -2594,9 +1879,6 @@ pub fn checks(acc: &ClaudeAccountCfg, p: &Probe) -> Vec<Check> {
     if acc.is_opencode() {
         return checks_opencode(acc, p);
     }
-    if acc.is_codex() {
-        return checks_codex(acc, p);
-    }
     vec![
         check_dir(p),
         check_projects(p),
@@ -2619,42 +1901,6 @@ fn checks_opencode(acc: &ClaudeAccountCfg, p: &Probe) -> Vec<Check> {
         check_opencode_model(acc),
         check_opencode_config(acc),
         check_launch(acc),
-        check_live(p),
-    ]
-}
-
-/// Chẩn đoán cho một hàng `codex`: thư mục `CODEX_HOME` · đăng nhập (có
-/// `auth.json` — tệp `codex login` ghi, đo 14/11 codex-cli 0.169.0) · phiên.
-/// Đọc đĩa, không chạy tiến trình — `codex login status` là việc của
-/// `/accounts <tên>` ([`crate::runtime::auth_status_run`]).
-fn checks_codex(acc: &ClaudeAccountCfg, p: &Probe) -> Vec<Check> {
-    let auth = Path::new(&p.dir).join("auth.json");
-    let co = auth.is_file();
-    vec![
-        Check {
-            code: "codex_home",
-            state: if p.dir_exists {
-                CheckState::Ok
-            } else {
-                CheckState::Fail
-            },
-            text: if p.dir_exists {
-                format!("CODEX_HOME: {}", p.dir)
-            } else {
-                format!("CODEX_HOME CHƯA có (codex từ chối chạy): {}", p.dir)
-            },
-            path: p.dir.clone(),
-        },
-        Check {
-            code: "login",
-            state: if co { CheckState::Ok } else { CheckState::Fail },
-            text: if co {
-                "có auth.json (đã đăng nhập ChatGPT)".to_string()
-            } else {
-                format!("chưa đăng nhập — /accounts {} -l", acc.name)
-            },
-            path: auth.display().to_string(),
-        },
         check_live(p),
     ]
 }

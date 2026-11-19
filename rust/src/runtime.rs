@@ -208,11 +208,6 @@ pub fn account_detail_say(
     // đọc ra một câu, không phải hai (luật 11b).
     let lam_probe = |quota: Option<crate::quota::Quota>| {
         let mut p = crate::accounts::probe(&acc, quota);
-        // codex: huba chưa liệt kê phiên codex ⟹ giữ nguyên câu KHÔNG ĐO ĐƯỢC của
-        // `probe`, đừng đè thành "0 phiên".
-        if acc.is_codex() {
-            return p;
-        }
         p.live_sessions = Some(
             live.sessions
                 .iter()
@@ -458,25 +453,6 @@ pub fn account_detail_text_voi_probe(
             acc.model.as_deref().unwrap_or("(chưa khai)"),
             crate::accounts::opencode_profile_dir(acc).display()
         ));
-    } else if acc.is_codex() {
-        // Đọc ĐĨA, không chạy tiến trình: danh tính từ `auth.json` (id_token), hạn
-        // mức từ nhật ký phiên codex (Quang 14/11 «chưa lấy được thông tin gì»).
-        let home = crate::accounts::codex_home(acc);
-        out.push_str(&format!(
-            "CLI: codex · effort {} · CODEX_HOME: {}\n",
-            acc.effort
-                .as_deref()
-                .unwrap_or(crate::accounts::CODEX_EFFORT_MAC_DINH),
-            home.display()
-        ));
-        for l in crate::accounts::codex_info_lines(acc, now_ms) {
-            out.push_str(&l);
-            out.push('\n');
-        }
-        out.push_str(&format!(
-            "mở phiên: /new {} [-s dự án] — cửa sổ có tường (sandbox + cổng lệnh cấm), MCP codetrail\n",
-            acc.name
-        ));
     } else {
         match id {
             Ok(i) => {
@@ -538,13 +514,6 @@ pub fn account_detail_text_voi_probe(
                 ));
             }
         }
-    }
-    // codex: dòng hạn mức của chính nó đã in ở khối trên — sổ Claude không có gì.
-    if let Some(q) = quota.filter(|_| !acc.is_codex()) {
-        out.push_str(&format!(
-            "hạn mức: {}\n",
-            q.say_cho(now_ms, acc.is_claude())
-        ));
     }
     if let Some(l) = do_lai_line(usage_row, quota.and_then(|q| q.fetched_at_ms), now_ms) {
         out.push_str(&l);
@@ -700,22 +669,10 @@ pub fn accounts_text_voi_email(
             // *"không có phiên nào"* và *"phiên gần nhất … 187 tiếng trước"* cạnh
             // nhau thành mâu thuẫn.
             match mine.len() {
-                // codex: huba chưa có bộ liệt kê ⟹ «0» là phép đo chưa từng chạy.
-                _ if acc.is_codex() => "phiên: huba chưa đọc được".to_string(),
                 0 => "không có phiên nào đang chạy".to_string(),
                 n => format!("{n} phiên: {}", nhan_du_an_phien(&mine)),
             }
         ));
-        // codex: nói nó LÀ GÌ ngay dưới tên + gói + hạn mức của CHÍNH codex (nhật ký
-        // phiên) — sổ Claude không có gì về nó.
-        if acc.is_codex() {
-            out.push_str(&format!("    🤖 codex · mở: /new {}\n", acc.name));
-            for l in crate::accounts::codex_info_lines(acc, now_ms) {
-                out.push_str(&format!("    {l}\n"));
-            }
-        }
-        // 🔒 Ngay dưới tên, trước mọi con số: tài khoản khoá thì hạn mức bên dưới
-        // chỉ còn là thông tin, không còn là lý do để chọn nó.
         if acc.locked {
             out.push_str(&format!(
                 "    🔒 ĐANG KHOÁ — huba không tự chọn, không tự mở phiên, không tự dò /usage · đo lại: /accounts {0} · mở: /accounts {0} -a\n",
@@ -761,10 +718,7 @@ pub fn accounts_text_voi_email(
         // Ranh giới tệp này tự đặt cho mình — *"phần dựng câu, tách khỏi phần đi
         // đo"* — vốn đã kể tên `usage` và `quotas` là hai thứ phải truyền vào.
         // Nó bỏ sót THỜI GIAN, mà thời gian cũng là một phép đo đi ra ngoài.
-        let q_acc = quotas
-            .iter()
-            .find(|q| q.account == acc.name)
-            .filter(|_| !acc.is_codex());
+        let q_acc = quotas.iter().find(|q| q.account == acc.name);
         if let Some(q) = q_acc {
             out.push_str(&format!(
                 "    hạn mức: {}\n",
@@ -1095,9 +1049,6 @@ pub fn usage_lam_moi(cfg: &Config, db: &Db, cu_ms: i64) -> Value {
         .filter(|a| crate::api_key::nhan(&crate::api_key::thu_muc(a)).is_some())
         .map(|a| a.name.clone())
         .collect();
-    // opencode không có `claude -p /usage`; dò bằng dòng lệnh của nó là chạy
-    // `opencode -p /usage` (trong opencode `-p` là password) — nói không.
-    // codex cũng vậy: không có `/usage` của Claude.
     let oc: Vec<String> = accounts
         .iter()
         .filter(|a| !a.is_claude())
@@ -1583,14 +1534,6 @@ fn auth_block(cfg: &Config) -> Value {
                 acc.name.clone(),
                 json!({ "opencode": true,
                         "err": "opencode: không có OAuth Claude — kiểm bằng /accounts" }),
-            );
-            continue;
-        }
-        if acc.is_codex() {
-            map.insert(
-                acc.name.clone(),
-                json!({ "codex": true,
-                        "err": "codex: không có OAuth Claude — kiểm bằng /accounts" }),
             );
             continue;
         }

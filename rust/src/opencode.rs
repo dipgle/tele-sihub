@@ -534,21 +534,6 @@ fn fetch_go_limits(acc: &ClaudeAccountCfg) -> Result<GoLimits, String> {
     parse_go_limits(&body)
 }
 
-// ── Hạn mức ChatGPT của hàng opencode đăng nhập ChatGPT ──────────────────────
-//
-// 🔴 Hà 15/11: *«/accounts chưa hiện thông tin sử dụng»* · chọn B (hỏi thẳng máy chủ).
-// opencode KHÔNG lưu và KHÔNG hỏi hạn mức ChatGPT (đo 15/11: kho phiên/sự kiện/nhật ký
-// không có `used_percent`; mã opencode 2.2.7 không gọi `/wham/usage`). codex hỏi
-// `GET https://chatgpt.com/backend-api/wham/usage` (đường trong mã codex-cli 0.169).
-// Đo THẬT 15/11 bằng token acc9: HTTP 200, `plan_type:"prolite"`,
-// `rate_limit.primary_window = {used_percent:46, limit_window_seconds:604800,
-// reset_after_seconds, reset_at:<giây>}`, `secondary_window:null`,
-// `rate_limit_reached_type:null`. Token đọc CHỈ-ĐỌC từ kho của chính opencode
-// (`credential.value` = `{type:"oauth", access, refresh, expires, metadata.accountID}`),
-// chỉ gửi tới `chatgpt.com` — đúng nơi opencode vẫn gửi — và KHÔNG vào log.
-// huba không tự làm mới token (ghi vào kho của CLI khác) — hết hạn thì nói ra.
-
-/// Cửa hạn mức ChatGPT (codex dùng cùng cửa này).
 pub const CHATGPT_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 
 type ChatgptCache = BTreeMap<String, (i64, Result<Value, String>)>;
@@ -557,9 +542,6 @@ static CHATGPT_CACHE: std::sync::OnceLock<std::sync::Mutex<ChatgptCache>> =
 /// Tuổi tối đa của bản đọc nhớ — cùng nhịp với gói Go.
 pub const CHATGPT_CACHE_MS: i64 = 5 * 60_000;
 
-/// Thân `/wham/usage` → khuôn `rate_limits` của nhật ký codex (`primary`/`secondary`
-/// = `{used_percent, window_minutes, resets_at}`), để dùng CHUNG `quota::codex_quota_tu`.
-/// `None` = thân không có `rate_limit`. THUẦN.
 pub fn wham_sang_rate_limits(body: &Value) -> Option<Value> {
     let rl = body.get("rate_limit").filter(|v| v.is_object())?;
     let cua = |w: &Value| -> Value {
@@ -584,8 +566,6 @@ pub fn wham_sang_rate_limits(body: &Value) -> Option<Value> {
     }))
 }
 
-/// Hạn mức ChatGPT (khuôn codex) của một hàng opencode, hỏi máy chủ (nhớ
-/// [`CHATGPT_CACHE_MS`]). Trả kèm mốc ĐỌC thật.
 pub fn chatgpt_rate_limits(acc: &ClaudeAccountCfg, now_ms: i64) -> (i64, Result<Value, String>) {
     let cache = CHATGPT_CACHE.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()));
     if let Ok(m) = cache.lock() {

@@ -945,23 +945,6 @@ pub fn open_window(cmd: &str) -> Result<(i64, String)> {
 /// `zkey.bash` đọc `ZKEY_MODE=${ZKEY_MODE:-quoted}` lúc nạp ⟹ `off` = phím đi nguyên.
 pub const TAT_BO_GO: &str = "ZKEY_MODE=off";
 
-/// Argv tmux dựng pane (chưa gõ gì) — THUẦN, để bài kiểm khoá được hình dạng.
-///
-/// 🔴 Quang 15/11 (acc10 không mở được, cửa sổ lỗi để lại): lệnh GÕ vào bash tương
-/// tác (`send-keys -l`) đi qua readline ⟹ bộ gõ Telex dòng lệnh (zkey, chế độ
-/// `quoted` — sửa chữ TRONG nháy) viết lại `project_doc_max_bytes` →
-/// `project_doc_mã_bytes`, `PROJECTS_ROOT` → `PROJECTS_RÔT` (codex: «invalid type:
-/// string, expected a map») — và `'Bash(git reset:*)'` → `git rết` trong
-/// `--disallowedTools`: **tường mất `git reset` mà không ai hay**.
-/// Sửa: pane mở với `-e ZKEY_MODE=off` ([`TAT_BO_GO`]), vẫn GÕ như cũ. zkey cũng tự
-/// sửa phía nó (zkey 1335266: chữ dồn trong hàng đợi tty giữ nguyên) — đây là lớp
-/// thứ hai, không dựa vào phỏng đoán «máy gõ hay người gõ» của bộ gõ.
-/// ⛔ ĐÃ ĐO VÀ BỎ: chạy lệnh bằng argv (`bash -lc …; exec bash -l`, như
-/// `acc-mo-vai-linux.py` 4b723ed). Tự kiểm `huba linux-tu-kiem` ĐỎ: `-lc` trần ⟹ tmux
-/// báo `bash` khi con đang chạy (⑤: phiên bận đọc thành RẢNH) + Ctrl+C giết bash cha
-/// ⟹ mất pane (⑥); `-lic` / `set -m` / `trap : INT` vẫn mất pane sau Ctrl+C;
-/// `trap "" INT` sống nhưng con THỪA KẾ việc bỏ qua SIGINT; `--rcfile` sống nhưng tmux
-/// báo `bash` (⑤). Shell tương tác nhận lệnh ở dấu nhắc là hình dạng duy nhất qua cả hai.
 fn lenh_mo_pane(phien: &str, co_phien: bool) -> Vec<String> {
     let khuon = "#{pane_id} #{pane_tty}";
     let mut a: Vec<String> = if co_phien {

@@ -235,30 +235,15 @@ fn real_main() -> Result<()> {
             {
                 anyhow::bail!("không có tài khoản {acc} trong claude_accounts");
             }
-            // codex: ĐÚNG đường `/new` (`sessions::open_codex_window`) — tường + đoạn mở
-            // đầu (luật + MCP) KIỂM TRƯỚC, hỏng ⟹ không in dòng nào. 14/11: lệnh này từng
-            // đi `window_command` của Claude ⟹ dòng codex mang `--permission-mode` /
-            // `--disallowedTools` và chưa qua kiểm.
             if let Some(row) = cfg
                 .claude_accounts_or_ambient()
                 .into_iter()
-                .find(|a| a.name == acc && a.is_codex())
+                .find(|a| a.name == acc && !a.is_supported())
             {
-                let tuong = huba::accounts::ensure_codex_wall(&row, &cfg.workspace_root)
-                    .map_err(|e| anyhow::anyhow!(e))?;
-                eprintln!("{tuong}");
-                let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
-                let mut cmd = format!(
-                    "cd {} && {}",
-                    q(&cfg.workspace_root.to_string_lossy()),
-                    huba::accounts::launch_line(&cfg, Some(&row))
+                anyhow::bail!(
+                    "acc {acc}: CLI `{}` đã bỏ khỏi huba (19/11) — chỉ còn Claude và OpenCode",
+                    row.cli_name()
                 );
-                if let Some(p) = prompt.as_deref().filter(|p| !p.trim().is_empty()) {
-                    cmd.push(' ');
-                    cmd.push_str(&q(p.trim()));
-                }
-                println!("{cmd}");
-                return Ok(());
             }
             // Cùng bước chuẩn bị với `/new` (effort high cho opencode) — xem
             // `sessions::chuan_bi_mo_opencode`.

@@ -364,8 +364,6 @@ pub struct LiveSession {
     pub context_tokens: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Cửa sổ ngữ cảnh do CHÍNH CLI khai (codex: `token_count.info.model_context_window`).
-    /// Có ⇒ thắng bảng đoán `cua_so` — xem [`session_context_window`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
     /// The listed session whose process tree this one hangs off, if any.
@@ -2295,7 +2293,7 @@ fn assistant_label_text(record: &Value) -> Option<String> {
     if record.get("type").and_then(Value::as_str) == Some("assistant") {
         text_of(record)
     } else {
-        crate::codex_sessions::assistant_text(record)
+        None
     }
 }
 
@@ -2593,15 +2591,6 @@ pub fn display_window(model: Option<&str>) -> u64 {
     cua_so(model).1
 }
 
-/// Cửa sổ của MỘT PHIÊN: số CLI tự khai thắng bảng đoán.
-///
-/// 🔴 Quang 14/11: *"có phiên 73% rồi sao vẫn chưa chuyển phiên vậy"* — phiên
-/// codex `01a1d9c0` (acc10) mang 158 049 token, codex khai
-/// `model_context_window = 475 000` (33%), còn huba rơi về bảng đoán 180k/200k
-/// (model `None`, hoặc `gpt-6.1-sol` không có trong bảng) ⇒ điện thoại in 73–79%
-/// và `auto_handover` đã tới `pct = 87` (`auto_handover_held … why: Busy`), chỉ
-/// chờ phiên rảnh là bàn giao oan. Một số CLI tự khai thì không đoán nữa.
-/// `(quyết định, hiển thị)` — codex chỉ khai MỘT số nên hai vế bằng nhau.
 pub fn session_windows(s: &LiveSession) -> (u64, u64) {
     match s.context_window.filter(|n| *n > 0) {
         Some(n) => (n, n),
@@ -3348,9 +3337,6 @@ pub fn state_of(s: &LiveSession) -> (&'static str, &'static str) {
     }
     if s.bg_shell {
         return (ST_BG, "chờ bạn · lệnh nền còn chạy");
-    }
-    if s.kind == "codex" && s.status.as_deref() == Some("unknown") {
-        return (ST_UNKNOWN, "chưa đo được trạng thái");
     }
     (ST_WAIT, "đứng chờ")
 }
@@ -5040,8 +5026,6 @@ pub enum Listed {
 pub fn listed_in_books(cfg: &Config, want: &str) -> Listed {
     let mut blind = Vec::new();
     for account in &cfg.claude_accounts_or_ambient() {
-        // acc opencode không có sổ Claude — sổ của nó là `listed_in_opencode`.
-        // acc codex: chưa có sổ nào huba đọc.
         if !account.is_claude() {
             continue;
         }
@@ -5926,8 +5910,6 @@ fn opencode_live_session(
                 s.project_dir.as_deref().unwrap_or(&s.directory),
             )
         });
-    // Same paired inference as Claude and Codex, AFTER choosing the project.
-    // No special case for `huba/ui` and no inference from a title/user prompt.
     let lane = lane_for_session(&s.id, &s.tail, &ws, head);
     let identity_note = history_error.into_inner().map(|err| {
         format!(
@@ -6068,10 +6050,6 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
     // nhật ký từng phiên.
     let mut ms_ask = 0u128;
     for account in &cfg.claude_accounts_or_ambient() {
-        // 🔴 acc opencode đi khối «opencode: nguồn phiên THỨ HAI» bên dưới. Đo
-        // Ubuntu 13/11: thiếu phép rẽ này thì mỗi vòng spawn `claude agents
-        // --json` với thư mục của acc8 (957/2721 dòng log `claude_books_missing`).
-        // acc codex cũng không có sổ Claude.
         if !account.is_claude() {
             continue;
         }
@@ -6672,13 +6650,6 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
         }
     }
 
-    // ── codex: nguồn phiên THỨ BA ─────────────────────────────────────────
-    //
-    // Không có sổ "ai đang sống": hàng = TUI `codex` còn chạy, ghép với nhật ký
-    // bằng tệp rollout nó đang giữ mở — xem `codex_sessions`. `Err` = KHÔNG ĐO
-    // ĐƯỢC ⟹ `blind`, không phải "0 phiên" (luật 11b).
-    codex_rows(cfg, &procs, &mut out);
-
     // 🔴 Phép đo CHIA KHÚC. Hà 2026-08-14: *"máy khỏe, chỉ phục vụ 1 kênh
     // chat, vài lệnh không liên tục, vậy tại sao lại nghẽn"* — câu ấy không trả
     // lời được bằng `sessions_snapshot_ms`, thứ chỉ in một con số tổng. Và đo
@@ -6734,245 +6705,6 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
     out
 }
 
-/// Hàng `/session` cho mọi tài khoản codex — xem `codex_sessions` cho cách ghép.
-fn codex_rows(cfg: &Config, procs: &Procs, out: &mut SessionsSnapshot) {
-    use crate::codex_sessions as cx;
-    let accounts: Vec<ClaudeAccountCfg> = cfg
-        .claude_accounts_or_ambient()
-        .into_iter()
-        .filter(|a| a.is_codex())
-        .collect();
-    if accounts.is_empty() {
-        return;
-    }
-    if !procs.ok {
-        for a in &accounts {
-            logging::warn(
-                "codex_sessions_blind",
-                json!({ "account": a.name, "why": "không đọc được `ps` — không biết TUI codex nào còn sống" }),
-            );
-            out.blind.push(a.name.clone());
-        }
-        return;
-    }
-    let tuis: Vec<(i64, String)> = procs
-        .by_pid
-        .iter()
-        .filter(|(_, p)| cx::is_codex_tui(&p.command))
-        .map(|(pid, p)| (*pid, p.tty.clone()))
-        .collect();
-    // Đích fd của từng TUI, đọc MỘT lần cho mọi tài khoản. Một pid đọc hỏng ⟹
-    // mọi tài khoản codex đều có thể đang thiếu đúng phiên ấy ⟹ cả nhóm vào
-    // `blind` (vẫn liệt kê các hàng đọc được).
-    let mut fds: Vec<(i64, String, Vec<PathBuf>)> = Vec::new();
-    let mut hong: Vec<String> = Vec::new();
-    for (pid, tty) in tuis {
-        match cx::fd_targets(pid) {
-            Ok(t) => fds.push((pid, tty, t)),
-            Err(e) => hong.push(format!("pid {pid}: {e}")),
-        }
-    }
-    let ws = cfg.workspace_root.to_string_lossy().to_string();
-    for account in &accounts {
-        let home = crate::accounts::codex_home(account);
-        let sessions_dir =
-            std::fs::canonicalize(home.join("sessions")).unwrap_or(home.join("sessions"));
-        if !hong.is_empty() {
-            logging::warn(
-                "codex_fd_unreadable",
-                json!({ "account": account.name, "errs": hong,
-                        "effect": "phiên codex của tiến trình ấy có thể thiếu trên danh sách" }),
-            );
-            out.notes.push(format!(
-                "{} (codex): không đọc được tệp mở của {} tiến trình",
-                account.name,
-                hong.len()
-            ));
-            out.blind.push(account.name.clone());
-        }
-        let index = match std::fs::read_to_string(home.join("session_index.jsonl")) {
-            Ok(s) => s,
-            Err(e) => {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    logging::warn(
-                        "codex_index_unreadable",
-                        json!({"account":account.name,"err":e.to_string()}),
-                    );
-                }
-                String::new()
-            }
-        };
-        let mut count = 0usize;
-        for (pid, tty, targets) in &fds {
-            let path = match cx::rollout_among(targets, &sessions_dir) {
-                Ok(Some(p)) => p,
-                Ok(None) => continue,
-                Err(e) => {
-                    logging::warn(
-                        "codex_root_unreadable",
-                        json!({"account":account.name,"pid":pid,"err":e}),
-                    );
-                    if !out.blind.contains(&account.name) {
-                        out.blind.push(account.name.clone());
-                    }
-                    out.notes.push(format!(
-                        "{} (codex): pid {pid}, chưa xác định được phiên chính",
-                        account.name
-                    ));
-                    continue;
-                }
-            };
-            let head = match cx::first_line(&path, 1 << 20) {
-                Ok(h) => h,
-                Err(e) => {
-                    logging::warn(
-                        "codex_rollout_head_unreadable",
-                        json!({"account":account.name,"pid":pid,"err":e.to_string()}),
-                    );
-                    if !out.blind.contains(&account.name) {
-                        out.blind.push(account.name.clone());
-                    }
-                    continue;
-                }
-            };
-            let tail = match read_tail(&path) {
-                Ok(t) => t,
-                Err(e) => {
-                    logging::warn(
-                        "codex_rollout_read_failed",
-                        json!({ "account": account.name, "path": path.display().to_string(), "err": e.to_string() }),
-                    );
-                    if !out.blind.contains(&account.name) {
-                        out.blind.push(account.name.clone());
-                    }
-                    continue;
-                }
-            };
-            let r = cx::parse_rollout(&head, &tail);
-            // id: từ `session_meta`; dòng đầu hỏng/tràn trần ⟹ từ tên tệp
-            // (`rollout-<mốc>-<uuid>.jsonl`, uuid = 36 ký tự cuối).
-            let id = if r.id.is_empty() {
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(|s| {
-                        s.chars()
-                            .rev()
-                            .take(36)
-                            .collect::<Vec<_>>()
-                            .into_iter()
-                            .rev()
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            } else {
-                r.id.clone()
-            };
-            let last_activity = r.last_ts.clone().or_else(|| mtime_rfc3339(&path));
-            let busy = match cx::turn_busy(&path) {
-                Ok(b) => b,
-                Err(e) => {
-                    logging::warn(
-                        "codex_turn_unreadable",
-                        json!({"account":account.name,"session":id,"err":e}),
-                    );
-                    if !out.blind.contains(&account.name) {
-                        out.blind.push(account.name.clone());
-                    }
-                    continue;
-                }
-            };
-            let (pending_subagents, activity) =
-                match cx::pending_children(targets, &sessions_dir, &id) {
-                    Ok(n) => (n, None),
-                    Err(e) => {
-                        logging::warn(
-                            "codex_children_unreadable",
-                            json!({"account":account.name,"session":id,"err":e}),
-                        );
-                        if !out.blind.contains(&account.name) {
-                            out.blind.push(account.name.clone());
-                        }
-                        (0, Some("subagent: chưa đo được".to_string()))
-                    }
-                };
-            let working = busy == Some(true) || pending_subagents > 0;
-            let prefix = match cx::read_prefix(&path) {
-                Ok(p) => p,
-                Err(e) => {
-                    logging::warn(
-                        "codex_prefix_unreadable",
-                        json!({"account":account.name,"session":id,"err":e.to_string()}),
-                    );
-                    String::new()
-                }
-            };
-            let task = cx::user_task(&prefix);
-            let folder = folder_for_session(&id, &tail, &ws, || folder_declared(&prefix, &ws))
-                .filter(|f| !f.is_empty())
-                .unwrap_or_else(|| folder_from_dir(&cfg.workspace_root, &r.cwd));
-            let lane = lane_for_session(&id, &tail, &ws, || Some(prefix));
-            let name = cx::thread_name(&index, &id)
-                .or(task)
-                .unwrap_or_else(|| "(không tên)".to_string());
-            let doing = if name == "(không tên)" {
-                String::new()
-            } else {
-                cx::task_caption(&name, &folder, &lane)
-            };
-            if let Some(t) = &r.last_text {
-                note_preview_risk("codex_last_text", t);
-            }
-            out.sessions.push(LiveSession {
-                account: account.name.clone(),
-                session_id: id,
-                doing,
-                name,
-                lane,
-                cwd: r.cwd.clone(),
-                folder,
-                kind: "codex".to_string(),
-                host: "terminal".to_string(),
-                pid: *pid,
-                started_at_ms: r.started_ms,
-                last_activity,
-                working,
-                status: Some(
-                    match busy {
-                        Some(true) => "busy",
-                        Some(false) => "idle",
-                        None => "unknown",
-                    }
-                    .to_string(),
-                ),
-                pending_subagents,
-                activity,
-                context_tokens: r.context_tokens,
-                model: r.model.clone().or_else(|| account.model.clone()),
-                context_window: r.context_window,
-                tty: tty.clone(),
-                last_text: r.last_text.clone(),
-                last_role: r.last_role.clone(),
-                note: if r.last_text.is_some() {
-                    None
-                } else {
-                    Some("codex: chưa có lượt assistant nào đọc được trong nhật ký phiên".into())
-                },
-                ..Default::default()
-            });
-            count += 1;
-        }
-        logging::info(
-            "codex_sessions_read",
-            json!({ "account": account.name, "count": count }),
-        );
-    }
-}
-
-/// One thing that happened in a session, in the order it happened.
-///
-/// This is the unit the phone renders to look like a terminal: a sentence, a
-/// command, a command's output, a thought. `kind` is what it was, `text` is
-/// what to show, `detail` is the extra line a command needs (its arguments).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StreamEvent {
     /// "say" · "tool" · "result" · "think"
@@ -7197,40 +6929,8 @@ pub fn find_transcript_any(cfg: &Config, session_id: &str) -> Option<PathBuf> {
         .find_map(|r| find_transcript(r, session_id))
 }
 
-/// Nhật ký xác nhận kết quả tới đúng CLI. Codex dùng fd của root TUI, không
-/// dò khuôn projects/<id>.jsonl của Claude hoặc nhận nhầm rollout agent con.
 pub fn delivery_transcript(cfg: &Config, session: &LiveSession) -> Option<PathBuf> {
-    if session.kind != "codex" {
-        return find_transcript_any(cfg, &session.session_id);
-    }
-    let result = (|| -> std::result::Result<Option<PathBuf>, String> {
-        let account = cfg
-            .claude_accounts_or_ambient()
-            .into_iter()
-            .find(|a| a.name == session.account && a.is_codex())
-            .ok_or_else(|| "không có cấu hình tài khoản Codex".to_string())?;
-        let dir = crate::accounts::codex_home(&account).join("sessions");
-        let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-        let paths = crate::codex_sessions::fd_targets(session.pid)?;
-        let Some(path) = crate::codex_sessions::rollout_among(&paths, &dir)? else {
-            return Ok(None);
-        };
-        let head = crate::codex_sessions::first_line(&path, 1 << 20).map_err(|e| e.to_string())?;
-        if crate::codex_sessions::parse_rollout(&head, "").id != session.session_id {
-            return Err("root TUI đã đổi phiên — không đối chiếu nhật ký của phiên khác".into());
-        }
-        Ok(Some(path))
-    })();
-    match result {
-        Ok(path) => path,
-        Err(e) => {
-            logging::warn(
-                "codex_delivery_journal_unreadable",
-                json!({"session":session.session_id,"err":e}),
-            );
-            None
-        }
-    }
+    find_transcript_any(cfg, &session.session_id)
 }
 
 /// Đường thẳng `<gốc>/projects/<slug>/<id>.jsonl` ở từng gốc — chỉ `stat`,
@@ -7441,21 +7141,6 @@ fn claude_failed(session_id: &str, out: &crate::exec::RunOut) -> anyhow::Error {
 }
 
 fn fork_call(cfg: &Config, session: &LiveSession, prompt: &str) -> Result<ForkReply> {
-    // 🔴 Phiên codex: chưa có đường fork CHỈ-ĐỌC đã đo (luật 2). Trước 14/11 nó rơi
-    // xuống nhánh Claude bên dưới ⇒ `claude --resume <id codex>` dưới
-    // `CLAUDE_CONFIG_DIR` của acc codex — một lời gọi không bao giờ đúng.
-    // Từ chối RÕ (chỗ gọi log + trả câu), không đoán một lệnh codex chưa đo.
-    if session.kind == "codex" {
-        logging::warn(
-            "fork_call_refused",
-            json!({ "session": session.session_id, "account": session.account,
-                    "why": "codex: chưa có fork chỉ-đọc đã đo" }),
-        );
-        anyhow::bail!(
-            "phiên codex chưa hỗ trợ /ask · /handover (chưa có fork chỉ-đọc đã đo) — \
-             hỏi thẳng trong phiên bằng /tell"
-        );
-    }
     if let Some(acc) = cfg
         .claude_accounts_or_ambient()
         .into_iter()
@@ -9392,57 +9077,6 @@ pub fn should_close_old_window(new_session_appeared: bool) -> bool {
 
 /// Chỉ nhận phiên mới đang sống trên ĐÚNG tty vừa mở và đúng tài khoản.
 /// Hai ứng viên hoặc dữ liệu cũ/mù đều không đủ bằng chứng để đóng tiền nhiệm.
-pub fn codex_successor_on_tty<'a>(
-    sessions: &'a [LiveSession],
-    tty: &str,
-    account: &str,
-    old_id: &str,
-    opened_ms: i64,
-) -> Option<&'a str> {
-    let mut found = sessions.iter().filter(|s| {
-        s.kind == "codex"
-            && is_real_tty(&s.tty)
-            && s.tty.trim_start_matches("/dev/") == tty.trim_start_matches("/dev/")
-            && s.account == account
-            && !s.session_id.is_empty()
-            && s.session_id != old_id
-            && s.started_at_ms >= opened_ms
-    });
-    let id = found.next()?.session_id.as_str();
-    found.next().is_none().then_some(id)
-}
-
-fn wait_for_codex_session_id(
-    cfg: &Config,
-    tty: &str,
-    account: &str,
-    old_id: &str,
-    opened_at: std::time::SystemTime,
-) -> Option<String> {
-    let opened_ms = opened_at
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_millis() as i64;
-    for _ in 0..20 {
-        // Chỉ dò TUI trên tty vừa mở; không quét Terminal hay mọi account Claude.
-        let mut procs = Procs::read();
-        procs
-            .by_pid
-            .retain(|_, p| p.tty.trim_start_matches("/dev/") == tty.trim_start_matches("/dev/"));
-        let mut live = SessionsSnapshot::default();
-        codex_rows(cfg, &procs, &mut live);
-        if let Some(id) = codex_successor_on_tty(&live.sessions, tty, account, old_id, opened_ms) {
-            logging::info(
-                "new_session_matched_by_tty",
-                json!({ "session": id, "tty": tty, "cli": "codex" }),
-            );
-            return Some(id.to_string());
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-    None
-}
-
 /// Một lượt phiên TỰ mở kế nhiệm bằng `acc-mo-vai.sh <cây> <brief>`, đọc từ chính
 /// nhật ký của nó. `at_ms` là mốc lệnh được gõ — phiên kế nhiệm sinh SAU mốc ấy.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9679,29 +9313,7 @@ pub fn start_fresh_after_handover(
     // Tên tài khoản lạ KHÔNG rơi về mặc định — `account_launch` đã gác chỗ ấy,
     // và mở nhầm tài khoản là mở nhầm cả kho phiên.
     let dung_acc = acc.unwrap_or(session.account.as_str());
-    // 🤖 Phiên kế nhiệm trên acc CODEX (Quang 15/11 «acc10 vứt cho chó gặm à»): phiên
-    // sau bàn giao trắng ngữ cảnh, chỉ mang bản bàn giao làm đề bài ⟹ CLI nào cũng nhận
-    // được. Đi ĐÚNG cửa `/new <acc codex>` ([`open_codex_window`]: tường + đoạn mở đầu
-    // bắt buộc KIỂM trước). Ghép bằng TUI/rollout trên tty như /session, rồi đi
-    // CHUNG cửa đóng cũ. Không được trả new_id=None cố định cho mọi phiên Codex.
-    let (tty_short, new_id) = if let Some(row) =
-        account_row(cfg, Some(dung_acc)).filter(|a| a.is_codex())
-    {
-        if row.locked && !allow_locked {
-            ensure_account_usable(cfg, Some(dung_acc))?;
-        }
-        let opened_at = std::time::SystemTime::now();
-        let (_w, tty_short, tuong) = open_codex_window(cfg, &row, cwd, &task)?;
-        let new_id =
-            wait_for_codex_session_id(cfg, &tty_short, dung_acc, &session.session_id, opened_at);
-        logging::info(
-            "handover_window_opened",
-            json!({ "tty": tty_short, "session": new_id.clone().unwrap_or_default(), "fresh": true, "cli": "codex",
-                    "acc_cu": session.account, "acc_moi": dung_acc, "doi_acc": true,
-                    "tuong": tuong }),
-        );
-        (tty_short, new_id)
-    } else {
+    let (tty_short, new_id) = {
         if allow_locked {
             logging::info(
                 "account_locked_open_allowed",
@@ -9942,38 +9554,6 @@ pub fn is_opencode_session_id(id: &str) -> bool {
     }
 }
 
-/// `/new <acc codex> [-s dự án] [đề bài]` — mở codex trong một cửa sổ THẬT, sau
-/// tường đã KIỂM ([`crate::accounts::ensure_codex_wall`]). Trả (cửa sổ, tty, câu
-/// tường). `/session` ghép TUI với rollout đang mở bằng tty/fd; bàn giao dùng
-/// cùng phép đo để xác nhận phiên mới trước khi đóng phiên cũ.
-pub fn open_codex_window(
-    cfg: &Config,
-    acc: &ClaudeAccountCfg,
-    dir: &Path,
-    task: &str,
-) -> Result<(i64, String, String)> {
-    let tuong = crate::accounts::ensure_codex_wall(acc, &cfg.workspace_root)
-        .map_err(|e| anyhow::anyhow!(e))?;
-    let mut cmd = format!(
-        "cd {} && {}",
-        shell_quote(&dir.to_string_lossy()),
-        crate::accounts::launch_line(cfg, Some(acc))
-    );
-    if !task.trim().is_empty() {
-        cmd.push(' ');
-        cmd.push_str(&shell_quote(task.trim()));
-    }
-    crate::accounts::tin_truoc_khi_mo(cfg, Some(acc), dir);
-    let (window, tty) = crate::keys::open_window(&cmd)?;
-    let tty_short = tty.trim_start_matches("/dev/").to_string();
-    logging::info(
-        "codex_window_opened",
-        json!({ "account": acc.name, "window": window, "tty": tty_short,
-                "dir": dir.display().to_string(), "task_len": task.trim().len() }),
-    );
-    Ok((window, tty_short, tuong))
-}
-
 pub fn open_bare_terminal() -> Result<(i64, String)> {
     let (window, tty) = crate::keys::open_window(BARE_TERMINAL_CMD)?;
     let tty_short = tty.trim_start_matches("/dev/").to_string();
@@ -10009,23 +9589,23 @@ pub fn ensure_account_usable(cfg: &Config, account: Option<&str>) -> Result<()> 
             );
             anyhow::bail!(account_locked_text(cfg, &n))
         }
-        Some(n) if account_row(cfg, Some(&n)).is_some_and(|a| a.is_codex()) => {
+        Some(n) if account_row(cfg, Some(&n)).is_some_and(|a| !a.is_supported()) => {
+            let cli = account_row(cfg, Some(&n))
+                .map(|a| a.cli_name())
+                .unwrap_or("?");
             logging::warn(
-                "account_codex_refused",
-                json!({ "account": n, "why": CODEX_CHUA_MO_PHIEN }),
+                "cli_unsupported_refused",
+                json!({ "account": n, "cli": cli,
+                        "why": "CLI không còn hỗ trợ — chỉ Claude và OpenCode (Codex bỏ 19/11)" }),
             );
-            anyhow::bail!("⛔ {n}: {CODEX_CHUA_MO_PHIEN}")
+            anyhow::bail!(
+                "⛔ {n}: CLI `{cli}` đã bỏ khỏi huba (19/11) — chỉ còn Claude và OpenCode.\n\
+                 Lịch sử cũ giữ đọc lại."
+            )
         }
         _ => Ok(()),
     }
 }
-
-/// Câu từ chối cho MỌI đường mở phiên KHÁC `/new` trên hàng `codex` (bàn giao,
-/// phiên nền, tự chuyển…). Từ 14/11 phiên codex chỉ mở bằng `/new <acc>`
-/// ([`open_codex_window`]) — đường duy nhất dựng + KIỂM tường (luật 1); các
-/// đường kia dựng dòng lệnh kiểu Claude, chạy codex qua đó là chạy không tường.
-pub const CODEX_CHUA_MO_PHIEN: &str =
-    "Codex đã bỏ khỏi huba (19/11) — chỉ còn Claude và OpenCode; lịch sử cũ giữ đọc lại.";
 
 /// Câu từ chối cho một tài khoản đang khoá — MỘT chỗ dựng, để `/new`,
 /// `/handover`, `huba handover` và cửa [`ensure_account_usable`] nói cùng một
@@ -10034,8 +9614,8 @@ pub fn account_locked_text(cfg: &Config, name: &str) -> String {
     let mo: Vec<&str> = cfg
         .claude_accounts
         .iter()
-        // codex chưa mở phiên được ⟹ không kể là "còn dùng được".
-        .filter(|a| !a.locked && !a.is_codex())
+        // Chỉ kể tài khoản MỞ được: không khoá, và CLI còn hỗ trợ.
+        .filter(|a| !a.locked && a.is_supported())
         .map(|a| a.name.as_str())
         .collect();
     let con = if mo.is_empty() {

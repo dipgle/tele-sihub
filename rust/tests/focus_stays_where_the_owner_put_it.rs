@@ -250,7 +250,9 @@ const NGUON: &str = include_str!("../src/pipeline.rs");
 /// Con số này là một CỔNG, không phải trang trí: thêm một đường đặt con trỏ mà
 /// không sửa số ⟹ đỏ, và người sửa phải nói ra đường mới ấy xuất phát từ lệnh
 /// nào của chủ máy. Đó đúng là câu hỏi Hà đặt ra ngày 03/09.
-const SO_CHO_DAT_CON_TRO: usize = 11;
+// 19/11: 11 → 10 — đường đặt con trỏ sau khi mở cửa sổ codex đã bị xoá cùng Codex
+// (Quang «bỏ hẳn codex đi»). Đây là đường ĐI MẤT, không phải đường mới thêm.
+const SO_CHO_DAT_CON_TRO: usize = 10;
 
 /// Cắt thân một hàm cấp cao nhất: từ dòng khai báo tới dấu `}` ở cột 0.
 ///

@@ -2359,33 +2359,6 @@ fn auto_handover(db: &Db, cfg: &Config, live: &crate::sessions::SessionsSnapshot
         // phải 1M; đoán 1M làm huba bàn giao muộn trong khi CLI đã nén xong).
         let window: u64 = crate::sessions::session_context_window(s);
         let pct = ((s.context_tokens * 100) / window).min(100) as u8;
-        // 🔴 Phiên codex KHÔNG đi đường này (14/11): bàn giao ở đây là
-        // `sessions::handover` → `fork_call`, mà fork chỉ-đọc của codex CHƯA đo
-        // ⇒ `fork_call` từ chối. Chuyển phiên codex do chính phiên làm khi hook
-        // `nhac-chuyen-phien.py` nhắc ở 50% (cùng luật §A22 với Claude). Log chỉ
-        // khi đã qua ngưỡng — thứ duy nhất đáng nói.
-        if s.kind == "codex" {
-            if pct >= cfg.auto_handover.at_percent {
-                crate::logging::info(
-                    "auto_handover_skipped",
-                    json!({ "session": s.session_id, "pct": pct, "kind": s.kind,
-                            "why": "codex: chưa có fork chỉ-đọc — phiên tự chuyển khi hook nhắc" }),
-                );
-            }
-            continue;
-        }
-        // Chỉ đọc màn khi phiên ĐÃ đủ đầy. Mỗi lần đọc là một lần gọi
-        // AppleScript vào Terminal, và đọc cho mọi phiên mỗi vòng đã kéo một
-        // vòng từ ~18 giây lên **90 giây** (đo 2026-08-10) — đủ chậm để một
-        // lệnh gõ từ điện thoại nằm chờ hơn một phút. Phiên còn 5% ngữ cảnh thì
-        // màn của nó không đổi được quyết định nào, nên đừng hỏi.
-        // 🔴 ĐỌC MÀN TỪ ẢNH CHỤP CỦA VÒNG, không hỏi Terminal lần nữa (09/11).
-        // Đo 07–08/11: 665/666 lượt giữ phiên có `keys_screen_read_failed` trong
-        // ±10 s — `terminal_screens()` đã ăn 5,3–17,2 s, vượt ngân sách 10 s
-        // (`keys::PROBE_BUDGET_MS`), nên `screen_of` ở đây bị chặn gần như mọi
-        // lượt. Ảnh chụp ĐÃ mang chữ mọi tab (`SessionsSnapshot::tabs`), nên
-        // đọc từ đó là dùng đúng câu trả lời đã trả giá. `screen_of` chỉ còn là
-        // đường lùi khi cả lượt dò tab hỏng (`live.tabs == None`).
         let screen: Option<crate::keys::Look> = if pct >= cfg.auto_handover.at_percent {
             match live.tabs.as_deref() {
                 // `None` = phiên không có tab Terminal nào = `NoWindow`.
@@ -8107,7 +8080,6 @@ fn chu_nhap_cua_dong(l: &str) -> Option<String> {
                 .and_then(|c| c.as_str())
                 .map(str::to_string)
         }
-        Some("response_item" | "event_msg") => crate::codex_sessions::user_message(&j),
         _ => None,
     }
 }
@@ -8212,13 +8184,6 @@ fn xac_nhan_da_gui(
     line: &str,
 ) -> DanVao {
     let Some((p, tu)) = nhat_ky else {
-        if s.kind == "codex" {
-            logging::warn(
-                "codex_delivery_unverified",
-                json!({"session":s.session_id,"effect":"không có nhật ký để xác nhận, không khai đã gửi"}),
-            );
-            return DanVao::NamTrongO("chưa đo được nhật ký Codex — chưa xác nhận gửi".into());
-        }
         logging::warn(
             "runin_paste_khong_do_duoc_nhat_ky",
             json!({ "session": s.session_id,
@@ -8296,13 +8261,6 @@ fn dan_vao_phien(
     // cho lượt dán NÀY, không phải một lượt cũ cùng lệnh.
     let nhat_ky = crate::sessions::delivery_transcript(cfg, s)
         .and_then(|p| std::fs::metadata(&p).ok().map(|m| (p, m.len())));
-    if s.kind == "codex" && nhat_ky.is_none() {
-        logging::warn(
-            "codex_delivery_held",
-            json!({"session":s.session_id,"effect":"chưa đo được nhật ký, giữ kết quả để thử lại, KHÔNG dán mù"}),
-        );
-        return DanVao::ChuaDan("chưa đo được nhật ký Codex để xác nhận nhận khối".into());
-    }
     match crate::keys::window_of(&s.tty) {
         // Cú Enter rời nằm ở MỘT chỗ (`keys::type_and_send`) — bản chép tay cũ
         // nuốt lỗi bằng `let _ = press(…)`, đúng hình dạng luật 3 cấm.
@@ -8310,13 +8268,6 @@ fn dan_vao_phien(
             Ok(()) => match crate::keys::type_and_send(w, block) {
                 // Màn nói "đã đi" — CHƯA đủ; hỏi nhật ký phiên (xem `xac_nhan_da_gui`).
                 Ok(crate::keys::Delivered::Gone) => xac_nhan_da_gui(
-                    nhat_ky.as_ref().map(|(p, n)| (p.as_path(), *n)),
-                    w,
-                    s,
-                    block,
-                    line,
-                ),
-                Ok(_) if s.kind == "codex" => xac_nhan_da_gui(
                     nhat_ky.as_ref().map(|(p, n)| (p.as_path(), *n)),
                     w,
                     s,
@@ -15792,31 +15743,24 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                             } else {
                                 ""
                             };
-                            // 🤖 codex: đường RIÊNG, trả lời MỘT tin. Ca thật 14/11 14:08:
-                            // `/new acc10` nhận hai tin ngược nhau (từ chối + «Đang mở…»).
-                            // Nay: kiểm tường → mở cửa sổ thật → chuyển con trỏ vào nó.
-                            // Khoá vẫn là khoá (không hỏi mở hộ ở đường này).
-                            // 🤖 Codex ĐÃ BỎ khỏi huba (Quang 19/11 «cái gì liên quan bỏ hết»):
-                            // cửa mở phiên TỪ CHỐI, không mở cửa sổ, không chạy driver.
-                            // Tường/driver codex còn trong mã để gỡ trọn ở lượt riêng (P21).
-                            let codex_tu_choi = account.as_deref().and_then(|a| {
+                            let cli_la_tu_choi = account.as_deref().and_then(|a| {
                                 cfg.claude_accounts
                                     .iter()
-                                    .find(|r| r.name == a && r.is_codex())
+                                    .find(|r| r.name == a && !r.is_supported())
                                     .map(|row| {
                                         logging::warn(
-                                            "codex_refused",
-                                            json!({ "account": row.name,
-                                                    "why": "Codex đã bỏ khỏi huba 19/11 — chỉ còn Claude và OpenCode" }),
+                                            "cli_unsupported_refused",
+                                            json!({ "account": row.name, "cli": row.cli_name(),
+                                                    "why": "CLI không còn hỗ trợ — chỉ Claude và OpenCode" }),
                                         );
                                         format!(
-                                            "⛔ acc `{}` dùng Codex — CLI này đã bỏ khỏi huba (19/11).\n\
-                                             Chỉ còn Claude và OpenCode. Lịch sử codex cũ giữ đọc lại.",
-                                            row.name
+                                            "⛔ acc `{}` dùng CLI `{}` — đã bỏ khỏi huba (19/11).\n\
+                                             Chỉ còn Claude và OpenCode.",
+                                            row.name, row.cli_name()
                                         )
                                     })
                             });
-                            let tu_choi = codex_tu_choi.or_else(|| {
+                            let tu_choi = cli_la_tu_choi.or_else(|| {
                                 khoa.as_deref().and_then(|a| {
                                     // `-y`/`-f`: chủ máy đã GÕ «vào luôn» ⟹ không hỏi lại.
                                     if vao_luon {

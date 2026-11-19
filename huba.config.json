@@ -130,11 +130,6 @@
           "~/projects/scripts/cong-bao-mat-plugin"
         ]
       }
-    },
-    {
-      "name": "acc10",
-      "config_dir": "~/.codex-acc10",
-      "cli": "codex"
     }
   ],
   "new_in_terminal": true,

@@ -167,11 +167,6 @@ fn doi_chung_nguoc_bo_dem_do_duoc() {
     );
 }
 
-/// 🔴 Ca thật 14/11 (Quang: *"có phiên 73% rồi sao vẫn chưa chuyển phiên vậy"*):
-/// phiên codex `01a1d9c0` (acc10) mang **158 049** token, codex khai
-/// `model_context_window = 475 000` ⇒ **33%**. huba đoán bằng bảng (model `None`
-/// ⇒ 180k/200k) ⇒ điện thoại in 79%, `auto_handover` đọc 87% và chờ phiên rảnh
-/// để bàn giao oan. Số CLI tự khai phải THẮNG bảng đoán.
 #[test]
 fn so_cli_tu_khai_thang_bang_doan() {
     use huba::sessions::{session_context_window, session_display_window, LiveSession};

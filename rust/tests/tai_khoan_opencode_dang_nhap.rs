@@ -1,16 +1,7 @@
-//! `/accounts <tên> -l` cho hàng `cli: "opencode"` đăng nhập ChatGPT (provider `openai`).
-//!
-//! Quang 15/11: *"cài acc9 chạy opencode và dùng model của acc10"* · *"làm nhánh đăng nhập
-//! opencode từ tele đi"*. Trước bản này `account_login::start` chỉ biết codex|claude ⟹ một
-//! hàng opencode rơi vào nhánh claude và mở `claude auth login` (sai CLI, sai tài khoản).
-//! Mỗi bài có vế NGƯỢC (màn/hàng KHÔNG phải opencode-openai ⟹ không nhận), để bài xanh
-//! không xanh vì hàm nhận tất cả.
-
 mod common;
 
 use huba::account_login::{
-    bo_mau, la_man_codex, la_man_dang_nhap, la_man_opencode, login_pid, opencode_after,
-    opencode_device,
+    bo_mau, la_man_dang_nhap, la_man_opencode, login_pid, opencode_after, opencode_device,
 };
 use huba::accounts::{opencode_login_line, opencode_login_provider};
 use huba::config::ClaudeAccountCfg;
@@ -61,7 +52,6 @@ fn doc_duoc_duong_dan_va_ma_tren_man_that() {
         la_man_dang_nhap(MAN_CHO),
         "cửa chốt chung cũng nhận màn opencode"
     );
-    assert!(!la_man_codex(MAN_CHO), "màn opencode không phải màn codex");
     assert_eq!(
         opencode_device(MAN_CHO),
         Some((
@@ -82,12 +72,12 @@ fn man_chua_in_ma_hoac_ma_la_thi_khong_doan() {
         None,
         "chữ lạ sau `Enter code:` ⟹ None"
     );
-    // Màn của claude / codex không phải màn opencode.
+    // Màn của CLI khác (claude) không phải màn opencode.
     let claude = "$ claude auth login\nIf the browser didn't open, visit: https://claude.com/x\nPaste code here if prompted >";
     assert!(!la_man_opencode(claude));
-    let codex = "$ CODEX_HOME=x codex login --device-auth\n   https://auth.openai.com/codex/device\n2. Enter this one-time code\n   HBAC-ERA9M\n";
-    assert!(!la_man_opencode(codex));
-    assert_eq!(opencode_device(codex), None);
+    let man_khac = "$ some-other-cli login\n   https://example.test/device\n2. Enter this one-time code\n   HBAC-ERA9M\n";
+    assert!(!la_man_opencode(man_khac));
+    assert_eq!(opencode_device(man_khac), None);
 }
 
 #[test]
@@ -117,9 +107,8 @@ fn chi_hang_opencode_model_openai_moi_co_dang_nhap() {
         opencode_login_provider(&hang("x", Some("opencode"), None)),
         None
     );
-    // Ngược: model openai nhưng KHÔNG phải hàng opencode.
-    let codex = hang("acc10", Some("codex"), Some("openai/gpt-6.1-sol"));
-    assert_eq!(opencode_login_provider(&codex), None);
+    let cli_la = hang("acc10", Some("codex"), Some("openai/gpt-6.1-sol"));
+    assert_eq!(opencode_login_provider(&cli_la), None);
     assert_eq!(
         opencode_login_provider(&hang("acc1", None, Some("openai/x"))),
         None
