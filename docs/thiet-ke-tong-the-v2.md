@@ -206,7 +206,15 @@ Hiện `/stop` với interactive còn dẫn sang xác nhận đóng CLI+terminal
 (`pipeline.rs:15963–15972`). UI mới không được chỉ đổi nhãn thành “Ngắt lượt”
 trong khi vẫn gọi thao tác đóng này.
 
-## 6. Nhiều người xem, một đường tác động đúng phiên
+## 6. Nhiều cửa xem — nhưng MỘT chủ máy, một người dùng
+
+🔴 **Giả định sản phẩm (Quang 19/11): huba chỉ cài trên máy cá nhân của chủ máy ⇒
+một người dùng.** Không có hướng nhiều người dùng: không role, không tenant, không
+chia sẻ phiên cho người khác, không tài khoản phụ. Chữ «nhiều người xem» ở các bản
+trước là **viết sai** — ý là nhiều **cửa xem** (cửa sổ/tab desktop, điện thoại qua
+Telegram) của **cùng một người**. Ranh giới quyền là ranh giới sẵn có của máy: tài
+khoản OS chạy hubad + cổng `chat_id` của Telegram; IPC desktop chỉ nhận tiến trình
+cùng người dùng OS (peer identity) và cặp đôi một lần.
 
 Subscription gồm `client/view/subscription IDs + scope + SessionKeys + cursor`.
 Core trả snapshot có watermark rồi delta theo revision; nguồn thu một lần, phân phối
@@ -300,7 +308,7 @@ filter/revision/coverage; unknown khác0, không thêm billing/tracker/model tó
   Không replay side effect từ cursor đọc; cursor hết retention phải báo gap.
 - Migration có backup/transaction/rollback; không ghi trực tiếp DB CLI để giả event.
 - Renderer escape/sanitize nội dung nguồn; không thực thi HTML/JS/lệnh từ model.
-- Cùng core/contracts trên ba OS; bundle frontend/native/core đồng version.
+- Một core, ba đích đến THEO THỨ TỰ: Ubuntu (nền chính) → macOS → Windows (sau, khi có máy thật); bundle frontend/native/core đồng version.
   Native installer và update ký, đọc lại marker từ target, có rollback dữ liệu.
 - Windows/macOS/Linux cần cài/chạy/đóng/mở/cập nhật thật, không coi cross-build
   hoặc browser tài liệu là nghiệm thu app/native transport.
@@ -321,11 +329,11 @@ filter/revision/coverage; unknown khác0, không thêm billing/tracker/model tó
 | P10 | Chưa triển khai đầy đủ | Usage canonical/báo cáo nguồn thật |
 | P11 | Cần spike/chốt | Vỏ, IPC, capabilities và ba OS |
 | P12 | Rủi ro | Crash/idempotency/gap/retention/quyền |
-| P13 | Cần chốt | Ai được XEM — principal/viewer, luật viewer≠owner |
-| P14 | Chưa có nguồn | `host_id` · `generation` · command ID |
+| P13 | Đã chốt | Một chủ máy, một người dùng — nhiều cửa xem, không nhiều người |
+| P14 | Chưa có trong mã | Bỏ `host_id`; thêm `generation` + command ID |
 | P15 | Chưa có số | Ngưỡng độ trễ · retention · gap |
-| P16 | Rủi ro | Raw nguyên văn và nội dung nhạy cảm |
-| P17 | Rủi ro | Windows chưa chạy thật mà đã hứa ngang hai OS |
+| P16 | Rủi ro | Lịch sử nguyên văn (đã qua hook): vòng đời lưu/xoá |
+| P17 | Ưu tiên | Ubuntu chạy ngon trước; Windows sau, chưa hứa |
 | P18 | Lỗi có ca thật | Số hiển thị đọc từ catalog CLI, không bảng cứng |
 | P19 | Rủi ro | Toàn bộ lịch sử trong ô chat: hiệu năng, bộ nhớ, gap, tìm kiếm |
 | P20 | Cần chốt | Cột đánh dấu câu hỏi để focus nhanh |
@@ -365,22 +373,29 @@ Rà lại toàn bộ §1–§12 trên bản đang có trong cây (`index.html` h
 dưới đây là chỗ *chưa có quyết định hoặc chưa có nguồn*, và chúng đứng TRƯỚC
 P04 trong thứ tự triển khai.
 
-**P13 — ai được XEM (nặng nhất).** §6 nói «nhiều người xem, một đường tác động»
-nhưng không định nghĩa principal. Trong mã hiện tại **không có** khái niệm này:
-cổng duy nhất là `telegram::update_sender` theo chat id (`CLAUDE.md:160–173`);
-`sessions::read_only_count` (`sessions.rs:5677`) là đếm PHIÊN, không phải quyền
-người. Làm đúng chữ ⇒ desktop thành **cổng thứ hai mở quyền ra lệnh**, đúng thứ đã
-xoá một lần (`trust.tfl5_user_tids`, `CLAUDE.md:164–172`). Cần: bảng `{owner,
-viewer}` · mọi route GHI chỉ owner · pairing chỉ cấp quyền đọc · audit khi nâng
-quyền · thu hồi quyền cắt stream + xử lý cache.
+**P13 — đã chốt: MỘT chủ máy, một người dùng (Quang 19/11).** huba chỉ cài trên máy
+cá nhân ⇒ không có hướng nhiều người dùng: không role, không tenant, không chia sẻ
+phiên. Chữ «nhiều người xem» ở các bản trước là **viết sai**; đúng ra là nhiều
+**cửa xem** của **cùng một người** (desktop + điện thoại). Ranh giới quyền = ranh
+giới sẵn có của máy: tài khoản OS chạy hubad + cổng `chat_id` Telegram; IPC desktop
+chỉ nhận tiến trình **cùng UID** (peer identity) và cặp đôi một lần. Vẫn giữ hai
+điều: (a) mọi route GHI chỉ từ hai cửa UI/Telegram; (b) nếu sau này có yêu cầu
+nhiều người dùng thì mở issue mới, **không** nới dần mô hình hiện tại.
 
-**P14 — ba trường xương sống chưa có nguồn.** `host_id` (§4 SessionKey),
-`generation` (§4/§6 lease), command ID (§5): grep `rust/src` ngày 19/11 = **0** cả
-ba. Telegram dedupe đang dùng `update_id` + bảng `tin_den`, riêng kênh ấy
-(`CLAUDE.md:149–159`). P05/P09/P12 đều đứng trên chúng ⇒ phải chốt: một host (bỏ
-`host_id`) hay nhiều host (thì bỏ câu «không quản lý máy xa» ở §2); `generation`
-sinh ở driver hay DB; command ID do view sinh, lưu bảng nào, khoá theo
-`(session, actor)`.
+**P14 — ba cái tên thiết kế đang dùng mà mã chưa có (nói lại cho dễ hiểu).**
+Đây không phải lỗi; đây là ba thứ phải *làm ra* trước khi vẽ tiếp:
+1. `host_id` = phiên nằm ở **máy nào**. P13 đã chốt **một máy** ⇒ **bỏ luôn**, thêm
+   vào chỉ làm rối.
+2. `generation` = **số đời của một cửa sổ/phiên**. Mở lại, đổi cửa sổ, khôi phục
+   sau crash ⇒ tăng. Lệnh gửi cho cửa sổ **cũ** mang số cũ, bị **từ chối** thay vì
+   rơi vào cửa sổ mới. Không có nó thì «hai cửa cùng điều khiển» (P05) không có
+   cách nào phân biệt đúng–sai.
+3. **command ID** = mã của **một lần bấm**. Bấm gửi, mạng đứt, app thử lại ⇒ cùng
+   ID thì trả **kết quả cũ**, không gõ câu ấy hai lần vào phiên. Cùng ID mà nội
+   dung khác ⇒ từ chối. Hiện chỉ Telegram có chống trùng (`update_id` + bảng
+   `tin_den`, `CLAUDE.md:149–159`); cửa UI chưa có.
+Cần chốt chỗ lưu: `generation` do driver cấp và lưu cạnh binding; command ID do UI
+sinh, lưu bảng `(id, session, actor, hash payload, trạng thái)`.
 
 **P15 — không có ngưỡng nghiệm thu.** P02 đòi đo latency mà không có mục tiêu/trần;
 P03/P12 đòi retention/gap mà không có hạn mức; §7 có ba mốc freshness mà không nói
@@ -388,16 +403,25 @@ bao lâu thì cũ. Không có số ⇒ không viết được ca đỏ. Cần m�
 nguồn→ingest→UI · retention raw (ngày · GB) · mất quá N% thì **cấm** gọi «liên
 tục» · queue tràn ⇒ gap/resnapshot · hạn freshness theo loại nguồn.
 
-**P16 — raw nguyên văn và nội dung nhạy cảm.** Luật 5 (không giấu chữ) + §8 raw
-nguyên văn: bí mật lọt vào transcript (tiền lệ một phiên đọc `.env`, sổ 18/11) sẽ
-nằm trong DB raw. §8 hiện chỉ nói «theo quyền/policy». Cần ghi rõ: mã hoá at-rest
-hoặc thư mục 0700 + tên tệp không lộ nội dung · retention mặc định + xoá theo yêu
-cầu có audit · đánh dấu record khớp mẫu bí mật · ai đọc raw qua MCP facade.
+**P16 — lịch sử là nguyên văn, nhưng ĐÃ QUA HOOK (sửa lại theo Quang 19/11).**
+Ghi nhận đúng: cái huba đọc từ transcript/journal là **văn bản thật của phiên**
+(không phải bản tóm tắt), và nó **đã đi qua chuỗi hook của máy** (`mo-dau-phien`,
+`nhac-chuyen-phien`, cổng bảo mật). Vì vậy P16 **không** nói về «bytes gốc của
+model» hay «dữ liệu chưa xử lý» — nó nói về **vòng đời của bản lưu**: nội dung nhạy
+cảm vẫn có thể đã nằm trong văn bản phiên (tiền lệ một phiên đọc `.env`, sổ 18/11),
+mà §8 mới chỉ nói «theo quyền/policy». Cần 4 điều: thư mục 0700 (hoặc mã hoá
+at-rest) + tên tệp không lộ nội dung · retention mặc định + xoá theo yêu cầu **có
+audit** · đánh dấu record khớp mẫu bí mật để cảnh báo khi xuất (không tự sửa nội
+dung) · chỉ chủ máy, qua hai cửa UI/Telegram, được xuất raw.
 
-**P17 — Windows.** `keys_win.rs:1–12` tự khai «CHƯA CHẠY TRÊN WINDOWS THẬT», mà §10
-hứa «cùng core/contracts trên ba OS» và §12 không có mốc Windows. Ghi rõ parity 3
-OS là MỤC TIÊU; mỗi OS một cột nghiệm thu; Windows chỉ được khai «hỗ trợ» sau khi
-chạy thật gõ/đọc/đóng/mở/cập nhật.
+**P17 — thứ tự nền: Ubuntu trước, không hứa ngang ba OS (Quang 19/11).**
+Máy đang dùng là **Ubuntu** (`~/huba`, `systemd --user`). Ba mức: (1) **Ubuntu là nền
+chính** — app + hubad + CLI + lease/terminal phải chạy và được nghiệm thu **thật**
+trên máy này; (2) **macOS** giữ ngang hiện trạng huba (Terminal qua `osascript`),
+không hứa app trước khi Ubuntu xong; (3) **Windows** để sau, chỉ nhận khi có máy
+thật để đo (`keys_win.rs:1–12` vẫn tự khai «CHƯA CHẠY TRÊN WINDOWS THẬT»).
+Bỏ câu «cùng core/contracts trên ba OS» như cam kết ngang hàng — thay bằng «một
+core, ba đích đến theo thứ tự ưu tiên», mỗi OS một cột nghiệm thu.
 
 **P18 — số hiển thị phải đọc từ catalog CLI (ca thật 18/11).** Đầu nhắc chuyển
 phiên khai cứng cửa sổ 200k cho `opencode-go/deepseek-v4.1-flash` trong khi catalog
@@ -416,8 +440,8 @@ không tài liệu tự mất khả năng kiểm. Ngoài ra dispatcher desktop p
 `commands::ROUTES` (`CLAUDE.md:184–186` — «the real table»), không dựng bảng lệnh
 thứ hai.
 
-**Thứ tự triển khai sửa lại:** **P13 → P14 → P15** rồi mới **P04** (vì A/B,
-subscription và lease đều đứng trên principal/định danh/ngưỡng), sau đó
+**Thứ tự triển khai sửa lại:** **P13 đã chốt** (một chủ máy) ⇒ còn **P14 → P15** rồi
+mới **P04** (vì A/B, subscription và lease đều đứng trên định danh/ngưỡng), sau đó
 P06/P01/P07, rồi P02/P03/P08/P09/P16/P18, cuối cùng P11/P12/P17.
 
 ## 14. Bổ sung theo yêu cầu chủ máy 19/11 — ô chat
@@ -464,7 +488,8 @@ Test chạm codex: `codex_account_selection` · `codex_send_delivery` · `codex_
 `codex_gui_va_dong` · `codex_tele_identity` · `codex_duoc_chon` · `tuong_codex` ·
 `tai_khoan_codex` (+ 5 tệp dùng chung có ca codex).
 
-**Bốn bước, mỗi bước tự đỏ/xanh được**
+**Phạm vi: BỎ HẾT** (Quang 19/11 «cái gì liên quan bỏ hết») — mã, test, cấu hình,
+tài liệu, hook. **Bốn bước, mỗi bước tự đỏ/xanh được**
 1. **Chặn trước, xoá sau**: `is_codex()` ⇒ mọi route `/new`, `/tell`, `/ask`,
    `/handover` trả «CLI này không còn hỗ trợ» + log `codex_refused`; `/accounts`
    hiện `acc10` kèm nhãn *không hỗ trợ* (không ẩn — ẩn là mất dấu một tài khoản
@@ -485,14 +510,15 @@ non-Codex trả `DaGui` theo màn» biến mất, chỉ còn **một** đường
 chưa được đo chắc; phải đo trước khi hứa «CLI đã nhận».
 
 
-**14.2 Cột đánh dấu câu hỏi để focus nhanh (P20).** Ô chat có **cột mốc** bên trái:
-mỗi câu hỏi một marker — **đang chờ** nổi bật + đếm ở đầu ô, **đã trả lời** mốc mờ,
-**bị từ chối** gạch. Bấm marker ⇒ cuộn tới đúng câu và mở khối trả lời; có **danh
-sách nhảy nhanh** (nút + phím tắt) liệt kê câu hỏi của phiên, câu đang chờ luôn
-đứng đầu. Nguồn = câu hỏi **thật** trong transcript (AskUserQuestion) + trạng thái
-chờ từ runtime — không suy từ chữ, không bịa câu hỏi. Còn phải chốt: marker theo
-lượt hỏi hay theo tool-call; nhiều câu trong một lượt gộp hay tách; câu bị CLI tự
-trả lời (hết hạn) hiện thế nào; marker sống cùng cuộn ảo hoá của P19. Marker
-**không thay** nút trả lời: trả lời vẫn đi đúng route và qua gate quyền.
+**14.2 Cột đánh dấu câu hỏi để focus nhanh (P20).** Ô chat có **cột mốc** bên trái,
+**mỗi LƯỢT HỎI một marker**; lượt hỏi có nhiều câu (AskUserQuestion nhiều
+`questions`/multi-select) thì **GỘP vào một marker**, không tách từng câu — Quang
+19/11. Marker: **đang chờ** nổi bật + đếm ở đầu ô · **đã trả lời** mốc mờ · **bị từ
+chối** gạch; kèm số câu trong lượt (vd «2 câu») để không giấu. Bấm marker ⇒ cuộn
+tới lượt hỏi + mở khối trả lời của lượt; **danh sách nhảy nhanh** (nút + phím tắt)
+liệt kê theo lượt, lượt đang chờ đứng đầu. Nguồn = câu hỏi **thật** trong transcript
++ trạng thái chờ từ runtime — không suy từ chữ, không bịa. Câu bị CLI tự trả lời
+(hết hạn) vẫn thuộc lượt ấy, hiện trạng thái hết hạn. Marker **không thay** nút trả
+lời: trả lời vẫn đi đúng route và qua gate quyền.
 
 

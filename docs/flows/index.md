@@ -170,23 +170,23 @@ Xem HTML: W0 bàn hai vùng, T0 terminal và các Pxx liên kết tới từng b
 
 **Tại:** U4/bước3, D1/bước4, U6/bước8
 
-### P13 · Ai được XEM? Thiếu mô hình principal và luật viewer≠owner — CẦN BÀN / CHỐT
+### P13 · Đã chốt: MỘT chủ máy, một người dùng — nhiều cửa xem, không nhiều người — CẦN BÀN / CHỐT
 
-**Bằng chứng/phạm vi:** Mã hiện tại chỉ có MỘT cổng người: telegram::update_sender theo chat id/from id (huba/CLAUDE.md:160–173). Không có khái niệm principal/viewer trong rust/src — sessions.rs:5677 read_only_count là đếm PHIÊN, không phải quyền người. Thiết kế §6 nói «nhiều người xem, một đường tác động» nhưng không nói ai được pair IPC, ai chỉ đọc, ai ra lệnh; cũng không nói viewer KHÔNG được coi là chủ máy (luật 7).
+**Bằng chứng/phạm vi:** Quang 19/11: «P13 huba chỉ cài trên máy cá nhân nên chỉ 1 người dùng, chưa có hướng nhiều người dùng». Mã hiện tại khớp giả định ấy: cổng duy nhất là telegram::update_sender theo chat id (CLAUDE.md:160–173), không có role/tenant; sessions.rs:5677 read_only_count là đếm PHIÊN. Chữ «nhiều người xem» trong §6 bản trước là VIẾT SAI.
 
-**Đề xuất:** Bảng principal {owner, viewer} + luật «mọi route GHI chỉ owner»; pairing chỉ cấp quyền ĐỌC; audit mỗi lần nâng quyền; thu hồi quyền phải cắt stream + xử lý cache theo policy.
+**Đề xuất:** Giả định sản phẩm: huba cài trên máy cá nhân ⇒ một người dùng. Nhiều CỬA XEM của cùng một người (desktop + Telegram), không phải nhiều người. Ranh giới quyền = ranh giới sẵn có của máy: tài khoản OS chạy hubad + cổng chat_id; IPC desktop chỉ nhận tiến trình cùng UID (peer identity) + pairing một lần. Mọi route GHI chỉ từ hai cửa UI/Telegram.
 
-**Bàn tiếp:** Nếu làm đúng chữ hiện tại, desktop thành cổng thứ hai mở quyền ra lệnh — đúng thứ đã xoá một lần (trust.tfl5_user_tids, CLAUDE.md:164–172). Chốt trước P04 vì A/B và subscription đứng trên nó.
+**Bàn tiếp:** Không xây role/tenant/share. Nếu sau này có yêu cầu nhiều người dùng thật thì mở issue MỚI, không nới dần mô hình hiện tại. Điều còn phải làm chỉ là kiểm kỹ thuật: IPC từ chối tiến trình khác UID (đo được), không phải mô hình quyền.
 
 **Tại:** U6/bước1, U1/bước10
 
-### P14 · host_id · generation · command ID: ba trường xương sống chưa có nguồn trong mã — CHƯA ĐO / CHƯA ĐỦ
+### P14 · Ba tên gọi thiết kế dùng nhưng mã chưa có: host_id, generation, command ID — CHƯA ĐO / CHƯA ĐỦ
 
-**Bằng chứng/phạm vi:** grep toàn rust/src (19/11): host_id 0 · generation 0 · command_id 0. Telegram dedupe đang dùng update_id + bảng tin_den — riêng kênh ấy (huba/CLAUDE.md:149–159). P05/P09/P12 đều dựa lên ba trường này.
+**Bằng chứng/phạm vi:** grep toàn rust/src (19/11): host_id 0 · generation 0 · command_id 0. Nghĩa từng cái: (1) host_id = phiên nằm ở MÁY nào; (2) generation = số đời của một binding (mở lại/đổi cửa sổ thì tăng) để lệnh gửi cho cửa sổ CŨ không rơi vào cửa sổ MỚI; (3) command ID = mã của một lệnh người dùng bấm, để retry không gõ hai lần. Hiện Telegram chống trùng bằng update_id + bảng tin_den — riêng kênh Telegram, không có cho UI.
 
-**Đề xuất:** Chốt: một host (bỏ host_id) HAY nhiều host (thì bỏ câu «không quản lý máy xa» ở §2); generation sinh ở driver hay DB, ai tăng; command ID do view sinh, lưu bảng nào, khoá theo (session, actor).
+**Đề xuất:** Chốt gọn: (a) BỎ host_id — P13 đã chốt một máy, thêm host chỉ làm rối; (b) THÊM generation: driver cấp số mỗi lần bind/rebind, lưu kèm binding, lệnh mang generation và bị từ chối nếu lệch; (c) THÊM command ID: UI sinh UUID mỗi lần bấm, lưu bảng command (id, session, actor, payload hash, trạng thái) — trùng ID cùng payload trả kết quả cũ, cùng ID khác payload bị từ chối.
 
-**Bàn tiếp:** Chưa có nguồn thì không hứa lease/epoch/fence ở §6 — định nghĩa trước khi vẽ tiếp, nếu không P05 chỉ là chữ.
+**Bàn tiếp:** Đây là điều kiện để P05 (hai cửa cùng điều khiển) và P12 (crash/reconnect) có nghĩa — không có generation thì không phân biệt được cửa sổ cũ/mới; không có command ID thì mất ACK là gõ lại. Không hứa lease/fence trước khi hai thứ này có chỗ lưu thật.
 
 **Tại:** D6/bước1, D2/bước2
 
@@ -200,23 +200,23 @@ Xem HTML: W0 bàn hai vùng, T0 terminal và các Pxx liên kết tới từng b
 
 **Tại:** D5/bước1, D1/bước3
 
-### P16 · Raw store giữ nguyên văn: chưa có chính sách nội dung nhạy cảm — RỦI RO CẦN KIỂM
+### P16 · Lịch sử lưu là văn bản NGUYÊN VĂN của phiên — nhưng đã qua hook, và chưa có chính sách lưu/xoá — RỦI RO CẦN KIỂM
 
-**Bằng chứng/phạm vi:** Luật 5 (không giấu chữ) + §8 raw nguyên văn ⇒ bí mật lọt vào transcript (tiền lệ: một phiên đọc .env, sổ 18/11) sẽ nằm trong DB raw. §8 chỉ nói «raw nhạy cảm theo quyền/policy», không nói mã hoá at-rest, thời hạn xoá, xuất/xoá theo yêu cầu.
+**Bằng chứng/phạm vi:** Chủ máy 19/11: «lịch sử là nguyên văn nhưng qua hook xử lý rồi». Đúng: cái huba nhận từ transcript/journal là văn bản THẬT của phiên (không phải bản tóm tắt), và nó đã đi qua chuỗi hook của máy (mo-dau-phien, nhac-chuyen-phien, cổng bảo mật). Vì vậy P16 KHÔNG phải «bytes gốc của model» và cũng không phải «dữ liệu chưa xử lý» — vấn đề còn lại là VÒNG ĐỜI của bản lưu: nội dung nhạy cảm có thể đã nằm trong văn bản phiên (tiền lệ một phiên đọc .env), mà §8 chỉ nói «theo quyền/policy».
 
-**Đề xuất:** Ghi rõ: (a) mã hoá at-rest hoặc thư mục 0700 + tên tệp không lộ nội dung; (b) retention mặc định + xoá theo yêu cầu có audit; (c) đánh dấu record khớp mẫu bí mật để cảnh báo khi xuất; (d) ai được đọc raw qua MCP facade.
+**Đề xuất:** Ghi rõ 4 điều cho kho lịch sử: (a) quyền thư mục 0700 (hoặc mã hoá at-rest nếu có), tên tệp không lộ nội dung; (b) retention mặc định + xoá theo yêu cầu CÓ audit; (c) đánh dấu record khớp mẫu bí mật (token, khoá riêng) để cảnh báo khi xuất — không tự sửa nội dung; (d) ai/cửa nào được xuất raw (chỉ chủ máy, hai cửa UI/Telegram).
 
-**Bàn tiếp:** Không mâu thuẫn luật 5: vẫn KHÔNG giấu chữ với chủ máy — chỉ định nghĩa vòng đời lưu trữ và đường xuất.
+**Bàn tiếp:** Không mâu thuẫn luật 5 (không giấu chữ với chủ máy): vẫn hiện nguyên văn, chỉ định nghĩa lưu bao lâu, xoá thế nào, cảnh báo khi xuất. Không suy «đã qua hook» thành «đã sạch bí mật».
 
 **Tại:** D3/bước1, C4/bước1
 
-### P17 · Windows đang được hứa ngang macOS/Linux nhưng chưa chạy thật lần nào — RỦI RO CẦN KIỂM
+### P17 · Ưu tiên Ubuntu chạy ngon trước; Windows là mục tiêu sau, chưa hứa — RỦI RO CẦN KIỂM
 
-**Bằng chứng/phạm vi:** keys_win.rs:1–12 tự khai «CHƯA CHẠY TRÊN WINDOWS THẬT»; §10 nói «cùng core/contracts trên ba OS»; §12 không có mốc Windows; P11 chỉ là spike. Chưa có install/update/rollback đo trên Windows.
+**Bằng chứng/phạm vi:** Chủ máy 19/11: «P17 làm ưu tiên để chạy ngon trên ubuntu trước». Máy đang dùng là Ubuntu (huba cài ~/huba, systemd --user). keys_win.rs:1–12 tự khai «CHƯA CHẠY TRÊN WINDOWS THẬT»; macOS có keys.rs dùng osascript; chưa OS nào có bộ nghiệm thu đầy đủ cho app desktop.
 
-**Đề xuất:** Ba cột nghiệm thu riêng theo OS; parity 3 OS là MỤC TIÊU, không phải cam kết; Windows chỉ được khai «hỗ trợ» sau khi chạy thật gõ/đọc/đóng/mở/cập nhật.
+**Đề xuất:** Ba mức, theo thứ tự: (1) UBUNTU là nền chính — ứng dụng + hubad + CLI + lease/terminal phải chạy và được nghiệm thu thật trên máy này; (2) macOS giữ ngang hiện trạng huba (Terminal qua osascript), không hứa app trước khi Ubuntu xong; (3) Windows để SAU, chỉ nhận khi có máy thật để đo — không tính cross-build là hỗ trợ.
 
-**Bàn tiếp:** Cùng lớp lỗi «cross-build/browser tài liệu tính là nghiệm thu» mà §10 đã cấm — cấm luôn với Windows.
+**Bàn tiếp:** Bỏ câu «cùng core/contracts trên ba OS» như cam kết ngang hàng; thay bằng «một core, ba đích đến theo thứ tự ưu tiên». Mỗi OS một cột nghiệm thu riêng; không OS nào được khai hỗ trợ khi chưa chạy thật.
 
 **Tại:** U1/bước12, D1/bước12
 
@@ -242,21 +242,21 @@ Xem HTML: W0 bàn hai vùng, T0 terminal và các Pxx liên kết tới từng b
 
 ### P20 · Cột đánh dấu câu hỏi trong ô chat để focus nhanh — CẦN BÀN / CHỐT
 
-**Bằng chứng/phạm vi:** Yêu cầu chủ máy 19/11: «Có cột đánh dấu câu hỏi để focus nhanh». Nguồn câu hỏi đã có (pending_question đọc AskUserQuestion từ transcript; /pick thao tác trên bảng hỏi), nhưng CHƯA có chỗ hiển thị: ô chat hiện chỉ là dòng chữ, không mốc nào để nhảy tới câu hỏi cũ/mới. P09 đã ghi representation chưa giữ revision/tool-call ID.
+**Bằng chứng/phạm vi:** Yêu cầu chủ máy 19/11: «Có cột đánh dấu câu hỏi để focus nhanh». Nguồn câu hỏi đã có (pending_question đọc AskUserQuestion từ transcript; /pick thao tác trên bảng hỏi), nhưng CHƯA có chỗ hiển thị: ô chat hiện chỉ là dòng chữ, không mốc nào để nhảy tới câu hỏi cũ/mới. P09 đã ghi representation chưa giữ revision/tool-call ID. Quang 19/11: marker theo LƯỢT HỎI, nhiều câu cùng lượt thì GỘP.
 
-**Đề xuất:** Cột mốc bên trái ô chat: mỗi câu hỏi một marker (đang chờ = nổi + đếm ở đầu ô; đã trả lời = mốc mờ; bị từ chối = gạch). Bấm marker ⇒ cuộn tới đúng câu + mở khối trả lời; danh sách nhảy nhanh (nút + phím tắt) liệt kê câu hỏi của phiên; câu đang chờ luôn đứng đầu danh sách. Nguồn = câu hỏi THẬT trong transcript + trạng thái chờ từ runtime, không suy từ chữ.
+**Đề xuất:** Cột mốc bên trái ô chat, **mỗi LƯỢT HỎI một marker** (Quang 19/11). Lượt hỏi có nhiều câu (AskUserQuestion nhiều questions / multi-select) ⇒ **GỘP vào một marker** của lượt ấy, không tách theo từng câu. Marker: đang chờ = nổi + đếm ở đầu ô; đã trả lời = mờ; bị từ chối = gạch. Bấm marker ⇒ cuộn tới lượt hỏi + mở khối trả lời của lượt; danh sách nhảy nhanh liệt kê theo lượt, lượt đang chờ đứng đầu. Nguồn = câu hỏi THẬT trong transcript + trạng thái chờ từ runtime.
 
-**Bàn tiếp:** Cần chốt: marker theo lượt hỏi hay theo tool-call; nhiều câu trong một lượt thì gộp hay tách; câu đã bị CLI tự trả lời (hết hạn) hiện thế nào; giữ marker khi cuộn ảo hoá (P19). Không dùng marker để thay nút trả lời — trả lời vẫn qua đúng route và gate.
+**Bàn tiếp:** ĐÃ CHỐT (19/11): theo LƯỢT HỎI, nhiều câu cùng lượt thì gộp. Còn lại chỉ là chi tiết hiển thị: marker kèm số câu trong lượt (vd «2 câu») để không giấu; câu bị CLI tự trả lời (hết hạn) vẫn thuộc lượt ấy và hiện trạng thái hết hạn. Marker KHÔNG thay nút trả lời — trả lời vẫn qua route + gate.
 
 **Tại:** U5/bước1, U2/bước3
 
-### P21 · Bỏ hẳn Codex: phạm vi xoá, dữ liệu cũ, đường di cư — CẦN BÀN / CHỐT
+### P21 · Bỏ HẾT mọi thứ liên quan Codex (mã · test · cấu hình · tài liệu · hook) — CẦN BÀN / CHỐT
 
 **Bằng chứng/phạm vi:** Quang 19/11 «bỏ hẳn codex đi». Đo mã: grep -ri codex rust/src = 469 dòng/14 tệp (accounts143 · sessions83 · account_login49 · keys46 · quota40 · pipeline25 · runtime21 · config20 · codex_sessions19 · accounts_page10 · opencode6 · main4 · lib2 · keys_tmux1), 79 symbol codex*/CODEX_*, 13 tệp test, acc10 có cli=codex trong huba.config.json.
 
-**Đề xuất:** Bốn bước: (1) CHẶN trước — is_codex ⇒ /new·/tell·/ask·/handover trả «không hỗ trợ» + log codex_refused, /accounts hiện acc10 kèm nhãn không hỗ trợ (không ẩn); (2) gỡ driver: open_codex_window, codex_wall, đọc rollout/journal, xếp hạng quota codex, hook codex_pretooluse, env CODEX_HOME; (3) xoá test CÙNG commit (8 tệp riêng + ca trong 5 tệp chung) — không #[ignore] câm; gate: cargo test + clippy -D warnings + gate.sh; (4) dữ liệu acc10 giữ read-only, báo «lịch sử CLI đã bỏ», KHÔNG migrate sang CLI khác.
+**Đề xuất:** BỎ HẾT mọi thứ liên quan Codex (Quang 19/11 «cái gì liên quan bỏ hết»): (a) mã: driver open_codex_window, codex_wall, codex_sessions.rs, nhánh codex trong accounts/sessions/keys/quota/pipeline/runtime/config/account_login/accounts_page/main/lib; (b) test: xoá 8 tệp codex + ca codex trong 5 tệp dùng chung — cùng commit, không #[ignore] câm; (c) cấu hình: bỏ acc10 khỏi huba.config.json trong repo; máy đang có acc10 thì mã TỪ CHỐI với câu «CLI không còn hỗ trợ» + log codex_refused (không crash, không mở cửa sổ); (d) tài liệu/hook: bỏ mọi nhắc Codex trong CLAUDE.md/README/docs, bỏ hook codex_pretooluse khỏi đường chạy; (e) dữ liệu acc10 giữ read-only, không migrate.
 
-**Bàn tiếp:** Đường lệnh chỉ còn UI hoặc Telegram (Quang 19/11) — không thêm cửa thứ ba khi bỏ Codex. P09 hẹp lại chứ không mất: chỉ còn một đường DaGui-theo-màn phải đo. keys_win.rs là chuyện console Windows, không dính codex.
+**Bàn tiếp:** Nghiệm thu: grep -ri codex rust/src rust/tests = 0 (trừ lịch sử git) · cargo build + clippy -D warnings + lib test xanh · /new acc10 trên Telegram trả câu từ chối, không cửa sổ · huba accounts --print không crash với hàng cli lạ.
 
 **Tại:** U1/bước1, U3/bước1
 
