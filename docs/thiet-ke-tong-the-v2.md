@@ -322,6 +322,8 @@ filter/revision/coverage; unknown khác0, không thêm billing/tracker/model tó
 | P16 | Rủi ro | Raw nguyên văn và nội dung nhạy cảm |
 | P17 | Rủi ro | Windows chưa chạy thật mà đã hứa ngang hai OS |
 | P18 | Lỗi có ca thật | Số hiển thị đọc từ catalog CLI, không bảng cứng |
+| P19 | Rủi ro | Toàn bộ lịch sử trong ô chat: hiệu năng, bộ nhớ, gap, tìm kiếm |
+| P20 | Cần chốt | Cột đánh dấu câu hỏi để focus nhanh |
 
 HTML gắn từng Pxx vào đúng bước sơ đồ và có bằng chứng, hướng đề xuất, điểm bàn;
 đỏ/cam/tím/vàng không được hiểu tất cả là lỗi đã tái hiện.
@@ -411,4 +413,33 @@ thứ hai.
 **Thứ tự triển khai sửa lại:** **P13 → P14 → P15** rồi mới **P04** (vì A/B,
 subscription và lease đều đứng trên principal/định danh/ngưỡng), sau đó
 P06/P01/P07, rồi P02/P03/P08/P09/P16/P18, cuối cùng P11/P12/P17.
+
+## 14. Bổ sung theo yêu cầu chủ máy 19/11 — ô chat
+
+Hai yêu cầu mới, **đổi phạm vi của vùng A** trong §3; cả hai đều bị luật cũ chặn:
+
+**14.1 Ô chat = TOÀN BỘ lịch sử phiên (P03 đổi nghĩa, thêm P19).** Trước đây ô chat
+lấy preview: `opencode.rs274–276,305–329` cắt **40 hàng/6000 ký tự**; đó chỉ đủ cho
+danh sách phiên, **không đủ cho ô chat**. Nay: ô chat nạp từ NGUỒN (transcript/
+journal) theo cursor nguồn + revision bản ghi mutable, tới **lượt đầu tiên** của
+phiên; ảo hoá để cuộn mượt; tìm trên **toàn bộ** đã nạp; nguồn chưa đọc hết thì ghi
+rõ đang nạp tới đâu / thiếu đoạn nào — **không cắt im lặng** ở N dòng hay X ký tự.
+Giá phải trả (P19): một phiên Claude dài hàng chục MB, 4–8 ô cùng mở ⇒ phải nạp
+theo trang + ảo hoá + cache thưa có giới hạn; nếu quá nặng thì hiện «đang nạp» và
+cho nhảy tới đầu/cuối, **vẫn phải tới được lượt 1** — không được hạ chuẩn bằng cách
+quay lại cắt N dòng. Ngưỡng cụ thể thuộc P15.
+Nghiệm thu đếm được: phiên ≥200 lượt ⇒ thấy từ lượt 1 · cuộn tới đỉnh · tìm được
+một câu ở lượt cũ · số bản ghi khớp nguồn · không còn ngưỡng 40/6000 trong đường
+hiển thị ô chat.
+
+**14.2 Cột đánh dấu câu hỏi để focus nhanh (P20).** Ô chat có **cột mốc** bên trái:
+mỗi câu hỏi một marker — **đang chờ** nổi bật + đếm ở đầu ô, **đã trả lời** mốc mờ,
+**bị từ chối** gạch. Bấm marker ⇒ cuộn tới đúng câu và mở khối trả lời; có **danh
+sách nhảy nhanh** (nút + phím tắt) liệt kê câu hỏi của phiên, câu đang chờ luôn
+đứng đầu. Nguồn = câu hỏi **thật** trong transcript (AskUserQuestion) + trạng thái
+chờ từ runtime — không suy từ chữ, không bịa câu hỏi. Còn phải chốt: marker theo
+lượt hỏi hay theo tool-call; nhiều câu trong một lượt gộp hay tách; câu bị CLI tự
+trả lời (hết hạn) hiện thế nào; marker sống cùng cuộn ảo hoá của P19. Marker
+**không thay** nút trả lời: trả lời vẫn đi đúng route và qua gate quyền.
+
 

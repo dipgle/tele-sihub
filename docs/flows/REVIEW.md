@@ -19,6 +19,21 @@ con số 12 viết cứng trong `review.cjs` (nay đọc `design.json`).
 | Ảnh từng issue | `docs/flows/previews/v3-layout-20261116/<engine>/P01…P18.png` (script chụp đủ 18) |
 
 Chỉ tài liệu/bản mẫu: **không** sửa Rust/config, không cài, không gọi CLI/model.
+
+### 19/11 09:40+07 — thêm yêu cầu ô chat (P19/P20), chạy lại cả hai engine
+
+§14 mới theo yêu cầu chủ máy 19/11: **ô chat = toàn bộ lịch sử phiên** (P03 đổi
+nghĩa + P19 hiệu năng/ảo hoá/gap) và **cột đánh dấu câu hỏi để focus nhanh** (P20).
+`design.json` nay 20 issue; census `test_build.py` P01..P20; `review.cjs` vẫn đọc
+số issue từ nguồn.
+
+| Đo trên bản mới | Kết quả |
+|---|---|
+| `index.html` 351.947 B · `8c360ea82b9aace7…` | Chromium **và** WebKit cùng hash |
+| Unit | 17/17, mã 0 |
+| Chromium/WebKit `.tmp/review-flows-20261119b-{chromium,webkit}.log` | `GATE_EXIT=0` · 19 flow/30 thành phần/22 UC/**20 issue** · console-page-request 0 · remote 0 · same hash |
+| Đối chứng ngược | Census P01..P20 trên danh sách 18 issue ⟹ ĐỎ (cùng phép đếm đã dựng ở mục trên) |
+
 Chạy qua `cong-node chay e2e` (NODE_PATH trỏ node_modules có playwright của kho
 dwork; `PLAYWRIGHT_BROWSERS_PATH=/home/user1/.cache/ms-playwright`). Lượt này KHÔNG
 chạy lại `workspace.html` độc lập bằng tay — `reviewWorkspace` vẫn chạy trong cùng

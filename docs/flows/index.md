@@ -70,13 +70,13 @@ Xem HTML: W0 bàn hai vùng, T0 terminal và các Pxx liên kết tới từng b
 
 **Tại:** D5/bước2, D1/bước8, U5/bước5
 
-### P03 · Preview không phải timeline đầy đủ — CHƯA ĐO / CHƯA ĐỦ
+### P03 · Ô chat phải là TOÀN BỘ lịch sử phiên — preview 40 dòng/6000 ký tự không đủ — CHƯA ĐO / CHƯA ĐỦ
 
-**Bằng chứng/phạm vi:** opencode.rs274–276,305–329:40hàng/6000ký tự. request-trace.md24–41 mới thăm dò một lượt lịch sử OpenCode, không chứng minh live/đủ3CLI.
+**Bằng chứng/phạm vi:** Yêu cầu chủ máy 19/11: «Ô chat phải là toàn bộ lịch sử phiên». Mã hiện tại cắt: opencode.rs274–276,305–329 — 40 hàng/6000 ký tự; request-trace.md24–41 mới thăm dò một lượt lịch sử OpenCode, chưa chứng minh live/đủ 3 CLI. Preview kiểu này chỉ đủ cho DANH SÁCH phiên, không đủ cho ô chat.
 
-**Đề xuất:** Collector riêng có cursor nguồn, revision bản ghi mutable, raw/gap. Preview chỉ phục vụ danh sách.
+**Đề xuất:** Ô chat tải lịch sử từ NGUỒN (transcript/journal) theo cursor nguồn + revision bản ghi mutable, tới lượt ĐẦU của phiên; ảo hoá danh sách để cuộn mượt; tìm kiếm trên TOÀN BỘ đã nạp; nguồn chưa đọc hết thì ghi rõ đang nạp tới đâu/thiếu đoạn nào (gap), KHÔNG cắt im lặng ở N dòng hay X ký tự.
 
-**Bàn tiếp:** Lịch sử đến đâu, giữ raw bao lâu, dung lượng và migration; không tự coi thiếu dữ liệu là không có hoạt động.
+**Bàn tiếp:** Nghiệm thu phải đếm được: phiên có ≥200 lượt ⇒ thấy từ lượt 1, cuộn tới đỉnh, tìm được câu ở lượt cũ, số bản ghi khớp nguồn; không còn ngưỡng 40/6000 trong đường hiển thị ô chat. Giữ raw bao lâu và dung lượng vẫn là P16/P19.
 
 **Tại:** D1/bước1, C5/bước3, D3/bước4
 
@@ -229,6 +229,26 @@ Xem HTML: W0 bàn hai vùng, T0 terminal và các Pxx liên kết tới từng b
 **Bàn tiếp:** Cùng lớp lỗi với P02 (nhịp vòng bị đọc thành latency): con số không có nguồn thì không được hiện như sự thật.
 
 **Tại:** D4/bước1, D5/bước3
+
+### P19 · Toàn bộ lịch sử trong ô chat: hiệu năng, bộ nhớ, gap và tìm kiếm — RỦI RO CẦN KIỂM
+
+**Bằng chứng/phạm vi:** Yêu cầu 19/11 đổi ô chat từ preview sang toàn bộ lịch sử. Transcript Claude một phiên dài hàng chục MB; journal Codex/OpenCode là jsonl/DB tăng liên tục. Chưa đo: thời gian nạp đầu, RAM khi 4–8 ô cùng mở phiên dài, tốc độ tìm trên toàn bộ.
+
+**Đề xuất:** Ảo hoá (chỉ render cửa sổ nhìn), nạp theo trang có cursor (ví dụ 500 bản ghi/lần) + prefetch khi cuộn, cache thưa có giới hạn theo ô; tìm kiếm chạy trên nguồn/DB (chỉ mục) chứ không quét DOM; ô không focus thì hạ mức cập nhật. Đo mẫu: 1 phiên ≥10 MB × 4 ô.
+
+**Bàn tiếp:** Không hạ chuẩn bằng cách quay lại cắt N dòng — nếu quá nặng thì hiện «đang nạp» + cho nhảy tới đầu/cuối, vẫn phải tới được lượt 1. Ngưỡng cụ thể thuộc P15.
+
+**Tại:** U5/bước1, D1/bước4
+
+### P20 · Cột đánh dấu câu hỏi trong ô chat để focus nhanh — CẦN BÀN / CHỐT
+
+**Bằng chứng/phạm vi:** Yêu cầu chủ máy 19/11: «Có cột đánh dấu câu hỏi để focus nhanh». Nguồn câu hỏi đã có (pending_question đọc AskUserQuestion từ transcript; /pick thao tác trên bảng hỏi), nhưng CHƯA có chỗ hiển thị: ô chat hiện chỉ là dòng chữ, không mốc nào để nhảy tới câu hỏi cũ/mới. P09 đã ghi representation chưa giữ revision/tool-call ID.
+
+**Đề xuất:** Cột mốc bên trái ô chat: mỗi câu hỏi một marker (đang chờ = nổi + đếm ở đầu ô; đã trả lời = mốc mờ; bị từ chối = gạch). Bấm marker ⇒ cuộn tới đúng câu + mở khối trả lời; danh sách nhảy nhanh (nút + phím tắt) liệt kê câu hỏi của phiên; câu đang chờ luôn đứng đầu danh sách. Nguồn = câu hỏi THẬT trong transcript + trạng thái chờ từ runtime, không suy từ chữ.
+
+**Bàn tiếp:** Cần chốt: marker theo lượt hỏi hay theo tool-call; nhiều câu trong một lượt thì gộp hay tách; câu đã bị CLI tự trả lời (hết hạn) hiện thế nào; giữ marker khi cuộn ảo hoá (P19). Không dùng marker để thay nút trả lời — trả lời vẫn qua đúng route và gate.
+
+**Tại:** U5/bước1, U2/bước3
 
 ## Thành phần tham gia một phiên — ai làm việc gì?
 
