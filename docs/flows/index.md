@@ -250,13 +250,13 @@ Xem HTML: W0 bàn hai vùng, T0 terminal và các Pxx liên kết tới từng b
 
 **Tại:** U5/bước1, U2/bước3
 
-### P21 · Bỏ HẾT mọi thứ liên quan Codex (mã · test · cấu hình · tài liệu · hook) — CẦN BÀN / CHỐT
+### P21 · ĐÃ XOÁ TRỌN Codex: mã · test · cấu hình · tài liệu (19/11) — CẦN BÀN / CHỐT
 
 **Bằng chứng/phạm vi:** Quang 19/11 «bỏ hẳn codex đi». Đo mã: grep -ri codex rust/src = 469 dòng/14 tệp (accounts143 · sessions83 · account_login49 · keys46 · quota40 · pipeline25 · runtime21 · config20 · codex_sessions19 · accounts_page10 · opencode6 · main4 · lib2 · keys_tmux1), 79 symbol codex*/CODEX_*, 13 tệp test, acc10 có cli=codex trong huba.config.json.
 
 **Đề xuất:** BỎ HẾT mọi thứ liên quan Codex (Quang 19/11 «cái gì liên quan bỏ hết»): (a) mã: driver open_codex_window, codex_wall, codex_sessions.rs, nhánh codex trong accounts/sessions/keys/quota/pipeline/runtime/config/account_login/accounts_page/main/lib; (b) test: xoá 8 tệp codex + ca codex trong 5 tệp dùng chung — cùng commit, không #[ignore] câm; (c) cấu hình: bỏ acc10 khỏi huba.config.json trong repo; máy đang có acc10 thì mã TỪ CHỐI với câu «CLI không còn hỗ trợ» + log codex_refused (không crash, không mở cửa sổ); (d) tài liệu/hook: bỏ mọi nhắc Codex trong CLAUDE.md/README/docs, bỏ hook codex_pretooluse khỏi đường chạy; (e) dữ liệu acc10 giữ read-only, không migrate.
 
-**Bàn tiếp:** ĐÃ LÀM BƯỚC 1 (19/11, chưa cài): cửa mở phiên TỪ CHỐI acc codex — ensure_account_usable + nhánh codex trong pipeline /new không còn mở cửa sổ; câu từ chối «Codex đã bỏ khỏi huba (19/11)…»; log codex_refused. Test mới sessions::codex_bi_tu_choi_o_cua_mo_phien (đỏ nếu gỡ cửa chặn). lib 155/155 · clippy -D warnings 0. CHƯA LÀM bước 2–4: 469 dòng/14 tệp còn trong mã + 13 tệp test — gỡ trọn ở lượt riêng (đụng snapshot/pipeline/keys/quota/accounts_page nên phải xoá cùng lúc test).
+**Bàn tiếp:** ĐÃ LÀM XONG 19/11: xoá module codex_sessions + 35 hàm codex trong accounts/account_login/keys/quota/sessions/runtime/accounts_page/main; bỏ nhánh codex trong snapshot, bàn giao, /new, gửi tin, xếp hạng, đọc nhật ký; CLI lạ (vd `cli: codex` còn trong config máy cũ) bị TỪ CHỐI ở cửa mở phiên + `huba … new` + `/accounts` (log cli_unsupported_refused, KHÔNG rơi về đường Claude); bỏ hàng acc10 khỏi huba.config.json repo; xoá 8 tệp test codex + ca codex trong 5 tệp chung (census con trỏ 11→10); 358 dòng chú thích lịch sử có codex đã dọn. Đo: lib 155/155 · sessions 74/74 · tin_thu_muc 12/12 · tai_khoan_khoa 16/16 · clippy -D warnings 0 · fmt sạch. Đỏ CÓ SẴN trên Ubuntu (không do lượt này): accounts_call_env (đòi /bin/zsh), stop_job/exec (pid), telegram sips, watch fixture Mac.
 
 **Tại:** U1/bước1, U3/bước1
 

@@ -509,13 +509,17 @@ tài liệu, hook. **Bốn bước, mỗi bước tự đỏ/xanh được**
    rõ «lịch sử của CLI đã bỏ» khi mở; không migrate sang Claude/OpenCode (khác native
    namespace — xem §4).
 
-**Đã làm bước 1 (19/11, chưa cài)**: cửa mở phiên **từ chối** acc codex —
-`ensure_account_usable` + nhánh codex trong `pipeline` không còn mở cửa sổ; câu từ
-chối «Codex đã bỏ khỏi huba (19/11)…»; log `codex_refused`; test mới
-`tests/sessions.rs::codex_bi_tu_choi_o_cua_mo_phien` (ĐỎ nếu gỡ cửa chặn). Lib
-155/155 · clippy `-D warnings` 0. **Chưa làm bước 2–4**: 469 dòng/14 tệp + 13 tệp
-test còn trong mã — gỡ trọn ở lượt riêng vì đụng `snapshot`/`pipeline`/`keys`/
-`quota`/`accounts_page` (xoá mã phải xoá test cùng lúc).
+**ĐÃ XOÁ TRỌN (19/11, đã cài)**: module `codex_sessions` + 35 hàm codex (accounts ·
+account_login · keys · quota · sessions · runtime · accounts_page · main); bỏ nhánh codex
+trong `snapshot`, bàn giao, `/new`, gửi tin, xếp hạng, đọc nhật ký. **CLI lạ** (vd `cli:
+"codex"` còn trong `huba.config.json` của máy cũ) bị **TỪ CHỐI** ở cửa mở phiên + CLI
+`huba … new` + `/accounts`, log `cli_unsupported_refused` — **không** rơi về đường Claude.
+Bỏ hàng `acc10` khỏi `huba.config.json` trong repo; xoá 8 tệp test codex + ca codex
+trong 5 tệp chung (census con trỏ đổi 11 → 10, ghi rõ là đường ĐI MẤT); dọn 358 dòng
+chú thích lịch sử. Đo: lib 155/155 · sessions 74/74 · tin_thu_muc 12/12 ·
+tai_khoan_khoa 16/16 · clippy `-D warnings` 0 · fmt sạch. Đỏ CÓ SẴN trên Ubuntu (không
+do lượt này): `accounts_call_env` (đòi `/bin/zsh`) · `stop_job`/`exec` (pid) ·
+`telegram` (sips) · `watch` (fixture Mac).
 
 **Điều KHÔNG đổi**: luật 1 (tường `denied_tools`) vẫn áp cho hai CLI còn lại; P09
 vẫn còn nghĩa nhưng **hẹp lại** — bất nhất «Codex thiếu journal ⇒ chưa xác nhận,

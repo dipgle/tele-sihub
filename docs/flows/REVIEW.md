@@ -1,5 +1,20 @@
 # Xác minh lại bản chốt trên hai engine — 17/11/2026 09:55+07
 
+## 20/11 00:50+07 — sau P21 «bỏ hết Codex»: chạy lại hai engine
+
+Lượt 19/11 14:26 của tiền nhiệm chết giữa chừng (`Target page… closed`,
+`.tmp/review-flows-20261119h-chromium.log`, GATE_EXIT=1) ⇒ KHÔNG tính. Chạy lại trên
+`index.html` hiện có (sinh 19/11 14:22, sau khi §15/P21 vào):
+
+| Đo | Kết quả |
+|---|---|
+| `index.html` `0a47db62c25d8c2827ad51cb2584cc28fa72d8354530f3a174f62f1c20c675e9` | Chromium **và** WebKit cùng hash, không đổi trước/sau lượt chạy |
+| Unit | 17/17, mã 0 |
+| Chromium `.tmp/review-flows-20261120a-chromium.log` · WebKit `…-webkit.log` | `GATE_EXIT=0` · 19 flow/30 thành phần/22 UC/**22 issue** · console-page-request 0 · remote 0 · svg_text_overlap 0 |
+| Chạy qua | `cong-node chay e2e`, `NODE_PATH=.tmp/ui-review/node_modules` |
+
+Chỉ tài liệu/bản mẫu: không sửa Rust/config, không gọi CLI/model.
+
 ## 19/11 12:25+07 — P22 cổng kênh động + UI mobile tự dựng: chạy lại hai engine
 
 §16 mới + P22: **cổng `Channel` động** (Telegram hôm nay; UI mobile **tự dựng** sau,

@@ -1,5 +1,10 @@
 # Sổ kiểm tra — thêm TÀI KHOẢN hoặc NGUỒN MODEL mới vào huba
 
+> 🔴 **19/11/2026 — Codex ĐÃ BỎ khỏi huba** (Quang: «bỏ hẳn codex đi»). Tài liệu này
+> giữ nguyên phần codex như **lịch sử** (bằng chứng đo 14/11); sản phẩm hiện chỉ hỗ trợ
+> **Claude CLI + OpenCode**. Hàng `cli: "codex"` còn trong cấu hình máy cũ bị TỪ CHỐI ở
+> cửa mở phiên, không rơi về đường Claude.
+
 Mở 14/11/2026 (Quang: *«ghi lại nhật ký những thứ cần kiểm tra khi thêm tài khoản và nguồn model mới»*).
 Nguồn model = một CLI mới (claude · opencode · codex · …) hoặc một nhà cung cấp mới sau CLI cũ.
 
