@@ -54,7 +54,7 @@ fn viec_nen_cho_moc(dong_lenh: &str, moc: Option<&std::path::Path>) -> u32 {
     let cmd = dong_lenh.to_string();
     std::thread::spawn(move || {
         let _ = huba::exec::run(
-            "/bin/zsh",
+            &huba::exec::posix_shell(),
             &["-c", &cmd],
             RunOpts {
                 timeout: Some(Duration::from_secs(120)),

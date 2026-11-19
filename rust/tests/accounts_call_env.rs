@@ -2,7 +2,8 @@
 //! con — khoá hồi quy cho nợ "fork/`--bg` rơi env" (vá 07/11, nhưng lúc ấy chỉ
 //! có đường `launch` viết tay).
 //!
-//! Bài kiểm chạy THẬT `/bin/zsh -c '<line> "$@"'` với một `claude` giả: đây là
+//! Bài kiểm chạy THẬT `<vỏ POSIX> -c '<line> "$@"'` (`exec::posix_shell`: zsh nếu
+//! máy có — macOS —, không thì bash — Ubuntu) với một `claude` giả: đây là
 //! đúng đường `sessions::account_call` sinh ra, nên nếu `env_for_child` hay
 //! `launch_line` quên một biến thì tiến trình con thấy biến rỗng.
 #![cfg(unix)]
@@ -68,7 +69,11 @@ fn dong_cau_truc_mang_env_va_thu_tu_doi_so_tới_tien_trinh_con() {
     };
 
     let (prog, argv) = huba::sessions::account_call(&cfg, Some("moi"), &["-p", "xin chào"]);
-    assert_eq!(prog, "/bin/zsh", "dòng nhiều từ phải đi qua shell");
+    assert_eq!(
+        prog,
+        huba::exec::posix_shell(),
+        "dòng nhiều từ phải đi qua shell"
+    );
     let got = chay(&prog, &argv);
     let duong_dan = tmp.path().join("acc-moi").display().to_string();
     assert_eq!(
@@ -93,7 +98,7 @@ fn dong_chi_co_config_dir_van_qua_shell_va_co_env() {
         ..Default::default()
     };
     let (prog, argv) = huba::sessions::account_call(&cfg, Some("acc4"), &["auth", "status"]);
-    assert_eq!(prog, "/bin/zsh");
+    assert_eq!(prog, huba::exec::posix_shell());
     let got = chay(&prog, &argv);
     let duong_dan = tmp.path().join("acc4").display().to_string();
     assert_eq!(got, format!("{duong_dan}|||auth status"));
@@ -135,7 +140,7 @@ fn launch_legacy_van_thang_o_tang_call() {
         ..Default::default()
     };
     let (prog, argv) = huba::sessions::account_call(&cfg, Some("acc9"), &["-p"]);
-    assert_eq!(prog, "/bin/zsh");
+    assert_eq!(prog, huba::exec::posix_shell());
     let got = chay(&prog, &argv);
     // `launch` không đặt CLAUDE_CONFIG_DIR/base_url; `model` bị CHE ⇒ không có
     // `--model` trên dòng chạy. Đúng luật di trú: dòng viết tay thắng.

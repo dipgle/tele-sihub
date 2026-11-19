@@ -69,11 +69,16 @@ fn book(pairs: &[(&str, &str)]) -> BTreeMap<String, Mark> {
 }
 
 /// Thư mục làm việc của hubad — nơi mọi phép dò `/usage` của chính huba chạy.
+///
+/// Hỏi ĐÚNG hàm mà sản phẩm dùng để nhận ra phép dò của mình
+/// (`sessions::hubd_runtime_dir`): macOS `~/Library/Application Support/hub`, Linux
+/// `$XDG_DATA_HOME|~/.local/share/hub`, Windows `%LOCALAPPDATA%\hub`. Bản cũ ghim
+/// đường macOS ⇒ trên Ubuntu bài kiểm dựng một cwd mà sản phẩm không coi là của huba
+/// và đỏ oan.
 fn hub_runtime_cwd() -> String {
-    format!(
-        "{}/Library/Application Support/hub",
-        std::env::var("HOME").unwrap_or_default()
-    )
+    huba::sessions::hubd_runtime_dir()
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Phép dò hạn mức của CHÍNH huba sống LÂU vẫn không phải tin.

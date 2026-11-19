@@ -1111,7 +1111,18 @@ fn sips_size(p: &std::path::Path) -> (u32, u32) {
 /// 🔴 Đo 2026-10-09: 4/4 lượt `/anh` (PNG 2,7–3,5 MB) chết ở trần 40 s khi đường
 /// lên tới Telegram còn ~33 KB/s. Và `sips -Z 2560` phóng 1200×800 lên 2560×1706
 /// — nên vế "ảnh nhỏ giữ nguyên cỡ" là một bài kiểm có chủ, không phải trang trí.
+///
+/// ⚠ Chỉ đo được trên macOS: `shrink_for_upload` gọi `sips`, công cụ không có trên
+/// Ubuntu (đo 20/11: không `sips`, không ImageMagick). Ở đó sản phẩm ghi
+/// `photo_shrink_skipped` rồi gửi BẢN GỐC — an toàn nhưng không thu nhỏ; nhánh đó đã
+/// được `a_file_sips_cannot_read_falls_back_to_the_original` khoá. Bài này nên
+/// `ignored` (hiện trong số đếm) chứ không xoá, và không `cfg` mất hẳn: một khoảng
+/// trống im lặng đọc y như "đã đo, xanh".
 #[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "cần `sips` (chỉ macOS) — Linux chưa có đường thu ảnh, gửi bản gốc"
+)]
 fn a_big_screenshot_goes_up_as_a_smaller_jpeg_and_a_small_one_is_not_enlarged() {
     use huba::telegram::{shrink_for_upload, SHRINK_EDGE};
     let dir = tempfile::tempdir().unwrap();
