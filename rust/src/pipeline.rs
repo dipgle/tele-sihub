@@ -7628,11 +7628,10 @@ pub fn scan_session_inboxes(root: &std::path::Path) -> Vec<(String, String, std:
     for claude_dir in tmp.flatten() {
         // `/private/tmp/claude-<uid>` — chỉ nhận đúng hình dạng ấy, đừng đi
         // duyệt cả `/private/tmp`.
-        if !claude_dir
-            .file_name()
-            .to_string_lossy()
-            .starts_with("claude-")
-        {
+        // Windows: thư mục gốc của Claude Code là `%TEMP%\claude` (không có uid) — Linux/macOS là
+        // `claude-<uid>`. Nhận cả hai; "claude" đứng một mình chỉ là tên đúng, KHÔNG nhận `claudeX`.
+        let ten = claude_dir.file_name().to_string_lossy().to_string();
+        if !(ten == "claude" || ten.starts_with("claude-")) {
             continue;
         }
         let Ok(slugs) = std::fs::read_dir(claude_dir.path()) else {
@@ -7703,10 +7702,16 @@ pub fn scratch_roots_from(
 }
 
 fn scratch_roots() -> Vec<std::path::PathBuf> {
+    // Windows không có `/tmp`: thư mục tạm của người dùng là `%TEMP%` (`std::env::temp_dir`).
+    // ⚠ Chưa đo trên Windows thật: hình dạng `%TEMP%\claude\<slug>\<id>\scratchpad` là suy ra.
+    #[cfg(windows)]
+    let tmpdir = std::env::temp_dir().to_string_lossy().to_string();
+    #[cfg(not(windows))]
+    let tmpdir = std::env::var("TMPDIR").unwrap_or_default();
     scratch_roots_from(
         SCRATCH_ROOT,
         std::env::var("CLAUDE_CODE_TMPDIR").ok().as_deref(),
-        std::env::var("TMPDIR").ok().as_deref(),
+        Some(tmpdir.as_str()),
     )
 }
 

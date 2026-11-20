@@ -61,7 +61,92 @@ if ($Verify) {
     Moc "LECH — ban cai $a, ban dung $b"; exit 1
 }
 
+# ──────────────────────────────────────────────────────────────────────────────────────────
+# Phần DÙNG CHUNG với gói Linux (`kem\`): luật chung, skill, cổng bảo mật, MCP codetrail, mẫu tài khoản.
+# Quang 21/11 «đồng bộ hết tính năng để dựng bản cài window». Có thư mục `kem\` cạnh trình cài thì làm.
+# ⚠ CHƯA CHẠY THỬ TRÊN WINDOWS THẬT (viết trên Ubuntu, không có PowerShell ở đó để chạy).
+# ──────────────────────────────────────────────────────────────────────────────────────────
+$Kem = Join-Path $Here 'kem'
+
+# Python THẬT (3.x). Windows không có sẵn: `python.exe` trong WindowsApps chỉ là lối tắt mở Microsoft Store
+# (chạy ra mã ≠ 0) — nên phải chạy thử, không tin `Get-Command`. Cài Node.js KHÔNG kéo theo Python.
+function Tim-Python {
+    foreach ($c in @(@('py', '-3'), @('python'), @('python3'))) {
+        $cmd = Get-Command $c[0] -ErrorAction SilentlyContinue
+        if (-not $cmd) { continue }
+        $pre = @($c | Select-Object -Skip 1)
+        $out = & $cmd.Source @pre -c 'import sys; print(sys.version_info[0])' 2>$null
+        if ($LASTEXITCODE -eq 0 -and ("$out").Trim() -eq '3') { return @{ Exe = $cmd.Source; Pre = $pre } }
+    }
+    return $null
+}
+
+# Ghi một khoá vào huba.env (thay dòng cũ, giữ mọi dòng khác). UTF-8 KHÔNG BOM: BOM dính vào tên khoá
+# đầu tiên và hubd đọc sai. Biến thật của môi trường vẫn thắng (config::load_one_env_file).
+function Dat-KhoaEnv($Tep, $Khoa, $GiaTri) {
+    $dong = @()
+    if (Test-Path $Tep) { $dong = @(Get-Content -LiteralPath $Tep -Encoding UTF8 | Where-Object { $_ -notmatch ('^\s*' + [regex]::Escape($Khoa) + '\s*=') }) }
+    $dong += "$Khoa=$GiaTri"
+    [System.IO.File]::WriteAllLines($Tep, [string[]]$dong, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Cai-Kem($Py) {
+    $Cai = Join-Path $Kem 'huba_cai.py'
+    $Mau = Join-Path $Kem 'tai-khoan.mau.json'
+    $env:PYTHONUTF8 = '1'                                   # in tiếng Việt ra console cp1252 không chết
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    function Chay-Cai { param([string[]]$A) & $Py.Exe @($Py.Pre) $Cai @A; if ($LASTEXITCODE -ne 0) { throw "huba_cai.py $($A[0]) thoat $LASTEXITCODE" } }
+    Moc 'kem: cau hinh (tai khoan con thieu + goc du an)'
+    Chay-Cai @('cau-hinh', $Config, $Mau)
+    $goc = (& $Py.Exe @($Py.Pre) $Cai goc-workspace $Config | Select-Object -Last 1)
+    Moc 'kem: luat chung (CLAUDE.md o goc workspace — da co thi GIU)'
+    Chay-Cai @('luat-goc', $Config, (Join-Path $Kem 'CLAUDE.md'))
+    Moc 'kem: skill + tac tu (da co thi GIU)'
+    Chay-Cai @('skill-goc', $Config, (Join-Path $Kem 'claude'))
+    Moc 'kem: thu muc tai khoan + junction projects (so phien chung)'
+    Chay-Cai @('thu-muc-acc', $Config)
+    $pa = Join-Path $Kem 'bin\project-agent.exe'
+    if (Test-Path $pa) {
+        Moc 'kem: MCP codetrail cho moi tai khoan claude'
+        Chay-Cai @('mcp-claude', $Config, $pa)
+    } else { Moc "CANH BAO: khong co $pa — MCP codetrail khong duoc cai" }
+    # Đường dẫn cho hubd: ghi vào huba.env (không phụ thuộc môi trường Task Scheduler thấy lúc nào).
+    $envf = Join-Path $Here 'huba.env'
+    Dat-KhoaEnv $envf 'HUBA_OPENCODE_PLUGIN' (Join-Path $Kem 'scripts\cong-bao-mat-plugin')
+    Dat-KhoaEnv $envf 'BAO_MAT_POLICY' (Join-Path $Kem 'scripts\bao-mat-policy.json')
+    if (Test-Path $pa) { Dat-KhoaEnv $envf 'HUBA_MCP_PROJECT_AGENT' $pa }
+    if ($goc -and (Test-Path (Join-Path $goc 'CLAUDE.md'))) { Dat-KhoaEnv $envf 'HUBA_LUAT_GOC' (Join-Path $goc 'CLAUDE.md') }
+    Moc "kem: da ghi duong dan cong bao mat / MCP / luat vao $envf"
+}
+
+# ① Cấu hình: chưa có thì để huba tạo (huba init), như trình cài Linux.
+if (-not (Test-Path $Config)) {
+    $cli0 = if ($BinDir) { Join-Path $BinDir 'huba.exe' } else { Join-Path $Rust 'target\release\huba.exe' }
+    if (Test-Path $cli0) {
+        Moc 'chua co huba.config.json — chay huba init'
+        Push-Location $Here
+        try { & $cli0 init; if ($LASTEXITCODE -ne 0) { throw "huba init thoat $LASTEXITCODE" } } finally { Pop-Location }
+    }
+}
 if (-not (Test-Path $Config)) { throw "khong thay $Config — can cau hinh truoc (huba.config.json)" }
+
+if (Test-Path $Kem) {
+    $py = Tim-Python
+    if (-not $py -and (Get-Command winget -ErrorAction SilentlyContinue) -and $env:HUBA_KHONG_CAI_CLI -ne '1') {
+        Moc 'khong co Python — thu cai bang winget (pham vi nguoi dung, khong can admin)...'
+        & winget install -e --id Python.Python.3.12 --scope user --accept-package-agreements --accept-source-agreements
+        # winget cập nhật PATH của lần đăng nhập SAU; nạp lại PATH hiện tại để tìm thấy ngay.
+        $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
+        $py = Tim-Python
+    }
+    if ($py) {
+        Cai-Kem $py
+    } else {
+        Moc 'CANH BAO: khong co Python 3 — BO QUA luat chung / skill / MCP / tai khoan. Cai Python (winget install Python.Python.3.12) roi chay lai trinh cai.'
+    }
+} else {
+    Moc 'goi khong co thu muc kem — chi cai huba (khong co luat chung/skill/cong bao mat)'
+}
 
 # ① Dựng (nếu không dùng bản dựng sẵn).
 if (-not $BinDir) {

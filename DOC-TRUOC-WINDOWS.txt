@@ -1,7 +1,8 @@
 huba cho Windows — đọc trước khi chạy
 =====================================
 
-Bản này dựng trên macOS, CHƯA chạy trên máy Windows thật. Bước 1 dưới đây là
+Bản này dựng chéo từ Mac/Ubuntu, CHƯA chạy trên máy Windows thật (trình cài .ps1 chưa từng được
+PowerShell chạy thử). Bước 1 dưới đây là
 PHÉP ĐO: nó mở 2 cửa sổ console, gõ thử, đọc lại, rồi tự đóng. Gửi tệp kết quả
 về trước khi dùng thật.
 
@@ -28,6 +29,20 @@ Mở PowerShell THƯỜNG (KHÔNG "Run as Administrator"), cd vào thư mục gi
        powershell -ExecutionPolicy Bypass -File install_update.ps1 -BinDir .
      Kiểm:     powershell -ExecutionPolicy Bypass -File install_update.ps1 -BinDir . -Verify
      Nhật ký:  logs\huba.log
+     ⚠ Giữ nguyên thư mục giải nén: hubd chạy từ đây và đọc cấu hình + thư mục `kem\` trong đó.
+
+Phần dùng chung với bản Linux (thư mục `kem\`) — trình cài làm tự động
+---------------------------------------------------------------------
+· Luật chung → <gốc dự án>\CLAUDE.md · skill + tác tử → <gốc dự án>\.claude\ (đã có thì GIỮ, không ghi đè)
+· Cổng bảo mật (danh sách lệnh bị cấm của /new) · MCP codetrail (project-agent.exe, ghi vào
+  .claude.json của từng tài khoản claude) · mẫu tài khoản claude còn thiếu · junction `projects`
+  của từng tài khoản (sổ phiên chung).
+· Gốc dự án mặc định là %USERPROFILE%\projects — tạo thư mục đó trước (hoặc khai workspace_root).
+· CẦN PYTHON 3 cho các bước trên. Windows không có sẵn Python, và cài Node.js KHÔNG kéo theo Python.
+  Trình cài tự thử `winget install Python.Python.3.12 --scope user` (không cần admin); thiếu winget
+  thì BỎ QUA phần `kem\` và nói rõ — cài Python rồi chạy lại trình cài.
+· Chỉ tài khoản `claude` (opencode/codex chưa có bản Windows).
+· Đường dẫn cổng bảo mật/MCP/luật được ghi vào huba.env (không có bí mật nào trong đó).
 
 Cách bản Windows làm việc
 -------------------------

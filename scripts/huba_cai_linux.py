@@ -109,9 +109,27 @@ def cli_cua(a):
     return (a.get("cli") or "claude").strip().lower() or "claude"
 
 
-def thu_muc_acc(cfg, home=HOME):
+def lenh_lien_ket_nt(dich, nguon):
+    """Lệnh tạo JUNCTION trên Windows: `mklink /J <dich> <nguon>`. Không cần quyền admin hay
+    Developer Mode (symlink thì cần) — gói Windows dùng tệp này cho `projects` của từng acc. Thuần."""
+    return ["cmd", "/c", "mklink", "/J", dich, nguon]
+
+
+def lien_ket(dich, nguon):
+    """`dich` → thư mục `nguon`: symlink (Linux/macOS) · junction (Windows)."""
+    if os.name == "nt":
+        import subprocess
+        r = subprocess.run(lenh_lien_ket_nt(dich, nguon), capture_output=True, text=True)
+        if r.returncode != 0:
+            raise OSError(f"mklink /J hỏng (mã {r.returncode}): {r.stdout.strip()} {r.stderr.strip()}")
+    else:
+        os.symlink(nguon, dich)
+
+
+def thu_muc_acc(cfg, home=HOME, tao_lien_ket=None):
     """Mỗi acc `claude`: thư mục cấu hình + `projects` → `~/.claude/projects` (sổ phiên
-    chung). Không đụng thứ đã có. Trả số mục đã tạo."""
+    chung). Không đụng thứ đã có. Trả số mục đã tạo. `tao_lien_ket` chỉ để bài kiểm thay."""
+    tao_lien_ket = tao_lien_ket or lien_ket
     chung = os.path.join(home, ".claude", "projects")
     os.makedirs(chung, exist_ok=True)
     tao = 0
@@ -125,7 +143,7 @@ def thu_muc_acc(cfg, home=HOME):
             tao += 1
         p = os.path.join(d, "projects")
         if os.path.realpath(d) != os.path.realpath(os.path.join(home, ".claude")) and not os.path.lexists(p):
-            os.symlink(chung, p)
+            tao_lien_ket(p, chung)
             tao += 1
     return tao
 
@@ -325,6 +343,14 @@ def tu_kiem():
         ok(not os.path.exists(os.path.join(h, ".x8")), "không đụng acc opencode")
         ok(not os.path.exists(os.path.join(h, ".x10")), "không đụng acc codex (không `projects` của Claude)")
         ok(thu_muc_acc(cfg, h) == 0, "chạy lại ⟹ không tạo gì (bất biến)")
+    ok(lenh_lien_ket_nt("D", "S") == ["cmd", "/c", "mklink", "/J", "D", "S"],
+       "Windows: junction (mklink /J), không phải symlink")
+    with tempfile.TemporaryDirectory() as h:
+        goi = []
+        cfg = {"claude_accounts": [{"name": "acc3", "config_dir": os.path.join(h, ".claude-acc3")}]}
+        thu_muc_acc(cfg, h, tao_lien_ket=lambda d, n: goi.append((d, n)))
+        ok(goi == [(os.path.join(h, ".claude-acc3", "projects"), os.path.join(h, ".claude", "projects"))],
+           "liên kết đi qua MỘT hàm thay được (Windows dùng junction)")
     with tempfile.TemporaryDirectory() as h:
         bin_ = os.path.join(h, "kem", "bin", "project-agent")
         cfg = {"claude_accounts": [{"name": "acc1"}, {"name": "acc3", "config_dir": os.path.join(h, ".claude-acc3")},

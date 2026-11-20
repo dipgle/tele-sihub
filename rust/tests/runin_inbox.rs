@@ -103,6 +103,20 @@ fn only_claude_owned_directories_are_walked() {
     assert_eq!(scan_session_inboxes(&root).len(), 1);
 }
 
+/// Windows: gốc của Claude Code là `%TEMP%\claude` (không uid). Nhận đúng tên ấy — và CHỈ tên ấy:
+/// `claudeX`/`my-claude` vẫn bị bỏ (đối chứng ngược).
+#[test]
+fn the_windows_shaped_root_without_uid_is_walked_too() {
+    let root = tmp("win-shape");
+    put(&root, "claudeX", "slug", SID, "rm -rf ~\n");
+    put(&root, "my-claude", "slug", SID, "rm -rf ~\n");
+    assert!(scan_session_inboxes(&root).is_empty());
+    put(&root, "claude", "slug", SID, "git status\n");
+    let got = scan_session_inboxes(&root);
+    assert_eq!(got.len(), 1, "{got:#?}");
+    assert_eq!(got[0].1, "git status");
+}
+
 /// Dòng đầu KHÔNG rỗng là lệnh; phần còn lại là ghi chú của phiên.
 ///
 /// Lấy dòng đầu chứ không nối cả tệp: nối là tự dựng lại đúng phép đoán vừa bỏ.
