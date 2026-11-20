@@ -63,7 +63,7 @@ fn mot_lan_nhac_ten_khong_lat_duoc_nhan_dang_giu() {
         "[dwork] Xong, p50 125 giây.",
     ]);
     assert_eq!(
-        huba::sessions::folder_for_session(sid, &truoc, &ws, || None).as_deref(),
+        huba::sessions::folder_for_session(sid, &truoc, &ws, "").as_deref(),
         Some("dwork"),
         "phiên tự khai dwork mà không nhận được nhãn"
     );
@@ -75,7 +75,7 @@ fn mot_lan_nhac_ten_khong_lat_duoc_nhan_dang_giu() {
         "Tiếp tục dựng dòng thời gian cho lượt 18:45.",
     ]);
     assert_eq!(
-        huba::sessions::folder_for_session(sid, &sau, &ws, || None).as_deref(),
+        huba::sessions::folder_for_session(sid, &sau, &ws, "").as_deref(),
         Some("dwork"),
         "một lần NHẮC tên dự án khác đã lật được nhãn — đúng cái Hà chụp màn 16/09"
     );
@@ -92,7 +92,7 @@ fn khai_hai_lan_thi_van_lat_duoc_nhan() {
 
     let truoc = duoi(&["[dwork] Đang làm dwork.", "[dwork] Vẫn dwork."]);
     assert_eq!(
-        huba::sessions::folder_for_session(sid, &truoc, &ws, || None).as_deref(),
+        huba::sessions::folder_for_session(sid, &truoc, &ws, "").as_deref(),
         Some("dwork")
     );
 
@@ -101,25 +101,42 @@ fn khai_hai_lan_thi_van_lat_duoc_nhan() {
         "[huba] Đã vá xong, chạy bài kiểm.",
     ]);
     assert_eq!(
-        huba::sessions::folder_for_session(sid, &sau, &ws, || None).as_deref(),
+        huba::sessions::folder_for_session(sid, &sau, &ws, "").as_deref(),
         Some("huba"),
         "khai HAI lần là đổi thật — cổng chống lật không được chặn ca này"
     );
 }
 
-/// Phiên CHƯA có nhãn nào thì một lời khai vẫn đủ để GIEO.
+/// 🔄 ĐẢO CHIỀU 2026-11-20, không xoá: phiên CHƯA có nhãn nào thì MỘT lời khai
+/// KHÔNG còn đủ để gieo — trừ khi nó khớp scope `cwd`.
 ///
-/// Cổng chỉ chặn việc LẬT, không chặn việc ĐẶT: đổi một nhãn sai lấy một nhãn
-/// trống là đổi ngang, không phải sửa.
+/// Bản trước khoá điều ngược lại (*"phiên mới mà phải đợi tới lượt nói thứ hai
+/// mới có tên thì cổng đang chặn nhầm"*) và đổi một cái nhãn sai lấy một cái nhãn
+/// trống là "đổi ngang". Ca 16/11 chứng minh nó không ngang: một tiền tố
+/// assistant tự viết không phải bằng chứng chủ máy đã giao dự án, và nhãn sai
+/// đứng im thay vì trống. Vế PHẢI GIỮ: hai lượt nhất quán, hoặc một lượt khớp
+/// scope, vẫn gieo được ngay.
 #[test]
-fn phien_chua_co_nhan_thi_mot_lan_khai_van_du_de_gieo() {
+fn phien_chua_co_nhan_thi_mot_lan_khai_chua_du_de_gieo() {
     let ws = workspace();
-    let sid = "test-gieo-moi-aa11bb22";
     let tail = duoi(&["[huba] Lượt nói đầu tiên của phiên này."]);
     assert_eq!(
-        huba::sessions::folder_for_session(sid, &tail, &ws, || None).as_deref(),
+        huba::sessions::folder_for_session("test-gieo-moi-aa11bb22", &tail, &ws, ""),
+        None,
+        "một tiền tố assistant đơn lẻ đã gieo được tên ở phiên mở tại gốc"
+    );
+    // Vế phải giữ ①: khớp scope (CLI mở phiên trong `huba`) ⇒ gieo ngay.
+    assert_eq!(
+        huba::sessions::folder_for_session("test-gieo-scope-aa11bb22", &tail, &ws, "huba")
+            .as_deref(),
         Some("huba"),
-        "phiên mới mà phải đợi tới lượt nói thứ hai mới có tên thì cổng đang chặn nhầm"
+        "tiền tố khớp scope cwd phải đủ để gieo"
+    );
+    // Vế phải giữ ②: hai lượt nhất quán ⇒ gieo dù không có scope.
+    let hai = duoi(&["[huba] Lượt một.", "[huba] Lượt hai."]);
+    assert_eq!(
+        huba::sessions::folder_for_session("test-gieo-hai-aa11bb22", &hai, &ws, "").as_deref(),
+        Some("huba")
     );
 }
 
@@ -138,7 +155,7 @@ fn loi_chu_may_go_khong_phai_loi_tu_khai() {
         duoi(&["[dwork] Đang làm dwork."])
     );
     assert_eq!(
-        huba::sessions::folder_for_session(sid, &tail, &ws, || None).as_deref(),
+        huba::sessions::folder_for_session(sid, &tail, &ws, "dwork").as_deref(),
         Some("dwork"),
         "câu chủ máy gõ nhắc tên dự án khác là chuyện thường — không được tính là lời khai"
     );

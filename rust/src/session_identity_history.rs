@@ -10,7 +10,7 @@ use rusqlite::{params, Connection, OpenFlags};
 // Unicode White_Space, matching Rust's `char::is_whitespace`; language syntax,
 // not an operational threshold. The parity test enumerates every scalar value.
 const WHITE_SPACE: &str = "\u{9}\u{a}\u{b}\u{c}\u{d} \u{85}\u{a0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}\u{2008}\u{2009}\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}";
-type HistoryKey = (PathBuf, String, String);
+type HistoryKey = (PathBuf, String, String, String);
 type HistoryCache = HashMap<HistoryKey, (i64, Option<String>)>;
 static CACHE: OnceLock<Mutex<HistoryCache>> = OnceLock::new();
 
@@ -18,6 +18,7 @@ pub(super) fn cached_opencode_head(
     path: &Path,
     session_id: &str,
     workspace_root: &str,
+    scope: &str,
     revision: i64,
 ) -> Result<Option<String>, String> {
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -25,6 +26,7 @@ pub(super) fn cached_opencode_head(
         path.to_path_buf(),
         session_id.to_string(),
         workspace_root.to_string(),
+        scope.to_string(),
     );
     if let Some((seen, value)) = cache
         .lock()
@@ -35,7 +37,7 @@ pub(super) fn cached_opencode_head(
             return Ok(value.clone());
         }
     }
-    let value = opencode_head(path, session_id, workspace_root)?;
+    let value = opencode_head(path, session_id, workspace_root, scope)?;
     // Errors are not cached: transient corruption/permission failures retry and
     // remain logged. Successful None is cached too, for project-only sessions.
     cache
@@ -53,6 +55,7 @@ pub(super) fn opencode_head(
     path: &Path,
     session_id: &str,
     workspace_root: &str,
+    scope: &str,
 ) -> Result<Option<String>, String> {
     match std::fs::metadata(path) {
         Ok(meta) if meta.is_file() => {}
@@ -108,7 +111,11 @@ pub(super) fn opencode_head(
             row.get::<_, String>(0)
         })
         .map_err(|e| format!("query identity history: {e}"))?;
-    let mut reducer = super::identity_reducer::IdentityReducer::new(None, super::KHAI_QUET_LUOT);
+    let mut reducer = super::identity_reducer::IdentityReducer::new(
+        None,
+        super::KHAI_QUET_LUOT,
+        Some(scope.to_string()),
+    );
     for row in rows {
         let text = row.map_err(|e| format!("read identity history: {e}"))?;
         reducer.push(super::declared_parts(&text, workspace_root));
@@ -167,11 +174,22 @@ mod tests {
             self.add(seq, "assistant", json!([{"type":"text","text":text}]));
         }
 
+        /// Session opened in the `huba` project directory (scope `huba`): one
+        /// agreeing prefix is corroborated by the CLI's own `cwd`.
         fn read(&self) -> Option<(String, String)> {
+            self.read_scoped("huba")
+        }
+
+        fn read_scoped(&self, scope: &str) -> Option<(String, String)> {
             let root = self.tmp.path().to_string_lossy();
-            opencode_head(&self.tmp.path().join("history.db"), "ses_fixture", &root)
-                .unwrap()
-                .and_then(|tail| super::super::declared_in_tail(&tail, &root))
+            opencode_head(
+                &self.tmp.path().join("history.db"),
+                "ses_fixture",
+                &root,
+                scope,
+            )
+            .unwrap()
+            .and_then(|tail| super::super::declared_in_tail(&tail, &root))
         }
     }
 
@@ -246,7 +264,8 @@ mod tests {
         assert!(opencode_head(
             &h.tmp.path().join("history.db"),
             "ses_fixture",
-            &h.tmp.path().to_string_lossy()
+            &h.tmp.path().to_string_lossy(),
+            "huba"
         )
         .is_err());
     }
@@ -262,7 +281,8 @@ mod tests {
         assert!(opencode_head(
             &h.tmp.path().join("history.db"),
             "ses_fixture",
-            &h.tmp.path().to_string_lossy()
+            &h.tmp.path().to_string_lossy(),
+            "huba"
         )
         .is_err());
     }
@@ -279,29 +299,51 @@ mod tests {
         assert_eq!(h.read(), Some(("huba".into(), "ui".into())));
     }
 
+    /// Root-opened session (no scope): a lone prefix is a mention, never a seed —
+    /// the cold replay must agree with the warm reducer (`folder_for_session`).
+    #[test]
+    fn cold_replay_without_scope_needs_two_prefixes_to_seed() {
+        let h = History::new();
+        h.prefix(
+            1,
+            "[huba/ui] One assistant sentence, nothing corroborates it.",
+        );
+        assert_eq!(h.read_scoped(""), None);
+        h.prefix(2, "[huba/ui] Same project again.");
+        assert_eq!(h.read_scoped(""), Some(("huba".into(), "ui".into())));
+    }
+
+    /// A lone prefix for ANOTHER project than the scope is still only a mention.
+    #[test]
+    fn cold_replay_lone_prefix_against_the_scope_is_refused() {
+        let h = History::new();
+        h.prefix(1, "[other] Mentioned once, session opened in huba.");
+        assert_eq!(h.read_scoped("huba"), None);
+    }
+
     #[test]
     fn no_declaration_cache_invalidates_on_revision_and_errors_retry() {
         let h = History::new();
         let path = h.tmp.path().join("history.db");
         let root = h.tmp.path().to_string_lossy();
         assert_eq!(
-            cached_opencode_head(&path, "ses_fixture", &root, 1).unwrap(),
+            cached_opencode_head(&path, "ses_fixture", &root, "huba", 1).unwrap(),
             None
         );
         h.prefix(1, "[huba/ui] New declaration in a new source revision.");
         assert_eq!(
-            cached_opencode_head(&path, "ses_fixture", &root, 1).unwrap(),
+            cached_opencode_head(&path, "ses_fixture", &root, "huba", 1).unwrap(),
             None
         );
-        assert!(cached_opencode_head(&path, "ses_fixture", &root, 2)
+        assert!(cached_opencode_head(&path, "ses_fixture", &root, "huba", 2)
             .unwrap()
             .is_some());
         h.db.execute_batch("ALTER TABLE session_message RENAME COLUMN data TO broken_data;")
             .unwrap();
-        assert!(cached_opencode_head(&path, "ses_fixture", &root, 3).is_err());
+        assert!(cached_opencode_head(&path, "ses_fixture", &root, "huba", 3).is_err());
         h.db.execute_batch("ALTER TABLE session_message RENAME COLUMN broken_data TO data;")
             .unwrap();
-        assert!(cached_opencode_head(&path, "ses_fixture", &root, 3)
+        assert!(cached_opencode_head(&path, "ses_fixture", &root, "huba", 3)
             .unwrap()
             .is_some());
     }

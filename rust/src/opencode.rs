@@ -2362,7 +2362,8 @@ mod tests {
     /// Quang 12/11: `/new acc8 aihub` mở ở gốc workspace rồi làm việc trong
     /// `aihub`, mà hàng vẫn đọc `[projects]` — trong khi phiên Claude cùng
     /// hoàn cảnh lên đúng dự án. Đuôi dựng từ kho opencode phải cho
-    /// `folder_for_session` (cửa nhãn CHUNG) đọc ra dự án thật.
+    /// `folder_for_session` (cửa nhãn CHUNG) đọc được lời tự khai. Phần «đếm đường
+    /// dẫn công cụ ⇒ dự án» của bài này đã ĐẢO 20/11 (ca 16/11): xem chú thích tại chỗ.
     #[test]
     fn duoi_v2_cho_nhan_du_an_nhu_phien_claude() {
         let tmp = std::env::temp_dir().join(format!(
@@ -2409,15 +2410,20 @@ mod tests {
         let dem = got.iter().find(|s| s.id == "ses_dem").unwrap();
         let khai = got.iter().find(|s| s.id == "ses_khai").unwrap();
         let id = |s: &str| format!("{s}-{}", std::process::id());
-        // Đếm đường dẫn công cụ ⇒ dự án thật, không phải thư mục mở phiên.
+        // 🔄 ĐẢO CHIỀU 2026-11-20: đếm đường dẫn công cụ KHÔNG còn tự đặt tên dự án
+        // (ca 16/11). Phiên mở ở gốc, chủ máy chỉ gõ chữ `aihub`, công cụ đọc hai
+        // tệp trong `aihub` — chưa được giao dự án ⇒ không có dự án nào, và đuôi
+        // vẫn phải mang đường dẫn (`fill_tails_v2` còn chạy) để phép thử này có nghĩa.
+        assert!(dem.tail.contains("aihub/MEMORY.md"), "đuôi: {}", dem.tail);
         assert_eq!(
-            crate::sessions::folder_for_session(&id("dem"), &dem.tail, ws, || None).as_deref(),
-            Some("aihub"),
-            "đuôi: {}",
+            crate::sessions::folder_for_session(&id("dem"), &dem.tail, ws, ""),
+            None,
+            "đường dẫn công cụ đã đặt tên dự án: {}",
             dem.tail
         );
         // Lời tự khai `[tfl5]` ở đầu lượt nói ⇒ đọc được, cùng luật với Claude
-        // (luật ấy chỉ nhận tên là THƯ MỤC CÓ THẬT ⇒ dựng gốc thật).
+        // (luật ấy chỉ nhận tên là THƯ MỤC CÓ THẬT ⇒ dựng gốc thật). Một lượt khai
+        // đơn chỉ gieo được khi khớp scope ⇒ phiên mở trong `tfl5`.
         let ws_that = tmp.join("ws");
         std::fs::create_dir_all(ws_that.join("tfl5")).unwrap();
         assert_eq!(
@@ -2425,7 +2431,7 @@ mod tests {
                 &id("khai"),
                 &khai.tail,
                 &ws_that.to_string_lossy(),
-                || None
+                "tfl5"
             )
             .as_deref(),
             Some("tfl5")
@@ -2433,7 +2439,7 @@ mod tests {
         // Đối chứng: đuôi rỗng (bản trước 12/11) KHÔNG ra được dự án — tức bài
         // này đỏ nếu `fill_tails_v2` bị gỡ.
         assert_eq!(
-            crate::sessions::folder_for_session(&id("rong"), "", ws, || None),
+            crate::sessions::folder_for_session(&id("rong"), "", ws, ""),
             None
         );
         let _ = std::fs::remove_dir_all(&tmp);

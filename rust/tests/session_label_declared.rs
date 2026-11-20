@@ -70,7 +70,9 @@ fn the_session_own_prefix_wins_over_the_census() {
 #[test]
 fn the_label_the_list_shows_is_the_declared_one() {
     let ws = workspace();
-    let got = huba::sessions::folder_for_session("test-onghut-08b1a8e8", &fixture(), &ws, || None);
+    // Scope = thư mục CLI mở phiên (`cwd` = onghut): lời khai MỘT lần khớp scope
+    // nên được nhận; xem `nhan_phien_khong_suy_tu_duong_dan.rs` cho ca scope khác.
+    let got = huba::sessions::folder_for_session("test-onghut-08b1a8e8", &fixture(), &ws, "onghut");
     assert_eq!(got.as_deref(), Some("onghut"));
     assert_eq!(
         huba::sessions::display_name("username-9c", "onghut"),
@@ -78,13 +80,17 @@ fn the_label_the_list_shows_is_the_declared_one() {
     );
 }
 
-/// Không được vá quá tay: phiên KHÔNG khai gì thì phép đếm vẫn là câu trả lời.
+/// 🔄 ĐẢO CHIỀU 2026-11-20, không xoá. Bản trước khoá điều ngược lại: *"phiên
+/// KHÔNG khai gì thì phép đếm vẫn là câu trả lời"* — và chính luật ấy đã gây ca
+/// 16/11 (`docs/ra-soat-ten-phien-goc-20261116.md`): một phiên mở ở gốc, chưa
+/// giao dự án, bị đặt tên `[zkey]` rồi `[scripts]` vì kết quả công cụ nhắc đường
+/// dẫn. Phép đếm không còn là nguồn danh tính; khi không có lời khai thì câu trả
+/// lời là SCOPE (`cwd`), hoặc không có dự án nào.
 ///
-/// Nhật ký của một phiên có thể toàn lượt gọi công cụ hàng giờ liền (`💬 [dùng
-/// Bash]`), lúc ấy không có lời nào để đọc — bỏ phép đếm đi là đổi một lỗi lấy
-/// một lỗi khác.
+/// Vế PHẢI GIỮ của bản cũ: đuôi toàn lượt gọi công cụ vẫn không làm mất nhãn
+/// của phiên có scope — nhãn đến từ `cwd`, không phụ thuộc đuôi có chữ hay không.
 #[test]
-fn with_no_declaration_the_census_still_answers() {
+fn with_no_declaration_the_census_does_not_name_the_project() {
     let ws = workspace();
     let tail_without_prose: String = fixture()
         .lines()
@@ -96,12 +102,24 @@ fn with_no_declaration_the_census_still_answers() {
         None,
         "không có lời nào thì đừng bịa ra một lời khai"
     );
-    let got =
-        huba::sessions::folder_for_session("test-no-prose", &tail_without_prose, &ws, || None);
+    // Phiên mở ở gốc (scope rỗng): chưa giao dự án ⇒ KHÔNG có dự án, dù đuôi nhắc
+    // `AI/tfl5` nhiều lần (đúng thế mất cân bằng của ca 18/08).
     assert_eq!(
-        got.as_deref(),
-        Some("AI/tfl5"),
-        "mất phép đếm là mất luôn nhãn"
+        huba::sessions::folder_for_session("test-no-prose", &tail_without_prose, &ws, ""),
+        None,
+        "phép đếm đường dẫn lại tự đặt tên dự án"
+    );
+    // Phiên mở trong onghut: nhãn là scope, không phải `AI/tfl5` đếm được.
+    assert_eq!(
+        huba::sessions::folder_for_session(
+            "test-no-prose-scope",
+            &tail_without_prose,
+            &ws,
+            "onghut"
+        )
+        .as_deref(),
+        Some("onghut"),
+        "scope cwd phải trả lời khi không có lời khai"
     );
 }
 
@@ -147,7 +165,7 @@ fn the_census_may_not_overwrite_a_declared_label() {
     let sid = "test-memo-onghut";
     // Lượt đo 1: có lời khai ⟹ nhớ "onghut" kèm hạng "tự khai".
     assert_eq!(
-        huba::sessions::folder_for_session(sid, &fixture(), &ws, || None).as_deref(),
+        huba::sessions::folder_for_session(sid, &fixture(), &ws, "onghut").as_deref(),
         Some("onghut")
     );
     // Lượt đo 2: lời khai đã trôi mất, chỉ còn đường dẫn tfl5 ⟹ GIỮ NGUYÊN.
@@ -157,7 +175,7 @@ fn the_census_may_not_overwrite_a_declared_label() {
         .collect::<Vec<_>>()
         .join("\n");
     assert_eq!(
-        huba::sessions::folder_for_session(sid, &tail_without_prose, &ws, || None).as_deref(),
+        huba::sessions::folder_for_session(sid, &tail_without_prose, &ws, "onghut").as_deref(),
         Some("onghut"),
         "phép đếm đã lật cái nhãn phiên tự khai — đúng lỗi 18/08"
     );

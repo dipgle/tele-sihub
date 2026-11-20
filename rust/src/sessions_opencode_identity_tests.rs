@@ -16,10 +16,18 @@ struct Fixture {
 
 impl Fixture {
     fn new(case: &str) -> Self {
+        Self::new_at(case, "huba")
+    }
+
+    /// `opened_in`: directory OpenCode reports for the session, relative to the
+    /// workspace root; `""` = opened at the root itself (no project assigned).
+    fn new_at(case: &str, opened_in: &str) -> Self {
         let tmp = tempfile::tempdir().expect("fixture directory");
         let root = tmp.path().join("workspace");
-        std::fs::create_dir_all(root.join("huba")).unwrap();
-        std::fs::create_dir_all(root.join("other")).unwrap();
+        for p in ["huba", "other", "zkey", "scripts"] {
+            std::fs::create_dir_all(root.join(p)).unwrap();
+            std::fs::write(root.join(p).join("CLAUDE.md"), "# project").unwrap();
+        }
         let path = tmp.path().join("opencode.db");
         let db = Connection::open(&path).unwrap();
         db.execute_batch(
@@ -49,7 +57,7 @@ impl Fixture {
         db.execute(
             "INSERT INTO session_v2 (id,directory,title,time_created,time_updated)
              VALUES (?1,?2,'UI handoff',1,2)",
-            params![id, root.join("huba").to_string_lossy()],
+            params![id, root.join(opened_in).to_string_lossy()],
         )
         .unwrap();
         Self {
@@ -188,7 +196,7 @@ fn a_bare_prefix_preserves_the_same_project_module_in_shared_memo() {
     let source = f.source();
     let ws = f.cfg.workspace_root.to_string_lossy();
     assert_eq!(
-        folder_for_session(&f.id, &source.tail, &ws, || None).as_deref(),
+        folder_for_session(&f.id, &source.tail, &ws, "huba").as_deref(),
         Some("huba")
     );
     assert_eq!(lane_for_session(&f.id, &source.tail, &ws, || None), "ui");
@@ -207,7 +215,7 @@ fn rejected_project_flip_cannot_donate_its_module() {
     let source = f.source();
     let ws = f.cfg.workspace_root.to_string_lossy();
     assert_eq!(
-        folder_for_session(&f.id, &source.tail, &ws, || None).as_deref(),
+        folder_for_session(&f.id, &source.tail, &ws, "huba").as_deref(),
         Some("huba")
     );
     assert_eq!(lane_for_session(&f.id, &source.tail, &ws, || None), "ui");
@@ -331,4 +339,91 @@ fn missed_intervening_project_change_does_not_resurrect_a_module() {
         row.lane.is_empty(),
         "a real intervening transition must clear the old module"
     );
+}
+
+/// A tool result naming `project` paths, shaped like the real 16/11 case.
+fn tool_paths(f: &Fixture, seq: i64, project: &str) {
+    let path = f
+        .cfg
+        .workspace_root
+        .join(format!("{project}/native/src/main.rs"));
+    f.db.execute(
+        "INSERT INTO session_message VALUES (?1,?2,'assistant',?3,?3,?3,?4)",
+        params![
+            format!("m{seq}"),
+            f.id,
+            seq,
+            json!({"content":[{"type":"tool","state":{"input":{"path":path.to_string_lossy()}}}]})
+                .to_string()
+        ],
+    )
+    .unwrap();
+}
+
+fn root_dir_name(f: &Fixture) -> String {
+    f.cfg
+        .workspace_root
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// 16/11 real case: opened at the workspace root, the owner assigned nothing, a
+/// tool result named `zkey/…` paths. The label must stay the neutral scope (the
+/// root directory name), warm AND cold — never `zkey`, never `scripts`.
+#[test]
+fn root_session_is_not_renamed_by_paths_in_tool_results() {
+    let f = Fixture::new_at("root_paths", "");
+    f.message(1, "user", "Kiểm tra máy bị tắt đột ngột.");
+    f.message(2, "assistant", "[projects] Đang kiểm tra nhật ký hệ thống.");
+    for seq in 3..9 {
+        tool_paths(&f, seq, if seq % 2 == 0 { "zkey" } else { "scripts" });
+    }
+    let warm = f.live(f.source());
+    folder_memo().lock().unwrap().remove(&f.id);
+    let cold = f.live(f.source());
+    let neutral = root_dir_name(&f);
+    assert_eq!(warm.folder, neutral, "warm: path census named the project");
+    assert_eq!(cold.folder, neutral, "cold: path census named the project");
+    assert!(warm.lane.is_empty() && cold.lane.is_empty());
+    assert_eq!(f.label(warm).label, format!("[{neutral}]"));
+}
+
+/// The assistant's lone prefix at the root is a mention, not an assignment —
+/// warm and cold agree; the same project twice IS a declaration.
+#[test]
+fn root_session_needs_two_prefixes_warm_and_cold() {
+    let f = Fixture::new_at("root_one_prefix", "");
+    f.message(1, "assistant", "[huba] Only one sentence says so.");
+    let neutral = root_dir_name(&f);
+    let warm = f.live(f.source());
+    folder_memo().lock().unwrap().remove(&f.id);
+    let cold = f.live(f.source());
+    assert_eq!(warm.folder, neutral, "warm: a lone prefix seeded the name");
+    assert_eq!(cold.folder, neutral, "cold: a lone prefix seeded the name");
+
+    f.message(2, "assistant", "[huba] And again, consistently.");
+    let warm = f.live(f.source());
+    folder_memo().lock().unwrap().remove(&f.id);
+    let cold = f.live(f.source());
+    assert_eq!(warm.folder, "huba");
+    assert_eq!(cold.folder, "huba");
+}
+
+/// Scope is the CLI's own `cwd`: a session opened IN `huba` keeps `huba` when
+/// its tool results are full of `zkey` paths, and one `[zkey]` mention cannot
+/// flip it — warm and cold.
+#[test]
+fn project_scope_survives_paths_and_a_lone_mention_warm_and_cold() {
+    let f = Fixture::new("scope_survives");
+    for seq in 1..7 {
+        tool_paths(&f, seq, "zkey");
+    }
+    f.message(7, "assistant", "[zkey] Reading the native crate.");
+    let warm = f.live(f.source());
+    folder_memo().lock().unwrap().remove(&f.id);
+    let cold = f.live(f.source());
+    assert_eq!(warm.folder, "huba");
+    assert_eq!(cold.folder, "huba");
 }

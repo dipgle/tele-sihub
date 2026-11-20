@@ -2042,6 +2042,11 @@ fn task_note_summary(text: &str) -> Option<String> {
 /// để một câu văn lỡ nêu tên thư mục khác không lật được kết quả.
 ///
 /// Trả `None` khi không đủ bằng chứng — chỗ gọi in "(chưa rõ)" chứ đừng bịa.
+///
+/// 🔴 **KHÔNG CÒN LÀ NGUỒN NHÃN từ 2026-11-20.** Hàm này đo *chủ đề* (phiên đụng vào
+/// thư mục nào), không phải *danh tính* (phiên được giao dự án nào): một kết quả
+/// công cụ nhắc `zkey/…` hai lần đã đổi `[projects]` → `[zkey]` cho phiên chưa được
+/// giao dự án (16/11). `folder_for_session` không gọi nó nữa; đừng nối lại.
 /// Dự án từ ĐƯỜNG DẪN làm việc — dùng cho nguồn opencode, nơi `directory` là
 /// dữ kiện có sẵn trong sổ (không cần đọc nhật ký như [`folder_from_tail`]).
 pub fn folder_from_dir(workspace_root: &Path, dir: &str) -> String {
@@ -2447,37 +2452,90 @@ pub fn declared_parts(text: &str, workspace_root: &str) -> Option<(String, Strin
     whole(dau).map(|duan| (duan, lan.to_string()))
 }
 
-/// Nhãn cuối cùng của một phiên — chỗ ghép của cả ba nguồn, theo đúng thứ hạng.
+/// Dự án của thư mục CLI mở phiên (`cwd`) — **scope**, không phải danh tính.
 ///
-/// 1. **Phiên tự khai** ([`folder_declared`]) — thắng tuyệt đối.
-/// 2. **Đếm đường dẫn** ([`folder_from_tail`], rồi đầu nhật ký qua `census_head`)
-///    — chỉ khi không có lời khai nào, và **không được lật** một nhãn đã khai.
-/// 3. **Sổ nhớ** — khi cả hai đều im tiếng (luật 11b: một phép đo hỏng không
-///    phải một sự thật về thế giới).
+/// `""` khi phiên mở ở chính gốc workspace (hoặc ngoài nó): chưa giao dự án nào.
+/// Thư mục con thì lấy dự án chứa nó, mở ngăn kéo (`AI/tcc` không phải dự án,
+/// `AI/tcc/amm` mới là) bằng cùng phép đo `looks_like_project` mà `open_drawer`
+/// dùng — đo trên đĩa, không gõ cứng tên. Thư mục không tồn tại (sổ cũ, máy
+/// khác) thì dừng ở bậc đầu: không biết thì đừng đoán sâu thêm.
 ///
-/// `census_head` là lượt đọc ĐẦU nhật ký, truyền vào dạng closure để nó chỉ chạy
-/// khi thật sự cần — phiên đang làm việc bình thường không tốn thêm lần đọc đĩa.
+/// 🔴 Đây là nguồn DUY NHẤT ngoài lời tự khai được phép cho nhãn — vì `cwd` là
+/// dữ kiện CLI tự khai, không phải thứ huba đếm trong log (ca 16/11:
+/// `docs/ra-soat-ten-phien-goc-20261116.md`).
+pub fn scope_label(workspace_root: &str, dir: &str) -> String {
+    let rel_parts = |root: &Path, d: &Path| -> Option<Vec<String>> {
+        let rel = d.strip_prefix(root).ok()?;
+        Some(
+            rel.components()
+                .filter_map(|c| c.as_os_str().to_str().map(str::to_string))
+                .collect(),
+        )
+    };
+    let root = Path::new(workspace_root.trim_end_matches('/'));
+    if root.as_os_str().is_empty() || dir.trim().is_empty() {
+        return String::new();
+    }
+    // `cwd` của tiến trình là đường đã giải symlink còn cấu hình có thể là đường
+    // symlink (CLAUDE.md workspace, mục Linux) — thử thẳng rồi thử đường thật.
+    let parts = rel_parts(root, Path::new(dir)).or_else(|| {
+        let r = root.canonicalize().ok()?;
+        let d = Path::new(dir).canonicalize().ok()?;
+        rel_parts(&r, &d)
+    });
+    let Some(parts) = parts else {
+        return String::new();
+    };
+    let Some(first) = parts.first() else {
+        return String::new();
+    };
+    let mut label = first.clone();
+    for next in &parts[1..] {
+        let d = root.join(&label);
+        if !d.is_dir() || crate::config::looks_like_project(&d) {
+            break;
+        }
+        label = format!("{label}/{next}");
+    }
+    label
+}
+
+/// Nhãn dự án cuối cùng của một phiên — **danh tính được giao**, không phải chủ đề.
+///
+/// Ba thứ tách riêng (TODO.md «nhãn phiên gốc», 20/11):
+/// 1. **Phiên tự khai** `[dự-án]` — nguồn duy nhất của danh tính. Một lượt là
+///    NHẮC, hai lượt nhất quán mới là KHAI, trừ khi nó khớp `scope` (xem
+///    `IdentityReducer`).
+/// 2. **Scope** = dự án của `cwd` ([`scope_label`]) — dùng khi chưa có lời khai nào
+///    được nhận. Rỗng nếu phiên mở ở gốc workspace.
+/// 3. **Chủ đề** = thứ log/công cụ nhắc tới — **KHÔNG BAO GIỜ đổi danh tính**.
+///    Hàm đếm đường dẫn từng đứng đây ([`folder_from_tail`]) đã bị gỡ khỏi đường
+///    này: nó trả lời *"phiên đụng vào thư mục nào"*, và một kết quả công cụ nhắc
+///    `zkey/…` hai lần đã đổi `[projects]` → `[zkey]` cho một phiên chưa được giao
+///    dự án nào (16/11).
+///
+/// Trả `None` khi chưa được giao dự án ⇒ chỗ gọi hiện nhãn trung tính (tên phiên
+/// hoặc thư mục gốc) kèm id để phân biệt, đừng bịa một dự án.
 pub fn folder_for_session(
     session_id: &str,
     tail: &str,
     workspace_root: &str,
-    census_head: impl FnOnce() -> Option<String>,
+    scope: &str,
 ) -> Option<String> {
+    let scope = (!scope.trim().is_empty()).then(|| scope.trim().to_string());
     if let Some((declared, _lane, dong_y)) = declared_in_tail_counted(tail, workspace_root) {
-        // 🔴 MỘT LẦN LÀ NHẮC, HAI LẦN MỚI LÀ KHAI — cổng chống LẬT nhãn, thêm
-        // 2026-09-16. Xem [`declared_in_tail_counted`] cho ca thật: một phiên
-        // dwork nhắc tên `huba` đúng một lần ở đầu lượt nói và bị đổi tên luôn.
-        //
-        // Cổng chỉ chặn việc LẬT, không chặn việc ĐẶT: phiên chưa có nhãn nào
-        // thì một lời khai vẫn đủ để gieo, nếu không thì mọi phiên mới đều
-        // không tên cho tới lượt nói thứ hai — đổi một cái nhãn sai lấy một cái
-        // nhãn trống là đổi ngang, không phải sửa.
+        // 🔴 MỘT LẦN LÀ NHẮC, HAI LẦN MỚI LÀ KHAI — cổng chống LẬT nhãn thêm
+        // 2026-09-16, và từ 20/11 cũng là cổng chống GIEO: một tiền tố assistant
+        // tự viết không phải bằng chứng độc lập về việc chủ máy đã giao dự án gì
+        // (ca 16/11). Lời khai đơn chỉ gieo được khi khớp scope; xem
+        // [`declared_in_tail_counted`] cho ca thật của cổng lật.
         let cu = recall_declared(session_id);
         let initial = cu
             .clone()
             .or_else(|| recall_folder(session_id).filter(|p| p == &declared))
             .map(|p| (p, recall_lane(session_id)));
-        let mut reducer = identity_reducer::IdentityReducer::new(initial, KHAI_QUET_LUOT);
+        let mut reducer =
+            identity_reducer::IdentityReducer::new(initial, KHAI_QUET_LUOT, scope.clone());
         let texts: Vec<String> = tail
             .lines()
             .rev()
@@ -2488,43 +2546,40 @@ pub fn folder_for_session(
         for text in texts.iter().rev() {
             reducer.push(declared_parts(text, workspace_root));
         }
-        let (accepted, module) = reducer
-            .current
-            .expect("a validated declaration must seed identity");
-        if accepted != declared {
-            logging::info(
-                "folder_label_flip_refused",
-                json!({ "session": session_id, "dang_giu": cu, "vua_thay": declared,
+        match reducer.current {
+            Some((accepted, module)) => {
+                if accepted != declared {
+                    logging::info(
+                        "folder_label_flip_refused",
+                        json!({ "session": session_id, "dang_giu": cu, "vua_thay": declared,
+                                "dong_y": dong_y, "quet_luot": KHAI_QUET_LUOT,
+                                "why": "tên mới chỉ xuất hiện MỘT lần trong cửa sổ đuôi — phiên tự khai ở \
+                                        MỌI lượt nói, nên một lần là NHẮC tên dự án khác, không phải tự khai" }),
+                    );
+                }
+                remember_folder_ranked(session_id, &accepted, &module, true);
+                return Some(accepted);
+            }
+            // Không nói im lặng: một lời khai bị từ chối là một quyết định.
+            None => logging::info(
+                "folder_label_seed_refused",
+                json!({ "session": session_id, "vua_thay": declared, "scope": scope,
                         "dong_y": dong_y, "quet_luot": KHAI_QUET_LUOT,
-                        "why": "tên mới chỉ xuất hiện MỘT lần trong cửa sổ đuôi — phiên tự khai ở \
-                                MỌI lượt nói, nên một lần là NHẮC tên dự án khác, không phải tự khai" }),
-            );
+                        "why": "một tiền tố assistant đơn lẻ không khớp scope cwd — là NHẮC, chưa phải \
+                                được giao dự án" }),
+            ),
         }
-        remember_folder_ranked(session_id, &accepted, &module, true);
-        return Some(accepted);
     }
-    let Some(counted) = folder_from_tail(tail, workspace_root).or_else(census_head) else {
-        return recall_folder(session_id);
-    };
     if let Some(declared) = recall_declared(session_id) {
-        if declared != counted {
-            // KHÔNG im lặng: huba vừa bỏ qua một phép đo, và lần sau đọc log phải
-            // thấy được nó đã bỏ qua cái gì.
-            logging::info(
-                "folder_label_kept",
-                json!({ "session": session_id, "declared": declared, "counted": counted,
-                        "why": "phiên tự khai dự án này — phép đếm đường dẫn không lật được nhãn" }),
-            );
-        }
         return Some(declared);
     }
-    let module = if recall_folder(session_id).as_deref() == Some(counted.as_str()) {
-        recall_lane(session_id)
-    } else {
-        String::new()
-    };
-    remember_folder_ranked(session_id, &counted, &module, false);
-    Some(counted)
+    let scope = scope?;
+    // Ghi scope vào sổ để `lane_for_session` biết dự án đang giữ (một làn của lời
+    // nhắc bị từ chối không được gắn vào scope) — nhưng đừng xoá làn đã nhớ.
+    if recall_folder(session_id).as_deref() != Some(scope.as_str()) {
+        remember_folder_ranked(session_id, &scope, "", false);
+    }
+    Some(scope)
 }
 
 /// Ngữ cảnh của lượt gần nhất + model của nó.
@@ -5870,6 +5925,9 @@ fn opencode_live_session(
         .saturating_sub(s.updated_ms)
         < IDLE_AFTER_SEC * 1000;
     let ws = cfg.workspace_root.to_string_lossy().to_string();
+    // Scope = project of the directory OpenCode itself reports; never a path
+    // counted in the preview (`folder_for_session` has no census any more).
+    let scope = scope_label(&ws, s.project_dir.as_deref().unwrap_or(&s.directory));
     // Only query historical identity when the tail/memo cannot answer. A
     // per-row cache lets project and module share the same read-only evidence.
     let history = std::cell::OnceCell::new();
@@ -5877,8 +5935,13 @@ fn opencode_live_session(
     let head = || {
         history
             .get_or_init(|| {
-                match identity_history::cached_opencode_head(history_path, &s.id, &ws, s.updated_ms)
-                {
+                match identity_history::cached_opencode_head(
+                    history_path,
+                    &s.id,
+                    &ws,
+                    &scope,
+                    s.updated_ms,
+                ) {
                     Ok(value) => value,
                     Err(err) => {
                         logging::warn(
@@ -5898,11 +5961,16 @@ fn opencode_live_session(
     // At cold start, historical self-declaration outranks tool-path counts in
     // the preview. Otherwise a busy tool batch can rename the project as well.
     if recall_declared(&s.id).is_none() && declared_in_tail(&s.tail, &ws).is_none() {
-        if let Some(evidence) = head() {
-            let _project_seed = folder_for_session(&s.id, &evidence, &ws, || None);
+        // `evidence` is ONE synthetic record carrying the OUTCOME of the shared
+        // transition policy replayed over the whole history (`identity_history`),
+        // not a raw assistant sentence — so it is remembered as decided. Sending
+        // it back through `folder_for_session` would apply the two-prefix gate
+        // to a record that already passed it.
+        if let Some((project, module)) = head().and_then(|e| declared_in_tail(&e, &ws)) {
+            remember_folder_ranked(&s.id, &project, &module, true);
         }
     }
-    let folder = folder_for_session(&s.id, &s.tail, &ws, || None)
+    let folder = folder_for_session(&s.id, &s.tail, &ws, &scope)
         .filter(|f| !f.is_empty())
         .unwrap_or_else(|| {
             opencode_project_label(
@@ -6244,16 +6312,12 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
                     // Dự án đang làm: đọc từ chính đoạn nhật ký vừa nạp, không
                     // tốn thêm một lần đọc đĩa nào.
                     let ws = cfg.workspace_root.to_string_lossy().to_string();
-                    // Thứ hạng của ba nguồn nằm gọn trong `folder_for_session`:
-                    // phiên tự khai > đếm đường dẫn > sổ nhớ. Đuôi im tiếng thì
-                    // hỏi ĐẦU nhật ký — phiên nào cũng mở đầu bằng việc của một
-                    // dự án cụ thể — nhưng chỉ đọc thêm khi thật sự cần.
-                    row.folder = folder_for_session(&row.session_id, &tail, &ws, || {
-                        read_head(&path)
-                            .ok()
-                            .and_then(|head| folder_from_tail(&head, &ws))
-                    })
-                    .unwrap_or_default();
+                    // Danh tính nằm gọn trong `folder_for_session`: phiên tự khai
+                    // (hai lượt, hoặc một lượt khớp scope `cwd`) > scope > chưa
+                    // giao. Đường dẫn trong log KHÔNG phải nguồn nào cả.
+                    row.folder =
+                        folder_for_session(&row.session_id, &tail, &ws, &scope_label(&ws, &cwd))
+                            .unwrap_or_default();
                     // SAU `folder_for_session`, không trước: chính lượt ấy ghi
                     // lời khai mới nhất vào sổ, nên hỏi trước là đọc sổ cũ.
                     row.lane =
