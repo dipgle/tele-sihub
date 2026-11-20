@@ -113,9 +113,26 @@ fi
 # đích dựng ⟹ WIN_EXIT=2 (KHÔNG ĐO ĐƯỢC), cổng KHÔNG xanh; không được lẳng lặng bỏ qua.
 t0=$(date +%s)
 WIN_TARGET=x86_64-pc-windows-gnu
+# 🔴 Máy Ubuntu không có mingw (`x86_64-w64-mingw32-gcc`) và `sudo` cần mật khẩu: crate `ring`
+# (build script cần bộ biên dịch C cho đích) làm `cargo clippy --target windows` chết
+# (đo 20/11). Dùng zig làm bộ biên dịch C qua `cargo-zigbuild`; zig lấy từ gói `ziglang` cài
+# ở venv người dùng (`GATE_ZIG_VENV`, mặc định ~/.local/zig-venv — không cần sudo). Có mingw
+# thật ⟹ dùng `cargo clippy` thường như cũ.
+GATE_ZIG_VENV="${GATE_ZIG_VENV:-$HOME/.local/zig-venv}"
+if [ -x "$GATE_ZIG_VENV/bin/python" ]; then
+  PATH="$GATE_ZIG_VENV/bin:$PATH"
+fi
 if rustup target list --installed 2>/dev/null | grep -qx "$WIN_TARGET"; then
-  cargo clippy --offline --target "$WIN_TARGET" --all-targets -- -D warnings
-  WIN_EXIT=$?
+  if command -v x86_64-w64-mingw32-gcc >/dev/null; then
+    cargo clippy --offline --target "$WIN_TARGET" --all-targets -- -D warnings
+    WIN_EXIT=$?
+  elif command -v cargo-zigbuild >/dev/null && python3 -m ziglang version >/dev/null 2>&1; then
+    cargo-zigbuild clippy --offline --target "$WIN_TARGET" --all-targets -- -D warnings
+    WIN_EXIT=$?
+  else
+    echo "⚠ đích $WIN_TARGET có nhưng thiếu mingw lẫn cargo-zigbuild+ziglang — KHÔNG ĐO ĐƯỢC bản Windows"
+    WIN_EXIT=2
+  fi
 else
   echo "⚠ chưa cài đích $WIN_TARGET (rustup target add $WIN_TARGET) — KHÔNG ĐO ĐƯỢC bản Windows"
   WIN_EXIT=2
