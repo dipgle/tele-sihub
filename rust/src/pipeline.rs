@@ -8058,7 +8058,7 @@ pub fn khoi_da_vao_nhat_ky(phan_moi: &str, lenh: &str) -> bool {
 /// Chữ mà MỘT dòng nhật ký `.jsonl` ghi là phiên vừa NHẬN làm lượt nhập — lượt
 /// `user` (chữ, hoặc các mảnh `text`) hay `queue-operation enqueue`. `None` cho mọi
 /// thứ khác (`tool_result`, `assistant`, dòng hỏng…).
-fn chu_nhap_cua_dong(l: &str) -> Option<String> {
+pub(crate) fn chu_nhap_cua_dong(l: &str) -> Option<String> {
     let j = serde_json::from_str::<serde_json::Value>(l).ok()?;
     match j.get("type").and_then(|t| t.as_str()) {
         Some("user") => match j.pointer("/message/content") {

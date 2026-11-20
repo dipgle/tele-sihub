@@ -8221,16 +8221,52 @@ fn start_in_terminal(
                 // Gõ được KHÁC gửi được: khối chữ nằm lại trong ô nhập thì đề
                 // bài chưa chạy, và một dòng `new_task_typed` trần sẽ là chỗ
                 // duy nhất người ta nhìn để kết luận là nó đã chạy.
-                Ok(crate::keys::Delivered::Gone) => logging::info(
-                    "new_task_typed",
-                    json!({ "session": id, "chars": task.chars().count() }),
-                ),
-                Ok(other) => logging::warn(
-                    "new_task_left_in_box",
-                    json!({ "session": id, "chars": task.chars().count(),
-                            "landed": format!("{other:?}"),
-                            "effect": "đề bài đã vào ô nhập nhưng CHƯA gửi — phiên mở ra mà đứng im" }),
-                ),
+                //
+                // 🔴 Hà 2026-11-20 («/new có chữ, mở phiên được, chữ nằm ở ô chat
+                // mà không gửi đi»): `Delivered::Gone` do MÀN phán KHÔNG đủ ở đây.
+                // Nhật ký phiên sinh ngay lúc `claude` khởi động — TRƯỚC khi hook
+                // SessionStart/MCP xong và ô nhập được vẽ — nên "đã có id" không
+                // chứng tỏ ô nhập sẵn sàng. Đo: gõ 09:14:45Z, `still_in_box` trả
+                // `false` vì `box_start` chưa thấy khung (keys.rs `still_in_box`),
+                // huba ghi `new_task_typed`, mà `claude` chỉ NHẬN câu lúc 09:15:31Z
+                // (nhật ký, `promptSource: typed`) — chậm 45 s. Nguồn đúng là chính
+                // nhật ký phiên: `claude` tự ghi khi NHẬN một lượt.
+                Ok(delivered) if id.starts_with("win-") => match delivered {
+                    // Chưa có id thật ⟹ chưa có nhật ký để hỏi — giữ phán quyết của màn.
+                    crate::keys::Delivered::Gone => logging::info(
+                        "new_task_typed",
+                        json!({ "session": id, "chars": task.chars().count(),
+                                "verified": "man_only" }),
+                    ),
+                    other => logging::warn(
+                        "new_task_left_in_box",
+                        json!({ "session": id, "chars": task.chars().count(),
+                                "landed": format!("{other:?}"),
+                                "effect": "đề bài đã vào ô nhập nhưng CHƯA gửi — phiên mở ra mà đứng im" }),
+                    ),
+                },
+                Ok(delivered) => {
+                    if wait_task_in_journal(cfg, window, &id, task) {
+                        logging::info(
+                            "new_task_typed",
+                            json!({ "session": id, "chars": task.chars().count(),
+                                    "screen_said": format!("{delivered:?}"),
+                                    "verified": "nhat_ky" }),
+                        );
+                    } else {
+                        logging::warn(
+                            "new_task_left_in_box",
+                            json!({ "session": id, "chars": task.chars().count(),
+                                    "landed": format!("{delivered:?}"),
+                                    "effect": "đề bài đã gõ nhưng NHẬT KÝ phiên chưa nhận sau ~60 s — phiên mở ra mà đứng im" }),
+                        );
+                        blocked = Some(
+                            "đề bài đã gõ nhưng phiên CHƯA nhận sau ~60 s — /shot để xem ô nhập, \
+                             /enter nếu chữ còn nằm đó"
+                                .to_string(),
+                        );
+                    }
+                }
                 Err(e) => logging::error(
                     "new_task_type_failed",
                     json!({ "session": id, "err": e.to_string() }),
@@ -8484,6 +8520,87 @@ fn ready_to_type(window: i64) -> Ready {
     match crate::keys::screen_text(window) {
         Ok(screen) => ready_from_screen(&screen),
         Err(e) => Ready::Blind(e.to_string()),
+    }
+}
+
+/// Nhật ký phiên (`.jsonl`, nội dung `nhat_ky`) đã có lượt nhập mang ĐỀ BÀI chưa.
+/// THUẦN — để bài kiểm khoá được cả hai chiều (có / chưa có) không cần `claude`.
+///
+/// So qua [`crate::keys::squash_box`] ở cả hai phía (ô nhập ngắt dòng theo bề
+/// ngang, nhật ký giữ nguyên văn) và lấy 24 ký tự ĐẦU đã bóp của đề bài làm dấu
+/// vân tay. Chỉ nhận lượt `user` / `queue-operation enqueue` (cùng bộ đọc với
+/// `pipeline::chu_nhap_cua_dong`) — dòng hook, `assistant`, `tool_result` có thể
+/// nhắc lại chữ đề bài mà KHÔNG phải phiên đã nhận nó.
+pub fn de_bai_da_vao_nhat_ky(nhat_ky: &str, de_bai: &str) -> bool {
+    let sq = crate::keys::squash_box;
+    let dau: String = sq(de_bai).chars().take(24).collect();
+    if dau.is_empty() {
+        return false;
+    }
+    nhat_ky
+        .lines()
+        .filter_map(crate::pipeline::chu_nhap_cua_dong)
+        .any(|chu| sq(&chu).contains(&dau))
+}
+
+/// Sau khi gõ đề bài: chờ NHẬT KÝ phiên xác nhận đã nhận; trong lúc chờ, cứ vài
+/// giây bấm Enter bù NẾU màn không có hộp chọn (Enter vào hộp là CHỐT một lựa
+/// chọn — luật 13) và nhật ký vẫn chưa có đề bài. Enter vào ô TRỐNG thì `claude`
+/// không làm gì, nên bấm thừa vô hại. `true` = nhật ký đã có đề bài.
+///
+/// Trần ~60 s, ngang trần chờ id của `start_in_terminal` — hết hạn thì trả
+/// `false` để chỗ gọi NÓI ra, không đoán là đã đi.
+fn wait_task_in_journal(cfg: &Config, window: i64, id: &str, task: &str) -> bool {
+    const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+    const STEP: std::time::Duration = std::time::Duration::from_millis(1500);
+    const MAX_ENTERS: u32 = 8;
+    let in_journal = || {
+        find_transcript_any(cfg, id)
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .is_some_and(|t| de_bai_da_vao_nhat_ky(&t, task))
+    };
+    let t0 = std::time::Instant::now();
+    let mut enters = 0u32;
+    loop {
+        if in_journal() {
+            return true;
+        }
+        if t0.elapsed() >= MAX_WAIT {
+            return false;
+        }
+        std::thread::sleep(STEP);
+        if in_journal() {
+            return true;
+        }
+        if enters >= MAX_ENTERS {
+            continue;
+        }
+        match crate::keys::screen_text(window) {
+            Ok(screen) if matches!(ready_from_screen(&screen), Ready::Yes) => {
+                match crate::keys::enter_after_text(window, &screen) {
+                    Ok(()) => {
+                        enters += 1;
+                        logging::info(
+                            "new_task_enter_again",
+                            json!({ "session": id, "n": enters,
+                                    "why": "nhật ký phiên chưa có đề bài — màn không có hộp chọn, bấm Enter bù" }),
+                        );
+                    }
+                    Err(e) => logging::warn(
+                        "new_task_enter_failed",
+                        json!({ "session": id, "err": e.to_string() }),
+                    ),
+                }
+            }
+            // Có hộp chọn ⟹ KHÔNG bấm (Enter ở đó là CHỐT). Chờ tiếp tới trần.
+            Ok(_) => {}
+            // Không đọc được màn ⟹ không bấm mù; nói ra, rồi chờ tiếp.
+            Err(e) => logging::warn(
+                "new_task_screen_blind",
+                json!({ "session": id, "err": e.to_string(),
+                        "effect": "không đọc được màn — KHÔNG bấm Enter lượt này" }),
+            ),
+        }
     }
 }
 
