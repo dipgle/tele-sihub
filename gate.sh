@@ -125,9 +125,21 @@ echo "WIN_EXIT=$WIN_EXIT  # $(($(date +%s) - t0))s"
 # ── ②c LINUX (bản Ubuntu/tmux, Quang 12/11): dựng-kiểm chéo bằng zig (crate `ring` cần
 # bộ biên dịch C cho Linux — máy Mac không có, zig có), clippy -D warnings mọi đích.
 # Cùng luật với ②b: thiếu đích/công cụ ⟹ LINUX_EXIT=2 (KHÔNG ĐO ĐƯỢC), cổng KHÔNG xanh.
+#
+# 🔴 MÁY ĐANG CHẠY CHÍNH LÀ ĐÍCH LINUX (20/11, đo: gate FAILED=0 mà GATE_EXIT=1 vì
+# LINUX_EXIT=2 trên chính máy Ubuntu). Khi đó bước ② (`clippy --all-targets -D
+# warnings`) ĐÃ dựng-kiểm đúng đích ấy, không cần zig: LINUX_EXIT = CLIPPY_EXIT.
+# Host đọc hỏng/khác đích ⟹ nhánh cũ (mã 2). Ép host giả để đối chứng: GATE_HOST_TRIPLE
+# (bài kiểm: gate-lib.test.sh). `WIN_EXIT` không đụng.
+# shellcheck source=gate-lib.sh
+source "$HERE/gate-lib.sh"
 t0=$(date +%s)
 LINUX_TARGET=x86_64-unknown-linux-gnu
-if rustup target list --installed 2>/dev/null | grep -qx "$LINUX_TARGET" && command -v cargo-zigbuild >/dev/null; then
+HOST_TRIPLE=$(gate_host_triple)
+if gate_dich_la_host "$HOST_TRIPLE" "$LINUX_TARGET"; then
+  echo "✓ máy đang chạy là $LINUX_TARGET — bước ② đã clippy --all-targets -D warnings đúng đích này"
+  LINUX_EXIT=$CLIPPY_EXIT
+elif rustup target list --installed 2>/dev/null | grep -qx "$LINUX_TARGET" && command -v cargo-zigbuild >/dev/null; then
   cargo-zigbuild clippy --offline --target "$LINUX_TARGET" --all-targets -- -D warnings
   LINUX_EXIT=$?
 else

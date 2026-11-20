@@ -7674,6 +7674,42 @@ const SCRATCH_ROOT: &str = if cfg!(target_os = "macos") {
     "/tmp"
 };
 
+/// Mọi gốc có thể chứa scratchpad của phiên: [`SCRATCH_ROOT`] cộng thư mục tạm mà
+/// CLI được dặn dùng (`CLAUDE_CODE_TMPDIR`, rồi `TMPDIR`).
+///
+/// 🔴 Hà 2026-11-20 chuyển thư mục tạm sang `/mnt/data/tmp` (phiên cũ hết hạn mức
+/// `/tmp`, Bash chết). Phiên mở SAU đó ghi hòm thư ở `$CLAUDE_CODE_TMPDIR/claude-<uid>/…`,
+/// còn huba chỉ quét `/tmp` ⟹ lệnh phiên xếp vào hòm thư nằm đó MÃI MÃI, không báo
+/// lỗi (đo: phiên `f114d22a` có `/mnt/data/tmp/claude-1000/-mnt-data-projects/f114d22a…`
+/// mà hubd không đọc). Quét CẢ HAI: phiên opencode vẫn tự dựng đường `/tmp/claude-…`.
+/// Trùng/rỗng bị loại; thư mục không tồn tại thì `scan_session_inboxes` tự bỏ qua.
+pub fn scratch_roots_from(
+    base: &str,
+    claude_tmp: Option<&str>,
+    tmpdir: Option<&str>,
+) -> Vec<std::path::PathBuf> {
+    let mut out: Vec<std::path::PathBuf> = Vec::new();
+    for r in [Some(base), claude_tmp, tmpdir].into_iter().flatten() {
+        let r = r.trim();
+        if r.is_empty() {
+            continue;
+        }
+        let p = std::path::PathBuf::from(r);
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+fn scratch_roots() -> Vec<std::path::PathBuf> {
+    scratch_roots_from(
+        SCRATCH_ROOT,
+        std::env::var("CLAUDE_CODE_TMPDIR").ok().as_deref(),
+        std::env::var("TMPDIR").ok().as_deref(),
+    )
+}
+
 /// Nhận thư của các phiên rồi xếp vào hàng chờ. Chạy mỗi vòng, rẻ khi không có.
 ///
 /// Đường đi đúng như Hà mô tả: *"Phiên a nhận được lệnh chạy → gửi lệnh runin
@@ -7702,7 +7738,11 @@ const SCRATCH_ROOT: &str = if cfg!(target_os = "macos") {
 fn runin_inbox_tick(db: &Db, cfg: &Config) -> usize {
     let mut taken = 0usize;
     let mut vao_so = 0usize;
-    for (sid, cmd, path) in scan_session_inboxes(std::path::Path::new(SCRATCH_ROOT)) {
+    let found: Vec<_> = scratch_roots()
+        .iter()
+        .flat_map(|r| scan_session_inboxes(r))
+        .collect();
+    for (sid, cmd, path) in found {
         let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
         let moved = path.with_extension(format!("taken-{stamp}"));
         if let Some(nhan) = so_viec_nhan_hom_thu(&sid, &cmd, &path) {
@@ -11991,6 +12031,16 @@ pub struct SessionData {
     pub kind: crate::sessions::ChoiceKind,
     /// Chữ đang nằm trong ô nhập → ⏎ gửi · ⌫ xoá.
     pub box_text: Option<String>,
+    /// Chữ trong ô nhập là GỢI Ý MỜ của TUI (`Some(true)`), chữ thật
+    /// (`Some(false)`) hay KHÔNG ĐO ĐƯỢC (`None`) — xem `keys::box_is_ghost`.
+    ///
+    /// 🔴 Hà 2026-11-20: một câu gợi ý mờ hiện trong tin `/shot` như một dòng
+    /// chữ thường, và cả huba lẫn người đọc đều tưởng chủ máy đã gõ nó nhưng
+    /// chưa bấm Enter. Nút ⏎ GIỮ NGUYÊN (Hà 16/08 + 25/08: *"gửi nhanh gợi ý
+    /// mờ"* — `/key <phiên> enter` nhận gợi ý rồi mới Enter), chỉ đổi BIỂU
+    /// TƯỢNG thành `💡⏎` để nhìn là biết đây là gợi ý, không phải chữ đã gõ.
+    /// `None` ⟹ giữ `⏎` như cũ (macOS/Windows không đọc được thuộc tính chữ).
+    pub box_ghost: Option<bool>,
     /// Màn có dòng `Submit` (hộp CHỌN NHIỀU) → ✅ gửi bảng, ngay tại dòng ấy.
     ///
     /// 🔴 Hà 2026-08-17, sau khi ☑ đã bám đúng từng dòng: *"Bấm chọn được rồi,
@@ -12814,7 +12864,12 @@ fn session_layout(text: &str, data: &SessionData, buttons: &[(String, String)]) 
         // lệnh xóa rồi"*. Hai đích chạm cạnh nhau, một bên GỬI một bên XOÁ, cả
         // hai đều không lùi lại được — bỏ được cái nào là bớt một cú bấm nhầm
         // không sửa được. Đường xoá vẫn còn nguyên bằng lệnh gõ.
-        let links: Vec<(String, String)> = [("send_", "⏎")]
+        let send_icon = if data.box_ghost == Some(true) {
+            "💡⏎"
+        } else {
+            "⏎"
+        };
+        let links: Vec<(String, String)> = [("send_", send_icon)]
             .iter()
             .filter_map(|(p, icon)| {
                 crate::telegram::deep_link(&format!("{p}{short}"))
@@ -16221,6 +16276,8 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                 // Chữ trong ô nhập, đo trên ẢNH MÀN trước khi huba nối thêm khu
                 // nào — xem chỗ gán bên dưới.
                 let mut shot_box: Option<String> = None;
+                // Ô nhập ấy là gợi ý mờ hay chữ thật — xem `SessionData::box_ghost`.
+                let mut shot_ghost: Option<bool> = None;
                 // Màn có dòng `Submit` ⟹ gắn ✅ vào đó. Điền ở nhánh `/shot` lẫn
                 // nhánh bấm phím, vì cả hai đều trả về một bảng bấm được.
                 let mut shot_submit = false;
@@ -16592,6 +16649,14 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                                 // `SessionData.box_text` vốn đã khai sẵn cho
                                 // đúng việc này mà chưa ai nối vào.
                                 shot_box = prompt_line_text(&crate::telegram::strip_markdown(&out));
+                                // Đo thuộc tính chữ của CHÍNH ô nhập lúc này — chỉ
+                                // khi có chữ để hỏi (ô rỗng thì khỏi tốn một lần
+                                // gọi tmux). Lỗi đọc đã được `box_is_ghost` log.
+                                shot_ghost = if shot_box.is_some() {
+                                    crate::keys::box_is_ghost(w)
+                                } else {
+                                    None
+                                };
                                 // 🔴 HỎI NHẬT KÝ TRƯỚC, RỒI ĐỐI CHIẾU VỚI MÀN —
                                 // không hỏi màn xem nó "có lời nào không".
                                 // Phép cũ (`out.contains('⏺')`) đọc một dấu
@@ -18538,6 +18603,7 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                             // Đo trên ảnh màn, không đo lại trên `ack` — `ack`
                             // đã mang cả khu chữ huba tự nối.
                             box_text: shot_box.clone(),
+                            box_ghost: shot_ghost,
                             files: shot_files.clone(),
                             // Thanh tab đọc từ MÀN, không từ nhật ký: bảng đang
                             // TREO chưa được ghi vào nhật ký (đo 2026-08-19 —
