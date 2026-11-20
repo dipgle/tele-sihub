@@ -1,5 +1,13 @@
 # huba/ui
 
+## 2026-11-20 08:20 +07 — cây sạch, chuyển phiên UI
+
+Đo 08:18: lõi `%52` xong P21 bước 2 — `560d6dc` · `99c66cd` (đã đẩy, `ls-remote`=`99c66cd`) ·
+`4699bca` (chưa đẩy, của lõi); `git status` rỗng. Sổ UI `6bf3402` đã đẩy qua huba
+(PUSH_EXIT=0, `ls-remote` đọc lại khớp, `.tmp/push-so-ui-20261120.log`). TODO.md:30 hết bị
+chặn ⇒ giao kế nhiệm theo lệnh «Chuyển phiên làm tiếp đi». Brief
+`.tmp/brief-huba-ui-ke-nhiem-20261120-0820.md`. Lượt này không sửa mã. Nền: không có.
+
 ## 2026-11-20 00:10 +07 — vào làn: cây bẩn của phiên LÕI đã chết, chưa làm gì
 
 Quét: sổ làn 17/11, TODO 18/11, HEAD `79aacc7` (19/11 12:24). Cây có ~110 `M` · 9 `D` ·
