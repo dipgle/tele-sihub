@@ -190,3 +190,6 @@ Telegram xác nhận Markdown1736/27212B, HTML1742/63927B; receipts .tmp/gui-thi
 Chủ máy hỏi chỉ2plugin Claude/OpenCode có phủ mọi model/rẻ nhất không: thiết kế thêm hướng ưu tiên2CLI, provider catalog dữ liệu; chưa kết luận mọi provider/thuê bao hay chi phí khi chưa đo; không xoá Codex. Brief .tmp/brief-huba-ui-ke-nhiem-20261115-0920.md. Không có việc nền.
 
 Chuyển phiên: d454f92 đã push/remote-match. Cổng chọn acc10, tạo pane%16/ttypts18, nhưng SUCCESSOR_EXIT2 do không đo được CLI sống; trạng thái TẮC, không mở vòng qua. Log .tmp/chuyen-ui-20261115.log. Không có phiên mới được xác nhận, không còn job nền.
+
+## 2026-11-20 09:05 — nhãn phiên gốc (TODO.md:30) XONG + cài
+`c1bb2ad`: danh tính không còn suy từ đường dẫn log; scope=cwd; 1 tiền tố assistant không gieo tên (2 lượt hoặc khớp scope). RED 2/5 → GREEN; gate FAILED=0 · 242/242 · clippy0 (GATE_EXIT=1 chỉ do WIN/LINUX_EXIT=2 KHÔNG ĐO ĐƯỢC). Cài hubd sha `04497c1c…` khớp. CÒN: bấm `/session` Telegram thật; đẩy (commit nằm trên `4699bca` của lõi); đóng tiền nhiệm 2180157. NỢ MỞ ⛔: duyệt P04/P06/P07/P15/P20/P22 · A/B trace · helper hòm thư.
