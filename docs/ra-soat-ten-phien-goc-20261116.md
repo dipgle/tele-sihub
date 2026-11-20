@@ -58,3 +58,30 @@ dẫn. Lượt này không chạy lại test; không báo test xanh.
 Không tự triển khai trong lượt rà soát. HEAD địa phương9d97da5, origin/main có
 5 commit mới theo refs đã đọc; cần đồng bộ/kiểm xung đột trước sửa. Cấu hình
 3158B mtime15/11 11:34 giữ nguyên. Không có job nền của lượt này.
+
+## Kết quả sửa — 20/11/2026 (`c1bb2ad`)
+
+Số dòng ở §"Đường gây lỗi" là của 16/11, đã cũ sau P21. Tra lại ngày 20/11:
+`sessions.rs` `folder_for_session` · `folder_from_tail` · `declared_in_tail_counted`; `session_identity_reducer.rs`.
+
+**Đã đổi**
+- `folder_for_session(id, tail, ws, scope)` — không còn đếm đường dẫn; `folder_from_tail` hết người gọi
+  (giữ làm phép đo chủ đề, có cảnh báo trong doc).
+- **scope** = dự án của `cwd` (`scope_label`, đo trên đĩa, mở ngăn kéo bằng `looks_like_project`).
+- **danh tính** = chỉ lời tự khai. Một tiền tố assistant đơn lẻ KHÔNG gieo tên; cần 2 lượt nhất quán
+  trong cửa sổ 12 lượt, hoặc 1 lượt khớp scope. Lật tên vẫn cần 2 lượt (luật 16/09 giữ).
+- Cold (lịch sử OpenCode) và warm (đuôi) dùng cùng `IdentityReducer`; bằng chứng cold đã qua chính sách
+  được ghi thẳng vào sổ nhớ (lần đầu đưa lại qua `folder_for_session` thì bị cổng 2-lượt từ chối — bắt được
+  bởi `warm_and_cold_accept_a_repeated_project_transition`).
+- Từ chối nào cũng có log: `folder_label_seed_refused`, `folder_label_flip_refused`.
+
+**Đo**: RED `.tmp/red-nhan-20261120.log` (2/5 đỏ, `Some("zkey")`); gate `.tmp/gate-nhan-20261120.log`.
+Test mới `rust/tests/nhan_phien_khong_suy_tu_duong_dan.rs` (11) · `sessions_opencode_identity_tests.rs` (+3) ·
+`session_identity_history.rs` (+2). Đảo (không xoá): `with_no_declaration_the_census_does_not_name_the_project`,
+`phien_chua_co_nhan_thi_mot_lan_khai_chua_du_de_gieo`, ca `dem` trong `duoi_v2_cho_nhan_du_an_nhu_phien_claude`.
+
+**Cái giá, nói thẳng**: phiên mở ở GỐC mà chưa tự khai 2 lượt (vd lượt cuối chỉ `[dùng Bash]`) nay hiện tên
+trung tính (`projects-NN` = tên phiên + id), trước đây hiện `[dự-án]` do đếm. Đúng yêu cầu «chưa giao ⇒ trung tính».
+**Chưa đo**: bấm `/session` trong Telegram thật; ca ngăn kéo nhiều bậc ngoài `AI/tcc/amm` dựng tạm.
+**Nợ nhỏ**: `opencode.rs:274–329` vẫn ghép dữ liệu thô vào preview — vô hại cho nhãn nay, nhưng là nguồn nhiễm nếu ai
+đếm lại; `remember_folder_ranked(..., declared=false)` chỉ còn ghi scope.
