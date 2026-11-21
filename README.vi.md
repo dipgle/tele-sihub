@@ -227,6 +227,11 @@ qua console không — lượt `/new` thật đầu tiên chính là phép đo �
 
 ## Lệnh
 
+**Mỗi lệnh tự giải thích:** `/<lệnh> -h` (hoặc `--help`) hiện cú pháp, cờ và ví dụ của lệnh ấy, vd
+`/new -h`. `/set -h` liệt kê các mục cấu hình, `/set <mục> -h` liệt kê từng trường kèm kiểu, giá trị đang
+có và mặc định — xem được `/set` nhận gì trước khi đặt. `-h` chỉ tính khi đứng một mình sau tên lệnh;
+đề bài như `/new sửa lỗi -h` vẫn là đề bài.
+
 Chỉ chủ máy ra lệnh được: Telegram gác bằng `chat_id` (`telegram::update_sender`
 đọc đúng ô cho từng hình dạng update), người khác gõ `/new` thì đó chỉ là chữ.
 Bộ phân tích (`verbs::parse_command`) là hàm thuần — vào là chữ, ra là một
@@ -240,7 +245,6 @@ route — nên nó không biết và không cần biết lệnh tới từ kênh
 | *(chữ thường, không dấu `/`)* | gõ thẳng vào phiên đang theo |
 | `/new [-a acc] [-s dự án] [-y] <việc>` | mở một **cửa sổ terminal thật** (tab Terminal / pane tmux / cửa sổ console) chạy CLI rồi gõ việc ấy vào; việc rỗng cũng được (mở cửa sổ rồi nói sau); `-y` mở tài khoản đang khoá mà không hỏi |
 | `/ask <câu hỏi>` | hỏi bên lề phiên đang theo, **trên bản fork** — phiên gốc không thêm lượt nào |
-| `/tell <nội dung>` | nói tiếp vào phiên nền (phải `/stop` nó trước) |
 | `/stop [id]` | phiên nền: dừng, hội thoại vẫn giữ · phiên cửa sổ huba mở: **tắt hẳn** — `/exit` rồi đóng cửa sổ |
 | `/handover [id]` | đóng sổ: bản bàn giao + phiên mới giữ nguyên ngữ cảnh + lệnh `--resume` |
 
@@ -275,7 +279,7 @@ route — nên nó không biết và không cần biết lệnh tới từ kênh
 | `/set <khoá> <giá trị>` | sửa một trường cấu hình (validate + backup + ghi nguyên tử) |
 | `/help` | bảng này, đọc thẳng từ mã |
 
-`/ask`, `/handover`, `/new`, `/tell` gọi `claude` thật nên **ăn vào hạn mức
+`/ask`, `/handover`, `/new` gọi `claude` thật nên **ăn vào hạn mức
 của gói** — đúng như khi bạn tự gõ ở terminal, không hơn.
 
 Máy này chạy gói **Max** (`claude auth status` → `subscriptionType: max`): không

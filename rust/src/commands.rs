@@ -491,6 +491,205 @@ pub fn thieu_tham_so(text: &str) -> Option<String> {
     ))
 }
 
+/// `/<lệnh> -h` — xin xem lệnh ấy hỗ trợ gì. Trả đối số cho route `Help` (tên lệnh; riêng `/set` còn
+/// mang cả mục: `set <mục>`), hoặc `None` nếu dòng này KHÔNG phải lời xin trợ giúp.
+///
+/// 🔴 Quang 21/11: *«Sao không gắn cờ -h vào từng lệnh để xem nó hỗ trợ gì làm ntn»*. Chỉ `-h`/`--help`
+/// ĐỨNG MỘT MÌNH sau tên lệnh mới tính — `/new sửa lỗi -h` vẫn là một đề bài (cùng luật `/new`: cờ lạ
+/// nằm lại trong đề bài, không bị nuốt). Ngoại lệ duy nhất là `/set <mục> -h`, vì `/set` luôn đòi hai
+/// vế nên chữ `-h` ở cuối không thể là giá trị người ta muốn đặt. Thuần.
+pub fn hoi_chi_tiet(name: &str, rest: &str) -> Option<String> {
+    let r = rest.trim();
+    if r == "-h" || r == "--help" {
+        return Some(name.to_string());
+    }
+    if name == "set" {
+        let muc = r
+            .strip_suffix(" -h")
+            .or_else(|| r.strip_suffix(" --help"))?
+            .trim();
+        if !muc.is_empty() && !muc.contains(char::is_whitespace) {
+            return Some(format!("set {muc}"));
+        }
+    }
+    None
+}
+
+/// Phần chi tiết RIÊNG của một lệnh (cờ, ví dụ) — chỉ những lệnh có cờ/dạng gõ mà một dòng cú pháp
+/// không nói hết. Lệnh khác: rỗng (dòng cú pháp + mô tả từ bảng đã đủ). Chữ ở đây phải khớp bộ phân tích
+/// (`verbs::parse_command`, `pipeline::accounts_order`); bài kiểm `command_help_flag.rs` khoá các cờ chính.
+fn chi_tiet_them(name: &str) -> &'static str {
+    match name {
+        "new" => {
+            "Cờ (đứng ở đâu trong dòng cũng nhận):\n\
+             • -a <acc>  chọn tài khoản (xem /accounts)\n\
+             • -s <dự án>  mở ở thư mục của dự án ấy\n\
+             • -y  tài khoản đang khoá vẫn mở, không hỏi lại\n\
+             Việc trống = chỉ mở cửa sổ, nói sau. Cờ lạ (vd -x) KHÔNG bị nuốt: nằm lại trong đề bài.\n\
+             Ví dụ: /new -a acc6 -s huba kiểm tra gõ chữ"
+        }
+        "accounts" => {
+            "Dạng gõ:\n\
+             • /accounts  danh sách tài khoản\n\
+             • /accounts <tên>  chi tiết + đo lại hạn mức (cả khi đang khoá)\n\
+             • /accounts <tên> -b  khoá · -a  mở\n\
+             • /accounts <tên> -l  đăng nhập lại (-l <mã> để gõ mã vào cửa sổ đang chờ)\n\
+             • /accounts <tên> -k <API key>  dùng API key (tính tiền); -k xoa  về gói"
+        }
+        "set" => {
+            "Đặt MỘT trường của huba.config.json: /set <mục.trường> <giá trị>.\n\
+             Kiểu giá trị theo giá trị đang có: true/false (hoặc on/off, bật/tắt) · số · chữ · danh sách ngăn bằng dấu phẩy.\n\
+             Ghi có sao lưu, sai kiểu thì từ chối, hiệu lực từ vòng kế.\n\
+             Xem có gì để đặt: /set -h (các mục) · /set <mục> -h (từng trường: kiểu, giá trị đang có, mặc định)."
+        }
+        "session" => "Trống = cửa sổ đang chạy CLI · kèm id = theo phiên ấy · /session - = thôi theo.",
+        "handover" => "-a <acc> đổi sang tài khoản khác cho phiên mới. Không kèm id = phiên đang theo.",
+        "runin" => "Ví dụ: /runin 4963b95c ls -la — máy chạy lệnh, kết quả dán vào phiên ấy.",
+        "pick" => "Ví dụ: /pick 2.3 — câu số 2, lựa chọn số 3 của bảng hỏi nhiều câu.",
+        "effort" => "Mức: low · medium · high · xhigh · max — có hiệu lực từ lần gọi model kế.",
+        "web" => "Trống = các tab Chrome · địa chỉ = mở · <cửa sổ>.<tab> = chọn tab · an = trình duyệt ẩn của huba.",
+        _ => "",
+    }
+}
+
+/// Chữ trả lời `/<lệnh> -h`, sinh TỪ BẢNG (cú pháp + mô tả + tên khác) cộng phần riêng của lệnh.
+/// `None` nếu không có lệnh tên ấy.
+pub fn chi_tiet(name: &str) -> Option<String> {
+    let r = lookup(name)?;
+    let mut out = format!("/{}", r.name);
+    if !r.usage.is_empty() {
+        out.push(' ');
+        out.push_str(r.usage);
+    }
+    out.push_str(&format!("\n{}\n", r.help));
+    if !r.aliases.is_empty() {
+        let ds: Vec<String> = r.aliases.iter().map(|a| format!("/{a}")).collect();
+        out.push_str(&format!("Tên khác: {}\n", ds.join(" ")));
+    }
+    let them = chi_tiet_them(r.name);
+    if !them.is_empty() {
+        out.push('\n');
+        out.push_str(them);
+        out.push('\n');
+    }
+    out.push_str("\n(/help — mọi lệnh · /<lệnh> -h — chi tiết một lệnh)");
+    Some(out)
+}
+
+/// Kiểu của một giá trị cấu hình, đúng như `pipeline::set_config_field` sẽ đọc chữ gõ vào.
+fn kieu_cau_hinh(v: &serde_json::Value) -> &'static str {
+    use serde_json::Value;
+    match v {
+        Value::Bool(_) => "true/false",
+        Value::Number(_) => "số",
+        Value::String(_) => "chữ",
+        Value::Array(a) if a.iter().all(|x| x.is_string()) => "danh sách (ngăn bằng dấu phẩy)",
+        Value::Array(_) => {
+            "danh sách đối tượng — không đặt bằng /set (dùng /accounts hoặc sửa tệp)"
+        }
+        Value::Object(_) => "mục",
+        Value::Null => "chưa đặt — /set chưa sửa được",
+    }
+}
+
+fn ngan(s: String, toi_da: usize) -> String {
+    if s.chars().count() <= toi_da {
+        s
+    } else {
+        format!("{}…", s.chars().take(toi_da).collect::<String>())
+    }
+}
+
+fn dong_truong(khoa: &str, v: &serde_json::Value, mac_dinh: Option<&serde_json::Value>) -> String {
+    let hien = ngan(v.to_string(), 80);
+    let mac = match mac_dinh {
+        Some(d) if d == v => " · đang là mặc định".to_string(),
+        Some(d) => format!(" · mặc định {}", ngan(d.to_string(), 60)),
+        None => String::new(),
+    };
+    format!("• {khoa} = {hien} — {}{mac}\n", kieu_cau_hinh(v))
+}
+
+fn lien_ket_truong(
+    tien_to: &str,
+    v: &serde_json::Value,
+    mac_dinh: Option<&serde_json::Value>,
+    out: &mut String,
+) {
+    match v {
+        serde_json::Value::Object(m) => {
+            for (k, con) in m {
+                let khoa = if tien_to.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{tien_to}.{k}")
+                };
+                lien_ket_truong(&khoa, con, mac_dinh.and_then(|d| d.get(k)), out);
+            }
+        }
+        _ => out.push_str(&dong_truong(tien_to, v, mac_dinh)),
+    }
+}
+
+/// Giới hạn của một tin Telegram là 4096; chừa chỗ cho phần mở đầu.
+const TOI_DA_TIN: usize = 3800;
+
+/// `/set -h` (không `muc`) và `/set <mục> -h`: liệt kê cái ĐẶT ĐƯỢC từ chính tệp cấu hình đang chạy
+/// (`root`) đối chiếu với mặc định trong mã (`mac_dinh`). Thuần — người gọi đọc tệp.
+///
+/// Mã KHÔNG có bảng khoảng hợp lệ theo từng trường, nên chỉ nói điều đo được: kiểu, giá trị đang có,
+/// mặc định. Giá trị sai kiểu thì `/set` từ chối; sai nghĩa nhưng đúng kiểu thì do người đặt.
+pub fn huong_dan_set(
+    root: &serde_json::Value,
+    mac_dinh: &serde_json::Value,
+    muc: Option<&str>,
+) -> String {
+    let Some(goc) = root.as_object() else {
+        return "Cấu hình không phải một đối tượng JSON — không liệt kê được.".to_string();
+    };
+    let Some(muc) = muc.map(str::trim).filter(|m| !m.is_empty()) else {
+        let mut out = String::from("Các mục cấu hình (xem trường: /set <mục> -h):\n");
+        let mut le: Vec<&str> = Vec::new();
+        for (k, v) in goc {
+            match v {
+                serde_json::Value::Object(m) => {
+                    out.push_str(&format!("• {k} — {} trường\n", m.len()))
+                }
+                _ => le.push(k),
+            }
+        }
+        if !le.is_empty() {
+            out.push_str(&format!(
+                "Trường lẻ (xem từng cái: /set <tên> -h): {}\n",
+                le.join(", ")
+            ));
+        }
+        out.push_str("\nĐặt: /set <mục.trường> <giá trị> — ví dụ /set auto_handover.at_percent 60");
+        return ngan(out, TOI_DA_TIN);
+    };
+    let mut node = root;
+    let mut mac = Some(mac_dinh);
+    for p in muc.split('.').filter(|p| !p.is_empty()) {
+        match node.get(p) {
+            Some(n) => {
+                node = n;
+                mac = mac.and_then(|d| d.get(p));
+            }
+            None => {
+                let ds: Vec<&str> = goc.keys().map(String::as_str).collect();
+                return format!("Không có mục '{muc}'. Các mục/trường: {}", ds.join(", "));
+            }
+        }
+    }
+    let mut out = format!("{muc}:\n");
+    lien_ket_truong(muc, node, mac, &mut out);
+    out.push_str(&format!(
+        "\nĐặt: /set {muc}{} <giá trị>",
+        if node.is_object() { ".<trường>" } else { "" }
+    ));
+    ngan(out, TOI_DA_TIN)
+}
+
 /// Chữ cho `/help`, sinh TỪ BẢNG — nên một lệnh mới không thể ra đời mà thiếu
 /// dòng của nó, và không dòng nào tả một lệnh đã chết.
 pub fn help_text() -> String {
@@ -506,7 +705,8 @@ pub fn help_text() -> String {
         out.push('\n');
     }
     out.push_str(
-        "\nChọn phiên xong thì CHỮ THƯỜNG gõ ở đây đi thẳng vào phiên ấy.\n\
+        "\nChi tiết một lệnh (cờ, giá trị đặt được): /<lệnh> -h — ví dụ /new -h, /set -h.\n\
+         Chọn phiên xong thì CHỮ THƯỜNG gõ ở đây đi thẳng vào phiên ấy.\n\
          Lệnh dạng /pick_<id>_<câu>_<lựa chọn> và /run_<n> là chữ chạm-được \
          huba tự chèn vào tin — chạm là chạy.",
     );

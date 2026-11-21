@@ -406,6 +406,17 @@ pub fn parse_command(text: &str) -> Option<(CommandKind, i64, String)> {
     // riêng thật sự (`/new` đọc cờ, `/runin` đòi id đứng trước, `/sessions` cố
     // ý KHÔNG nhận id…), và mỗi cái đều đã khai trong bảng với `Arg::Custom`
     // nên `/help` lẫn menu Telegram vẫn thấy chúng.
+    // `/<lệnh> -h` — xin xem lệnh ấy hỗ trợ gì. Đặt TRƯỚC mọi cách đọc tham số của route, nếu không
+    // `/new -h` thành đề bài "-h" và `/type -h` gõ chữ "-h" vào phiên (xem `commands::hoi_chi_tiet`).
+    if let Some(r) = crate::commands::lookup(&verb) {
+        let con_lai = t[1..]
+            .split_once(char::is_whitespace)
+            .map(|(_, r)| r.trim())
+            .unwrap_or("");
+        if let Some(arg) = crate::commands::hoi_chi_tiet(r.name, con_lai) {
+            return Some((CommandKind::Help, 0, arg));
+        }
+    }
     if let Some(r) = crate::commands::lookup(&verb) {
         let rest = || {
             t[1..]

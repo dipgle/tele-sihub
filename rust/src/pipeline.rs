@@ -14650,7 +14650,10 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                 // một lệnh mới không thể ra đời mà thiếu dòng của nó, và
                 // không dòng nào còn tả một lệnh đã chết. 🔴 Hà 2026-08-14:
                 // *"Tại sao không tạo lib lệnh để map khi nhận"*.
-                let ack = crate::commands::help_text();
+                //
+                // `/<lệnh> -h` đi vào ĐÂY với `arg` = tên lệnh (`/set <mục> -h` ⟹ "set <mục>"):
+                // chi tiết một lệnh, cũng sinh từ bảng (`commands::chi_tiet`).
+                let ack = help_for_arg(cfg, &cmd.arg);
                 reply_in_channel(db, cfg, adapter, cmd, &ack);
                 Some(ack)
             }
@@ -20292,6 +20295,37 @@ pub fn owner_budget_state(db: &Db) -> OwnerBudget {
         0.0
     });
     OwnerBudget { spent_usd: spent }
+}
+
+/// Chữ cho route `Help`: trống ⟹ cả bảng lệnh; có tên ⟹ chi tiết lệnh ấy (`/set` kèm danh sách trường
+/// đặt được đọc từ tệp cấu hình ĐANG CHẠY, so với mặc định trong mã).
+pub fn help_for_arg(cfg: &Config, arg: &str) -> String {
+    let arg = arg.trim();
+    if arg.is_empty() {
+        return crate::commands::help_text();
+    }
+    let (name, muc) = match arg.split_once(char::is_whitespace) {
+        Some((n, m)) => (n, Some(m.trim())),
+        None => (arg, None),
+    };
+    let Some(mut out) = crate::commands::chi_tiet(name) else {
+        return crate::commands::help_text();
+    };
+    if name == "set" {
+        let mac_dinh = serde_json::to_value(Config::default()).unwrap_or(Value::Null);
+        let phan = match crate::config::read_raw(cfg) {
+            Ok(root) => crate::commands::huong_dan_set(&root, &mac_dinh, muc),
+            Err(e) => {
+                logging::error(
+                    "set_help_config_unreadable",
+                    json!({ "err": logging::err_chain(&e) }),
+                );
+                format!("⚠ không đọc được cấu hình để liệt kê: {e}")
+            }
+        };
+        out = format!("{phan}\n\n— — —\n{out}");
+    }
+    out
 }
 
 /// Set ONE config field by dotted path, then round-trip through `Config` so a

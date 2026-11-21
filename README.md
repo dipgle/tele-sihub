@@ -250,6 +250,11 @@ delivered through the console — the first real `/new` is that measurement.
 
 ## Commands
 
+**Every command explains itself:** `/<command> -h` (or `--help`) shows its syntax, flags and an
+example, e.g. `/new -h`. `/set -h` lists the config sections and `/set <section> -h` lists each field
+with its type, current value and default — so you can see what `/set` accepts before you set it.
+`-h` only counts when it stands alone after the command name; a task like `/new fix it -h` is still a task.
+
 Only the owner can give orders: Telegram is gated by `chat_id`
 (`telegram::update_sender` reads the right field for each update shape); anyone
 else typing `/new` is just typing text. The parser (`verbs::parse_command`) is a
@@ -264,7 +269,6 @@ channel a command came from.
 | *(plain text, no `/`)* | type straight into the session you follow |
 | `/new [-a acc] [-s project] [-y] <task>` | open a **real terminal window** (Terminal tab / tmux pane / console window) running the CLI and type the task into it; an empty task is fine (open the window, talk later); `-y` opens a locked account without asking |
 | `/ask <question>` | side question to the followed session, **on a fork** — the original session gains no turn |
-| `/tell <text>` | continue a background session (`/stop` it first) |
 | `/stop [id]` | background session: stop, conversation kept · window session opened by huba: **shut down for good** — `/exit`, then close the window |
 | `/handover [id]` | close out: a handover note + a new session with the same context + the `--resume` command |
 
@@ -299,7 +303,7 @@ channel a command came from.
 | `/set <key> <value>` | change one config field (validated + backed up + written atomically) |
 | `/help` | this table, read straight from the code (`commands::ROUTES` is the source) |
 
-`/ask`, `/handover`, `/new`, `/tell` call the real `claude`, so they **use your
+`/ask`, `/handover`, `/new` call the real `claude`, so they **use your
 plan's quota** — exactly as if you typed them in a terminal, no more.
 
 On a **Max** plan (`claude auth status` → `subscriptionType: max`) there is no
