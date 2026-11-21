@@ -67,7 +67,7 @@ cp "$PA_TARGET/$TARGET/release/project-agent" "$D/kem/bin/"
 cp "$KEM_SRC/cong_bao_mat.py" "$KEM_SRC/bao-mat-policy.json" "$D/kem/scripts/"
 # Khâu soạn đoạn mở đầu phiên + nhắc chuyển phiên: huba gọi chúng CẠNH cổng
 # (`accounts::script_canh_cong`) — máy cài bằng gói không có cây workspace.
-cp "$KEM_SRC/mo-dau-phien.py" "$KEM_SRC/nhac-chuyen-phien.py" "$D/kem/scripts/"
+cp "$KEM_SRC/mo-dau-phien.py" "$KEM_SRC/nhac-chuyen-phien.py" "$KEM_SRC/nhac-vao-phien.py" "$D/kem/scripts/"
 cp "$H/cli-ghim.env" "$D/"
 cp "$KEM_SRC/cong-bao-mat-plugin/index.js" "$KEM_SRC/cong-bao-mat-plugin/package.json" "$D/kem/scripts/cong-bao-mat-plugin/"
 # Phần cấu hình của trình cài + mẫu tài khoản (CHỈ các hàng `claude_accounts` của kho — không

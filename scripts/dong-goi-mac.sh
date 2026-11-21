@@ -19,7 +19,7 @@ KEM_SRC="$W/scripts"
 [ "$(uname)" = Darwin ] || { echo "KHÔNG ĐO ĐƯỢC: dựng gói Mac phải chạy trên macOS"; exit 2; }
 [ "$(uname -m)" = arm64 ] || { echo "KHÔNG ĐO ĐƯỢC: máy dựng không phải Apple Silicon (gói nhắm aarch64-apple-darwin)"; exit 2; }
 for f in "$PA/Cargo.toml" "$KEM_SRC/cong_bao_mat.py" "$KEM_SRC/bao-mat-policy.json" "$KEM_SRC/cong-bao-mat-plugin/index.js" \
-         "$KEM_SRC/mo-dau-phien.py" "$KEM_SRC/nhac-chuyen-phien.py" "$H/cli-ghim.env" "$H/install_mac.sh" \
+         "$KEM_SRC/mo-dau-phien.py" "$KEM_SRC/nhac-chuyen-phien.py" "$KEM_SRC/nhac-vao-phien.py" "$H/cli-ghim.env" "$H/install_mac.sh" \
          "$H/com.dipgle.hubd.plist" "$H/sign.sh" "$H/make-signing-cert.sh" "$H/DOC-TRUOC-MAC.txt"; do
   [ -f "$f" ] || { echo "KHÔNG ĐO ĐƯỢC: thiếu $f — gói thiếu phần bắt buộc thì không đóng"; exit 2; }
 done
@@ -50,7 +50,7 @@ cp "$R/target/release/huba" "$R/target/release/hubad" "$H/install_mac.sh" "$H/hu
    "$H/cli-ghim.env" "$H/com.dipgle.hubd.plist" "$H/sign.sh" "$H/make-signing-cert.sh" "$D/"
 cp "$H/DOC-TRUOC-MAC.txt" "$D/DOC-TRUOC.txt"
 cp "$PA_TARGET/release/project-agent" "$D/kem/bin/"
-cp "$KEM_SRC/cong_bao_mat.py" "$KEM_SRC/bao-mat-policy.json" "$KEM_SRC/mo-dau-phien.py" "$KEM_SRC/nhac-chuyen-phien.py" "$D/kem/scripts/"
+cp "$KEM_SRC/cong_bao_mat.py" "$KEM_SRC/bao-mat-policy.json" "$KEM_SRC/mo-dau-phien.py" "$KEM_SRC/nhac-chuyen-phien.py" "$KEM_SRC/nhac-vao-phien.py" "$D/kem/scripts/"
 cp "$KEM_SRC/cong-bao-mat-plugin/index.js" "$KEM_SRC/cong-bao-mat-plugin/package.json" "$D/kem/scripts/cong-bao-mat-plugin/"
 cp "$H/scripts/huba_cai_linux.py" "$D/kem/huba_cai_linux.py"
 cp "$H/scripts/CLAUDE-goc-workspace.md" "$D/kem/CLAUDE.md"

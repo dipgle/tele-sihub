@@ -42,7 +42,7 @@ W="$(cd "$H/.." && pwd)"
 PA="$W/AI/codetrail/mcp/project-agent-rs"
 KEM_SRC="$W/scripts"
 for f in "$PA/Cargo.toml" "$KEM_SRC/cong_bao_mat.py" "$KEM_SRC/bao-mat-policy.json" "$KEM_SRC/cong-bao-mat-plugin/index.js" \
-         "$KEM_SRC/mo-dau-phien.py" "$KEM_SRC/nhac-chuyen-phien.py" "$H/scripts/huba_cai_linux.py" "$H/scripts/CLAUDE-goc-workspace.md"; do
+         "$KEM_SRC/mo-dau-phien.py" "$KEM_SRC/nhac-chuyen-phien.py" "$KEM_SRC/nhac-vao-phien.py" "$H/scripts/huba_cai_linux.py" "$H/scripts/CLAUDE-goc-workspace.md"; do
   [ -f "$f" ] || { echo "KHÔNG ĐO ĐƯỢC: thiếu $f — gói thiếu MCP/cổng bảo mật/luật thì không đóng"; exit 2; }
 done
 for k in skills agents; do
@@ -67,7 +67,7 @@ cp "$R/target/$TARGET/release/huba.exe" "$R/target/$TARGET/release/hubad.exe" "$
 cp "$H/scripts/do-windows.ps1" "$D/scripts/"
 cp "$H/DOC-TRUOC-WINDOWS.txt" "$D/DOC-TRUOC.txt"
 cp "$PA_TARGET/$TARGET/release/project-agent.exe" "$D/kem/bin/"
-cp "$KEM_SRC/cong_bao_mat.py" "$KEM_SRC/bao-mat-policy.json" "$KEM_SRC/mo-dau-phien.py" "$KEM_SRC/nhac-chuyen-phien.py" "$D/kem/scripts/"
+cp "$KEM_SRC/cong_bao_mat.py" "$KEM_SRC/bao-mat-policy.json" "$KEM_SRC/mo-dau-phien.py" "$KEM_SRC/nhac-chuyen-phien.py" "$KEM_SRC/nhac-vao-phien.py" "$D/kem/scripts/"
 cp "$KEM_SRC/cong-bao-mat-plugin/index.js" "$KEM_SRC/cong-bao-mat-plugin/package.json" "$D/kem/scripts/cong-bao-mat-plugin/"
 # Bộ cấu hình dùng chung với Linux (cùng tệp nguồn; trên Windows nó tạo JUNCTION thay symlink).
 cp "$H/scripts/huba_cai_linux.py" "$D/kem/huba_cai.py"
