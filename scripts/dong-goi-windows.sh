@@ -33,7 +33,7 @@ else
 fi
 echo "dựng bằng: cargo $DUNG ($TARGET)"
 
-if [ -n "$(git -C "$H" status --porcelain -- rust install_update.ps1 scripts/do-windows.ps1 DOC-TRUOC-WINDOWS.txt scripts/huba_cai_linux.py scripts/CLAUDE-goc-workspace.md huba.config.json)" ]; then
+if [ -n "$(git -C "$H" status --porcelain -- rust install_update.ps1 cai.ps1 CAI.cmd scripts/do-windows.ps1 DOC-TRUOC-WINDOWS.txt scripts/huba_cai_linux.py scripts/CLAUDE-goc-workspace.md huba.config.json)" ]; then
   echo "⚠ cây có thay đổi CHƯA commit trong phần đóng gói — tên gói mang sha HEAD nhưng nội dung là cây hiện tại"
 fi
 SHA=$(git -C "$H" rev-parse --short HEAD)
@@ -63,7 +63,7 @@ echo "PA_EXIT=$PA_EXIT"
 D="$H/.tmp/huba-windows-$SHA"
 rm -rf "$D" "$D.zip"
 mkdir -p "$D/scripts" "$D/kem/bin" "$D/kem/scripts/cong-bao-mat-plugin" "$D/kem/claude"
-cp "$R/target/$TARGET/release/huba.exe" "$R/target/$TARGET/release/hubad.exe" "$H/install_update.ps1" "$D/"
+cp "$R/target/$TARGET/release/huba.exe" "$R/target/$TARGET/release/hubad.exe" "$H/install_update.ps1" "$H/cai.ps1" "$H/CAI.cmd" "$D/"
 cp "$H/scripts/do-windows.ps1" "$D/scripts/"
 cp "$H/DOC-TRUOC-WINDOWS.txt" "$D/DOC-TRUOC.txt"
 cp "$PA_TARGET/$TARGET/release/project-agent.exe" "$D/kem/bin/"

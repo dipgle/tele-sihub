@@ -6,6 +6,13 @@ PowerShell chạy thử). Bước 1 dưới đây là
 PHÉP ĐO: nó mở 2 cửa sổ console, gõ thử, đọc lại, rồi tự đóng. Gửi tệp kết quả
 về trước khi dùng thật.
 
+CÁCH NHANH — KHÔNG GÕ LỆNH: giải nén, vào thư mục `huba-windows-*`, BẤM ĐÔI `CAI.cmd`, trả lời các hộp thoại.
+Nó tự: gỡ dấu "tải từ mạng" · thử chạy huba.exe (bị Smart App Control chặn thì hiện hộp thoại, mở Windows
+Security cho bạn tắt rồi thử lại; chính sách của tổ chức thì dừng và nói rõ) · tạo cấu hình · mở trang điền bot
+Telegram nếu chưa có · cài + chạy nền · hộp thoại "Cài xong". Nhật ký: cai.log cạnh CAI.cmd.
+Không cần sửa claude_accounts: để trống = dùng tài khoản claude của chính máy này.
+CHƯA chạy thử trên Windows thật. Các bước tách rời dưới đây vẫn dùng được để đo/gỡ lỗi.
+
 Mở PowerShell THƯỜNG (KHÔNG "Run as Administrator"), cd vào thư mục giải nén:
 
   1) ĐO (khoảng 30 giây, không cần cấu hình):

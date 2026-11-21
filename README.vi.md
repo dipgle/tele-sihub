@@ -2,7 +2,7 @@
 
 *English: [README.md](README.md)*
 
-Trên Mac lúc nào cũng có mươi phiên `claude` đang chạy trong các cửa sổ Terminal.
+Trên một máy đang làm việc lúc nào cũng có mươi phiên `claude` chạy trong các cửa sổ terminal.
 `huba` đưa chúng vào **một buồng chat Telegram**: xem phiên nào đang làm gì, mở
 phiên mới, gõ thẳng vào một phiên đang chạy, hỏi chen ngang mà không phá việc nó
 đang làm, dừng nó, hoặc đóng sổ lấy bản bàn giao để làm tiếp trên máy.
@@ -11,10 +11,20 @@ phiên mới, gõ thẳng vào một phiên đang chạy, hỏi chen ngang mà k
 vào máy, không có địa chỉ nào trỏ về đây:
 
 ```
-  điện thoại ──► Telegram ──► hubad (long-poll getUpdates) ──► claude CLI trên Mac
+  điện thoại ──► Telegram ──► hubad (long-poll getUpdates) ──► claude CLI trên máy
        ▲                              │
        └──── tin báo + nút bấm ◄──────┘   (chỉ khi có THAY ĐỔI, không báo trạng thái)
 ```
+
+**Nền tảng** (mã là một crate Rust; mỗi hệ điều hành có cách riêng để gõ vào cửa sổ phiên và đọc lại):
+
+| Hệ | Cách huba gõ vào / đọc phiên | Trình cài | Tình trạng |
+|---|---|---|---|
+| macOS | Terminal.app + AppleScript (`do script`) | `install_update.sh` (launchd) | bản gốc, dùng hằng ngày |
+| Linux (Ubuntu) | pane **tmux** | `install_update_linux.sh` (`systemd --user`) | đã cài và đang chạy trên máy tác giả |
+| Windows | **console** của phiên (`AttachConsole` + `WriteConsoleInputW`) | `CAI.cmd` → `install_update.ps1` (Task Scheduler) | mới dựng chéo và kiểm clippy — **chưa chạy trên máy Windows thật** |
+
+Phiên Claude CLI là đích chính. Trên Linux, phiên `opencode` cũng liệt kê và điều khiển được (tài khoản `"cli": "opencode"`).
 
 ## Để máy ở nhà, cứ đi chơi
 
@@ -49,7 +59,9 @@ phải gõ gì cả — huba gắn sẵn nút.
   sổ là thứ không lùi lại được.
 - **Nút thay cho việc nhớ cú pháp:** danh sách phiên (mỗi phiên một nút), từng
   lựa chọn của một phiên đang dừng lại hỏi, `📄 Xem đầy đủ` (mở luôn phiên ấy),
-  `📎` lấy một tệp phiên vừa nhắc tới, `👁 Vào phiên`, `⏎ Gửi`.
+  `📎` lấy một tệp phiên vừa nhắc tới, `👁 Vào phiên`, `⏎ Gửi`. Khi ô nhập đang
+  chứa **gợi ý mờ** của Claude chứ không phải chữ đã gõ, `/shot` đổi nút gửi thành
+  `💡⏎` — bấm là nhận gợi ý rồi gửi luôn (chỉ Linux/tmux; nơi khác nhãn vẫn là `⏎`).
 - **Cổng người:** biến `HUB_TELEGRAM_CHAT_ID` trong `huba.env`. Tin từ chat khác
   bị **ghi log rồi bỏ**, không im lặng. Từ 2026-08-14 đây là cổng người **duy
   nhất** — cổng thứ hai (`trust.tfl5_user_tids`, kiểm trong bộ phân tích lệnh)
@@ -64,6 +76,11 @@ phải gõ gì cả — huba gắn sẵn nút.
   chúng phải qua Terminal.app, địa chỉ bằng tty, mà phiên editor không có cửa sổ
   Terminal nào — một dòng chỉ xem được mà không lái được thì nó không phải cây
   cầu, nó là một cái tên nữa để nhầm. Số phiên bị bỏ vẫn được đếm và nói ra.
+- **Phiên tự nhờ huba chạy lệnh (hòm thư).** Có lệnh bị chặn ngay trong phiên (`git
+  push`, `ssh`, `rm`…). Phiên ghi MỘT dòng lệnh vào `huba-run.txt` trong thư mục
+  scratchpad của chính nó; huba đọc **id phiên từ đường dẫn** (không ai gõ id), chạy
+  lệnh, rồi dán kết quả vào ô nhập của phiên ấy. Linux: quét các gốc scratchpad dưới
+  `/tmp` và `$TMPDIR` (cả `CLAUDE_CODE_TMPDIR`); Windows: `%TEMP%\claude`.
 
 > **Kênh thứ hai đã đóng ngày 2026-08-14.** Tới hôm ấy còn một phòng chat trên
 > tfl5 và một trang điện thoại chạy song song với Telegram. Hà: *"tạm thời không
@@ -101,7 +118,31 @@ bao giờ hiện lại giá trị đã lưu** — nó chỉ nói khoá ấy *đ�
 Dựng chỗ làm việc từ đầu (thư mục, gốc workspace, ba câu hay hỏi ngược):
 `ARCHITECTURE.md`.
 
-## Tự chạy cùng máy (launchd)
+## Tự chạy cùng máy — Linux (systemd --user)
+
+Cần `tmux`. Phiên muốn huba điều khiển phải chạy trong pane tmux (`/new` tự mở một pane).
+
+```bash
+bash scripts/dong-goi-linux.sh             # dựng → .tmp/huba-linux-<sha>.tar.gz (in sha256)
+tar -xzf huba-linux-<sha>.tar.gz && cd huba-linux-<sha>
+bash install_update_linux.sh               # cài HOẶC cập nhật; chạy lại bao nhiêu lần cũng được
+bash install_update_linux.sh --verify      # bản cài == gói này không? dịch vụ có chạy không?
+```
+
+Trình cài chép gói vào `$HUBA_HOME` (mặc định `~/huba`) và **không bao giờ đè**
+`huba.config.json`, `huba.env`, `data/`. Rồi nó tạo cấu hình nếu thiếu, thêm tài
+khoản còn thiếu từ mẫu, cài unit `systemd --user` `huba-hubd`, thêm lối vào «huba — quản
+lý» trong menu ứng dụng, và tự kiểm (`huba linux-tu-kiem`: mở pane tmux, gõ, đọc lại,
+Ctrl-C, đóng). Nhật ký: `~/huba/logs/hubd.err`, `journalctl --user -u huba-hubd`. Mã
+thoát: 0 xong · 1 hỏng · 2 không đo được. Công tắc: `HUBA_HOME`, `HUBA_KHONG_CAI_CLI=1`
+(không tự cài `claude`/`opencode`), `HUBA_KHONG_MO_TRANG=1` (không mở trang cài đặt).
+
+Gói còn mang `kem/` — phần dùng chung (luật chung cho phiên, skill/tác tử, cổng bảo mật
+đứng sau danh sách cấm của `/new`, MCP `project-agent`, mẫu tài khoản). Đường dẫn của
+chúng được ghi vào `huba.env` (`HUBA_LUAT_GOC`, `BAO_MAT_POLICY`, `HUBA_MCP_PROJECT_AGENT`,
+`HUBA_OPENCODE_PLUGIN`).
+
+## Tự chạy cùng máy — macOS (launchd)
 
 ```bash
 ./huba self-install                                  # build → ký → cài → khởi động lại
@@ -136,31 +177,45 @@ khoẻ** có một hàng nói thẳng điều đó.
 vòng chạy được đếm và backoff luỹ thừa (tối đa 10 phút), sau 5 lần liên tiếp thì
 ghi `logs/notify.log` + hiện thông báo macOS.
 
-## Chạy trên Windows (30/09 — ⚠ CHƯA chạy thử trên máy Windows thật)
+## Chạy trên Windows (⚠ CHƯA chạy thử trên máy Windows thật)
 
-Bản Windows lái **Windows Terminal** (`wt.exe`) thay cho Terminal.app: gõ phím bằng
-`SendInput`, đọc màn bằng UI Automation (`rust/src/keys_win.rs`). Nó được dựng-kiểm
-chéo ở MỌI lượt `./gate.sh` (bước ②b, `x86_64-pc-windows-gnu`, clippy `-D warnings`),
-nhưng chưa từng chạy trên một máy Windows nào.
+Mỗi phiên `claude` nằm trong một **console** (một tab Windows Terminal, hay một cửa sổ
+console cổ điển). huba gắn vào console ấy (`AttachConsole`), đặt phím thẳng vào hàng
+nhập (`WriteConsoleInputW`) và đọc chữ lại (`ReadConsoleOutputCharacterW`) — không cần
+tiêu điểm, không cần cửa sổ ở trước, không giành chuột/bàn phím của người đang ngồi máy
+(`rust/src/keys_win.rs`). Trong sổ của huba, "tty" của phiên Windows là `con<pid shell gốc>`.
+Nó được dựng-kiểm chéo ở MỌI lượt `./gate.sh` (bước ②b, `x86_64-pc-windows-gnu`, clippy
+`-D warnings`), nhưng **chưa từng chạy trên máy Windows thật**.
 
-1. **Đo trước** (chỉ đọc, ~10 giây): `powershell -ExecutionPolicy Bypass -File scripts\do-windows.ps1`
-   ⟹ tệp `%TEMP%\huba-do-windows-*.txt`. Gửi tệp ấy về: nó trả lời những câu mà phần
-   nối-phiên-với-cửa-sổ còn thiếu (`claude agents --json` trên Windows in gì, `claude`
-   chạy dưới tiến trình nào, lớp cửa sổ Windows Terminal).
-2. **Cấu hình**: `huba.config.json` (các `claude_accounts` của MÁY ĐÓ) + `huba.env` —
-   `huba setup` mở trang để điền. ⚠ Dùng **bot Telegram riêng** cho máy Windows: hai
-   hubd cùng một bot thì giành `getUpdates` (409 Conflict).
-3. **Cài**: PowerShell THƯỜNG (không Run as Administrator — UIPI chặn gõ phím giữa hai
-   mức quyền): `powershell -ExecutionPolicy Bypass -File install_update.ps1`
-   (cần Rust), hoặc `… install_update.ps1 -BinDir <thư mục có hubad.exe + huba.exe>` với
-   bản dựng sẵn. Nó cài vào `%LOCALAPPDATA%\hub\bin`, thêm vào PATH, đặt `HUB_CONFIG`, và
-   đăng ký tác vụ `huba-hubd` (Task Scheduler, lúc đăng nhập, chết thì chạy lại).
-   Kiểm: `install_update.ps1 -Verify`.
+**Dựng gói** (trên Linux có `zig` hoặc mingw): `bash scripts/dong-goi-windows.sh` →
+`.tmp/huba-windows-<sha>.zip` (`huba.exe`, `hubad.exe`, các tệp cài, thư mục `kem\` dùng
+chung kèm `project-agent.exe`).
 
-**Đã biết là CHƯA chạy trên Windows**: nối phiên đang chạy với cửa sổ của nó (chờ số đo
-bước 1) · `/upgrade` (báo lệnh cài lại thay vì tự làm) · `/anh` chụp ảnh cửa sổ ·
-phát hiện màn khoá · `/web` lái Chrome (AppleScript) · thông báo hệ thống khi vòng chạy
-hỏng liên tiếp (chỉ ghi `logs/notify.log`).
+**Cài, không phải gõ lệnh:** giải nén, mở thư mục `huba-windows-*`, bấm đôi **`CAI.cmd`**.
+Nó gỡ dấu "tải từ mạng", thử chạy `huba.exe`, tạo cấu hình, mở trang điền token bot
+Telegram nếu chưa có, rồi cài và chạy nền (Task Scheduler `huba-hubd`, lúc đăng nhập,
+chết thì chạy lại), hỏi bạn bằng hộp thoại ở chỗ cần. Nhật ký: `cai.log`. ⚠ Dùng **bot
+Telegram riêng** cho máy Windows: hai hubd cùng một bot thì giành `getUpdates` (409
+Conflict). Phần `kem\` cần Python 3; trình cài tự thử
+`winget install Python.Python.3.12 --scope user`, không được thì bỏ qua phần đó và nói rõ.
+
+**Application Control.** `huba.exe` **chưa ký số**. *Smart App Control* của Windows 11
+(hoặc chính sách WDAC/AppLocker trên máy của tổ chức) chặn chương trình chưa ký bằng câu
+"An Application Control policy has blocked this file" — gói không có gì gỡ được. Máy cá
+nhân có thể tắt Smart App Control (tắt rồi không bật lại được nếu không cài lại Windows);
+máy cơ quan thì quản trị viên phải cho phép tệp. `CAI.cmd` nhận ra tình huống này và nói rõ.
+
+**Đo trước** (~30 giây, không cần cấu hình): `.\huba.exe windows-tu-kiem` trong PowerShell
+THƯỜNG mở hai cửa sổ console, gõ thử, đọc lại rồi đóng; in ✅/❌/⏭ từng mục và ghi một tệp
+kết quả. Mã thoát 0 = đạt hết · 1 = có mục hỏng · 2 = có mục KHÔNG ĐO ĐƯỢC. Chạy nó **trước
+khi** tin bất kỳ dòng nào của mục này. Đo phụ, chỉ đọc: `scripts\do-windows.ps1`. Chạy huba
+bằng PowerShell THƯỜNG, không "Run as Administrator" — tiến trình thường không gắn được vào
+console của tiến trình nâng quyền.
+
+**CHƯA làm trên Windows**: `/anh` chụp ảnh cửa sổ · `/web` lái Chrome · phát hiện màn khoá ·
+`/upgrade` (báo lệnh thay vì tự làm) · xoá hàng chờ trong ô nhập (`/clean`) · cuộn ngược
+quá khung nhìn. **Chưa đo**: `claude` (Node) có nhận phím mũi tên và khối dán nhiều dòng gửi
+qua console không — lượt `/new` thật đầu tiên chính là phép đo ấy.
 
 ## Lệnh
 
@@ -175,19 +230,25 @@ route — nên nó không biết và không cần biết lệnh tới từ kênh
 |---|---|
 | `/sessions` (hay `/session` trống) | danh sách phiên đang sống, mỗi phiên một nút — bấm để theo (`/session -` để thôi theo) |
 | *(chữ thường, không dấu `/`)* | gõ thẳng vào phiên đang theo |
-| `/new [-a acc] [-s dự án] <việc>` | mở một **cửa sổ Terminal thật** chạy `claude` rồi gõ việc ấy vào; việc rỗng cũng được (mở cửa sổ rồi nói sau) |
+| `/new [-a acc] [-s dự án] [-y] <việc>` | mở một **cửa sổ terminal thật** (tab Terminal / pane tmux / cửa sổ console) chạy CLI rồi gõ việc ấy vào; việc rỗng cũng được (mở cửa sổ rồi nói sau); `-y` mở tài khoản đang khoá mà không hỏi |
 | `/ask <câu hỏi>` | hỏi bên lề phiên đang theo, **trên bản fork** — phiên gốc không thêm lượt nào |
 | `/tell <nội dung>` | nói tiếp vào phiên nền (phải `/stop` nó trước) |
 | `/stop [id]` | phiên nền: dừng, hội thoại vẫn giữ · phiên cửa sổ huba mở: **tắt hẳn** — `/exit` rồi đóng cửa sổ |
 | `/handover [id]` | đóng sổ: bản bàn giao + phiên mới giữ nguyên ngữ cảnh + lệnh `--resume` |
 
-**Gõ thẳng vào cửa sổ phiên** (chỉ phiên Terminal — xem mục Telegram ở trên)
+**Gõ thẳng vào cửa sổ phiên** (chỉ phiên có cửa sổ terminal — xem mục Telegram ở trên)
 
 | Lệnh | Việc |
 |---|---|
 | `/type <chữ>` | gõ chữ vào phiên đang theo, kèm Enter khi đo được là chữ còn nằm trong ô |
 | `/key <up\|down\|left\|right\|enter\|esc\|tab\|space\|1-9>` | bấm một phím |
-| `/shot` | đọc chữ đang hiện trên màn của phiên |
+| `/enter` · `/esc` · `/right` | gửi chữ đang nằm trong ô nhập · đóng hộp thoại đang mở · nhận gợi ý mờ của Claude (→) rồi `/enter` để gửi |
+| `/pick <câu>.<lựa chọn>` · `/tab <số>` | trả lời một câu của bảng hỏi nhiều câu · sang tab ấy mà không chọn |
+| `/clear` · `/clean` | xoá chữ đã gõ trong ô nhập · xoá cả ô nhập VÀ hàng chờ |
+| `/ctrlc` | Ctrl+C: ngắt lượt đang chạy dở |
+| `/shot` | đọc chữ đang hiện trên màn của phiên, kèm các nút phù hợp (`💡⏎` khi ô đang chứa gợi ý mờ) |
+| `/anh` · `/front` | ảnh thật của màn hình (macOS) · đưa cửa sổ phiên ra trước |
+| `/effort <low…max>` | đổi mức effort của phiên đang theo |
 
 **Vận hành**
 
@@ -196,9 +257,12 @@ route — nên nó không biết và không cần biết lệnh tới từ kênh
 | `/accounts` | các tài khoản: phiên nào của ai, còn bao nhiêu hạn mức, `/new` mặc định vào tài khoản nào, cái nào 🔒 đang khoá |
 | `/accounts detail <tên>` (hoặc `/accounts acc3`) | chi tiết MỘT tài khoản: email · tên · tổ chức · vai trò · gói · thư mục · hạn mức · phiên đang chạy · khoá — đọc sổ `.claude.json`, không chạy `claude` |
 | `/new -a <tài khoản khoá> …` | huba HỎI xác nhận trên Telegram; bấm đồng ý thì mở đúng lượt đó, khoá giữ nguyên |
-| `/accounts khoa <tên>` · `/accounts mo <tên>` | khoá / mở một tài khoản (`"locked": true` trong `claude_accounts`) — đang khoá thì huba không tự chọn, không mở phiên kể cả khi gõ `-a`, không dò `/usage` bằng nó |
-| `/terminal <dòng lệnh>` | mở cửa sổ Terminal thật (có tty) rồi chạy lệnh — cho `sudo`, `ssh -t`, `passwd`; cửa sổ ở lại để gõ mật khẩu |
-| `/upgrade` | huba tự dựng lại chính nó từ mã hiện tại rồi khởi động lại |
+| `/accounts <tên> -b` · `/accounts <tên> -a` | khoá / mở một tài khoản (`"locked": true` trong `claude_accounts`) — đang khoá thì huba không tự chọn, không mở phiên kể cả khi gõ `-a`, không dò `/usage` bằng nó. Cờ khác: `-l` đăng nhập lại · `-k <API key>` dùng API key (tính tiền; `-k xoa` về gói) |
+| `/runin <id> <lệnh>` | máy chạy, kết quả dán vào phiên ấy (hòm thư ở trên làm việc này khi phiên tự nhờ) |
+| `/close [id]` | đóng hẳn phiên VÀ cửa sổ của nó |
+| `/terminal` | liệt kê cửa sổ terminal trần (không chạy gì); muốn mở mới thì dùng `/new` |
+| `/web` | Chrome trên máy (macOS): trống = các tab · địa chỉ = mở |
+| `/upgrade` | huba tự dựng lại chính nó từ mã hiện tại rồi khởi động lại (Windows: báo lệnh thay vì tự làm) |
 | `/run` · `/doctor` | chạy một vòng ngay · kiểm tra thật |
 | `/set <khoá> <giá trị>` | sửa một trường cấu hình (validate + backup + ghi nguyên tử) |
 | `/help` | bảng này, đọc thẳng từ mã |

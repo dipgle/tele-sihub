@@ -1,18 +1,18 @@
-# tele-sihub (huba) — watch and drive the Claude CLI sessions on your Mac from your phone
+# tele-sihub (huba) — watch and drive the Claude CLI sessions on your computer from your phone
 
 *Tiếng Việt: [README.vi.md](README.vi.md)*
 
-On a working Mac there are often a dozen `claude` sessions running in Terminal
+On a working machine there are often a dozen `claude` sessions running in terminal
 windows. `huba` (the program's name; this repository is its public home) puts
 them into **one Telegram chat**: see what each session is doing, open a new one,
 type straight into a running session, ask a side question without disturbing its
 work, stop it, or close it out with a handover so you can continue at the desk.
 
-Traffic goes both ways, and **the Mac is always the one calling out** — no port is
+Traffic goes both ways, and **the computer is always the one calling out** — no port is
 opened on the machine, and no address points back to it:
 
 ```
-  phone ──► Telegram ──► hubad (long-poll getUpdates) ──► claude CLI on the Mac
+  phone ──► Telegram ──► hubad (long-poll getUpdates) ──► claude CLI on the computer
     ▲                              │
     └──── notifications + buttons ◄┘   (only on a CHANGE, never on a state)
 ```
@@ -21,8 +21,17 @@ opened on the machine, and no address points back to it:
 > (`CLAUDE.md`, `PLAN.md`, `UC.md`, …) and the messages huba sends to Telegram are
 > in **Vietnamese** — it was built for a Vietnamese-speaking owner.
 
-**Platform:** macOS (Terminal.app + AppleScript). A Windows port exists but has
-not yet run on a real Windows machine — see below.
+**Platforms** (the code is one Rust crate; each OS has its own way to type into a
+session window and read it back):
+
+| OS | How huba types into / reads a session | Installer | Status |
+|---|---|---|---|
+| macOS | Terminal.app + AppleScript (`do script`) | `install_update.sh` (launchd) | the original, used daily |
+| Linux (Ubuntu) | **tmux** panes | `install_update_linux.sh` (`systemd --user`) | installed and running on the author's machine |
+| Windows | the session's **console** (`AttachConsole` + `WriteConsoleInputW`) | `CAI.cmd` → `install_update.ps1` (Task Scheduler) | cross-built and linted only — **has not run on a real Windows machine** |
+
+Sessions of the Claude CLI are the main target. On Linux, `opencode` sessions can
+be listed and driven too (accounts with `"cli": "opencode"`).
 
 ## Leave the laptop at home
 
@@ -42,10 +51,10 @@ From your phone you can still:
 
 At a café, on a trip, out with friends — the work keeps moving.
 
-**One-time setup:** keep the Mac plugged in, online and logged in, with automatic
-sleep turned off (or use `caffeinate`). Locking the screen is fine — typing into
+**One-time setup:** keep the computer plugged in, online and logged in, with automatic
+sleep turned off (macOS: `caffeinate`). Locking the screen is fine — typing into
 sessions and `/shot` keep working; only `/anh` (screenshots) and `/web` (driving
-Chrome) need it unlocked.
+Chrome) need it unlocked (macOS).
 
 ## Telegram is the main channel
 
@@ -60,7 +69,10 @@ buttons.
 - **Buttons instead of remembering syntax:** the session list (one button per
   session), each option of a session that stopped to ask a question,
   `📄 Xem đầy đủ` (view in full, opens that session), `📎` to fetch a file the session
-  just mentioned, `👁 Vào phiên` (enter session), `⏎ Gửi` (send).
+  just mentioned, `👁 Vào phiên` (enter session), `⏎ Gửi` (send). When the input
+  box holds Claude's grey **suggestion** (ghost text) rather than something typed,
+  `/shot` labels the send button `💡⏎` — the tap accepts the suggestion and sends
+  it (Linux/tmux only; elsewhere the label stays `⏎`).
 - **The owner gate:** `HUB_TELEGRAM_CHAT_ID` in `huba.env`. Messages from any other
   chat are **logged and dropped**, never silently ignored. This is the **only**
   owner gate: a second one used to exist for a chat room that has since been
@@ -71,9 +83,16 @@ buttons.
   Announcing *state* from a 10-second loop is a phone that buzzes forever — and a
   phone like that gets muted, taking the messages that mattered with it.
 - **Sessions running inside VS Code / Cursor are not listed.** Typing into a
-  session goes through Terminal.app, addressed by tty, and an editor session has no
-  Terminal window — a row you can watch but not drive is not a bridge, just one
+  session goes through a terminal window addressed by tty, and an editor session has no
+  such window — a row you can watch but not drive is not a bridge, just one
   more name to confuse. The number of skipped sessions is still counted and reported.
+- **A session can ask huba to run a command for it** (the *mailbox*). Some commands
+  are blocked inside a session on purpose (`git push`, `ssh`, `rm`…). The session
+  writes one command line into `huba-run.txt` in its own scratchpad folder; huba
+  reads the **session id from that path** (nobody types an id), runs the command,
+  and pastes the result back into that session's input. On Linux the scratchpad
+  roots under `/tmp` and `$TMPDIR` (and `CLAUDE_CODE_TMPDIR`) are all scanned; on
+  Windows `%TEMP%\claude`.
 
 > **History.** huba once ran a second channel (a chat room plus a phone web page)
 > alongside Telegram; it was removed on 2026-08-14 after the page turned out to
@@ -109,7 +128,33 @@ build exactly the leak the 600 permission exists to prevent.
 Setting up the workspace from scratch (folders, workspace root, the three
 questions people usually ask): `ARCHITECTURE.md`.
 
-## Start with the machine (launchd)
+## Start with the machine — Linux (systemd --user)
+
+Needs `tmux`. Sessions you want huba to drive must run inside tmux panes (`/new`
+opens one for you).
+
+```bash
+bash scripts/dong-goi-linux.sh             # build → .tmp/huba-linux-<sha>.tar.gz (prints sha256)
+tar -xzf huba-linux-<sha>.tar.gz && cd huba-linux-<sha>
+bash install_update_linux.sh               # install OR update; safe to re-run
+bash install_update_linux.sh --verify      # installed binary == this package? service running?
+```
+
+The installer copies the package into `$HUBA_HOME` (default `~/huba`) and **never
+overwrites** `huba.config.json`, `huba.env` or `data/`. It then creates the config
+if missing, adds missing accounts from a template, installs the `systemd --user`
+unit `huba-hubd`, adds a "huba — quản lý" launcher, and runs a self-check
+(`huba linux-tu-kiem`: open a tmux pane, type, read back, Ctrl-C, close). Logs:
+`~/huba/logs/hubd.err`, `journalctl --user -u huba-hubd`. Exit code: 0 done · 1
+failed · 2 could not measure. Switches: `HUBA_HOME`, `HUBA_KHONG_CAI_CLI=1` (do not
+auto-install `claude`/`opencode`), `HUBA_KHONG_MO_TRANG=1` (do not open the setup page).
+
+The package also carries `kem/` — the shared bundle (common rules for sessions,
+skills/agents, the security gate behind `/new`'s deny list, the `project-agent`
+MCP server, an account template). Its paths are written into `huba.env`
+(`HUBA_LUAT_GOC`, `BAO_MAT_POLICY`, `HUBA_MCP_PROJECT_AGENT`, `HUBA_OPENCODE_PLUGIN`).
+
+## Start with the machine — macOS (launchd)
 
 ```bash
 ./huba self-install                                  # build → sign → install → restart
@@ -148,35 +193,51 @@ row it writes `logs/notify.log` and shows a macOS notification.
 
 ## Running on Windows (⚠ NOT yet run on a real Windows machine)
 
-The Windows build drives **Windows Terminal** (`wt.exe`) instead of Terminal.app:
-keystrokes via `SendInput`, screen reading via UI Automation
-(`rust/src/keys_win.rs`). It is cross-compiled and linted on EVERY `./gate.sh` run
-(step ②b, `x86_64-pc-windows-gnu`, clippy `-D warnings`), but has never run on a
-Windows machine.
+Each `claude` session lives in a **console** (one Windows Terminal tab, or one
+classic console window). huba attaches to that console (`AttachConsole`), writes
+keys straight into its input queue (`WriteConsoleInputW`) and reads the text back
+(`ReadConsoleOutputCharacterW`) — no focus, no window in front, and it never
+grabs the keyboard or mouse of the person at the machine (`rust/src/keys_win.rs`).
+In huba's books a Windows session's "tty" is `con<pid of the root shell>`.
+It is cross-compiled and linted on EVERY `./gate.sh` run (step ②b,
+`x86_64-pc-windows-gnu`, clippy `-D warnings`), but it has **never run on a real
+Windows machine**.
 
-1. **Measure first** (read-only, ~10 seconds):
-   `powershell -ExecutionPolicy Bypass -File scripts\do-windows.ps1`
-   ⟹ a file `%TEMP%\huba-do-windows-*.txt`. It answers what the
-   session-to-window matching still needs to know (what `claude agents --json`
-   prints on Windows, which process `claude` runs under, the Windows Terminal
-   window class).
-2. **Configure**: `huba.config.json` (the `claude_accounts` of THAT machine) +
-   `huba.env` — `huba setup` opens a page to fill them in. ⚠ Use a **separate
-   Telegram bot** for the Windows machine: two hubd processes on one bot fight over
-   `getUpdates` (409 Conflict).
-3. **Install**: from a NORMAL PowerShell (not "Run as Administrator" — UIPI blocks
-   keystrokes across privilege levels):
-   `powershell -ExecutionPolicy Bypass -File install_update.ps1` (needs Rust), or
-   `… install_update.ps1 -BinDir <folder with hubad.exe + huba.exe>` with a prebuilt
-   copy. It installs into `%LOCALAPPDATA%\hub\bin`, adds it to PATH, sets
-   `HUB_CONFIG`, and registers the `huba-hubd` task (Task Scheduler, at logon,
-   restarted if it dies). Check: `install_update.ps1 -Verify`.
+**Build the package** (on Linux with `zig` or mingw): `bash scripts/dong-goi-windows.sh`
+→ `.tmp/huba-windows-<sha>.zip` (`huba.exe`, `hubad.exe`, installer scripts, `kem\`
+shared bundle with `project-agent.exe`).
 
-**Known NOT to work on Windows yet**: matching a running session to its window
-(waiting on the step-1 measurement) · `/upgrade` (prints the reinstall command
-instead of doing it) · `/anh` window screenshots · lock-screen detection · `/web`
-driving Chrome (AppleScript) · system notifications after repeated cycle failures
-(only `logs/notify.log`).
+**Install, no commands to type:** unzip, open the `huba-windows-*` folder, and
+double-click **`CAI.cmd`**. It removes the "downloaded from the internet" mark,
+test-runs `huba.exe`, creates the config, opens the page for the Telegram bot token
+if there is none, then installs and starts huba in the background (Task Scheduler
+`huba-hubd`, at logon, restarted if it dies), asking through dialog boxes where it
+needs you. Its log is `cai.log`. ⚠ Use a **separate Telegram bot** for the Windows
+machine: two hubd processes on one bot fight over `getUpdates` (409 Conflict).
+Python 3 is needed for the shared bundle; the installer tries
+`winget install Python.Python.3.12 --scope user` and skips that part, saying so,
+if it cannot.
+
+**Application Control.** `huba.exe` is **not code-signed**. Windows 11 *Smart App
+Control* (or a WDAC/AppLocker policy on a managed machine) blocks unsigned
+programs with "An Application Control policy has blocked this file" — nothing in
+the package can lift that. On a personal machine you can turn Smart App Control
+off (it cannot be turned back on without reinstalling Windows); on a managed one an
+administrator has to allow the file. `CAI.cmd` detects this and says so.
+
+**Measure first** (about 30 s, needs no config): `.\huba.exe windows-tu-kiem` in a
+normal PowerShell opens two console windows, types, reads back and closes them;
+it prints ✅/❌/⏭ per item and writes a result file. Exit code 0 = all pass · 1 = a
+failure · 2 = something could not be measured. Run it **before** trusting any line
+of this section. Read-only extra: `scripts\do-windows.ps1`. Run huba from a NORMAL
+PowerShell, not "Run as Administrator" — a normal process cannot attach to the
+console of an elevated one.
+
+**Not done on Windows yet**: `/anh` window screenshots · `/web` driving Chrome ·
+lock-screen detection · `/upgrade` (prints the command instead of doing it) ·
+clearing the queued input (`/clean`) · scrolling back beyond the visible window.
+**Unmeasured**: that `claude` (Node) accepts arrow keys and multi-line paste
+delivered through the console — the first real `/new` is that measurement.
 
 ## Commands
 
@@ -192,19 +253,25 @@ channel a command came from.
 |---|---|
 | `/sessions` (or a bare `/session`) | list live sessions, one button each — tap to follow (`/session -` to stop following) |
 | *(plain text, no `/`)* | type straight into the session you follow |
-| `/new [-a acc] [-s project] <task>` | open a **real Terminal window** running `claude` and type the task into it; an empty task is fine (open the window, talk later) |
+| `/new [-a acc] [-s project] [-y] <task>` | open a **real terminal window** (Terminal tab / tmux pane / console window) running the CLI and type the task into it; an empty task is fine (open the window, talk later); `-y` opens a locked account without asking |
 | `/ask <question>` | side question to the followed session, **on a fork** — the original session gains no turn |
 | `/tell <text>` | continue a background session (`/stop` it first) |
 | `/stop [id]` | background session: stop, conversation kept · window session opened by huba: **shut down for good** — `/exit`, then close the window |
 | `/handover [id]` | close out: a handover note + a new session with the same context + the `--resume` command |
 
-**Typing into a session window** (Terminal sessions only — see the Telegram section above)
+**Typing into a session window** (sessions with a terminal window only — see the Telegram section above)
 
 | Command | What it does |
 |---|---|
 | `/type <text>` | type text into the followed session, plus Enter when it can measure that the text is still sitting in the input box |
 | `/key <up\|down\|left\|right\|enter\|esc\|tab\|space\|1-9>` | press one key |
-| `/shot` | read the text currently on the session's screen |
+| `/enter` · `/esc` · `/right` | send what is in the input box · close the open dialog · accept Claude's grey suggestion (→), then `/enter` to send |
+| `/pick <question>.<choice>` · `/tab <n>` | answer one question of a multi-question dialog · move to that tab without choosing |
+| `/clear` · `/clean` | clear the typed text in the input box · clear that AND the queue |
+| `/ctrlc` | Ctrl+C: interrupt the turn in progress |
+| `/shot` | read the text currently on the session's screen, with the buttons that apply (`💡⏎` when the box holds a suggestion) |
+| `/anh` · `/front` | a real screenshot (macOS) · bring the session's window to the front |
+| `/effort <low…max>` | change the followed session's effort level |
 
 **Operations**
 
@@ -213,9 +280,12 @@ channel a command came from.
 | `/accounts` | the accounts: which session belongs to which, remaining quota, which account `/new` uses by default, which are 🔒 locked |
 | `/accounts detail <name>` (or `/accounts acc3`) | details of ONE account: email · name · organization · role · plan · folder · quota · running sessions · lock — read from `.claude.json`, without running `claude` |
 | `/new -a <locked account> …` | huba ASKS for confirmation on Telegram; approve and it opens that one session, the lock stays |
-| `/accounts khoa <name>` · `/accounts mo <name>` | lock / unlock an account (`"locked": true` in `claude_accounts`; *khoá* = lock, *mở* = unlock) — a locked account is never picked automatically, never used to open a session even with `-a`, never probed for `/usage` |
-| `/terminal <command line>` | open a real Terminal window (with a tty) and run the command — for `sudo`, `ssh -t`, `passwd`; the window stays open for typing the password |
-| `/upgrade` | huba rebuilds itself from the current code and restarts |
+| `/accounts <name> -b` · `/accounts <name> -a` | lock / unlock an account (`"locked": true` in `claude_accounts`) — a locked account is never picked automatically, never used to open a session even with `-a`, never probed for `/usage`. Other flags: `-l` log in again · `-k <API key>` use an API key (metered; `-k xoa` goes back to the plan) |
+| `/runin <id> <command>` | run on the machine and paste the result into that session (the mailbox above does this on the session's own request) |
+| `/close [id]` | close the session AND its window |
+| `/terminal` | list the bare terminal windows (runs nothing); to open one, use `/new` |
+| `/web` | Chrome on the machine (macOS): empty = the tabs · an address = open it |
+| `/upgrade` | huba rebuilds itself from the current code and restarts (Windows: prints the command instead) |
 | `/run` · `/doctor` | run one cycle now · real checks |
 | `/set <key> <value>` | change one config field (validated + backed up + written atomically) |
 | `/help` | this table, read straight from the code (`commands::ROUTES` is the source) |
@@ -292,7 +362,7 @@ an order; rows are kept for 7 days.
 ## Tests
 
 ```bash
-./gate.sh      # full gate: fmt · clippy (+ Windows target) · build · EVERY test binary · doctests
+./gate.sh      # full gate: fmt · clippy (+ Windows and Linux targets) · build · EVERY test binary · doctests
 # or, plainly:
 cd rust && cargo test --offline --no-fail-fast
 cargo clippy --all-targets -- -D warnings
