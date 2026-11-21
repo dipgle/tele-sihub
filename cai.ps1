@@ -62,7 +62,24 @@ try {
             if ($LASTEXITCODE -ne 0) { throw "huba init thoat $LASTEXITCODE" }
         }
 
-        # 4) Bot Telegram: chua co token trong huba.env thi mo trang dien (trinh duyet, 127.0.0.1), cho toi khi luu xong.
+        # 3b) Thu muc lam viec (goc workspace) do NGUOI CAI CHON. Luat chung, skill, hook, MCP, huba.env deu di theo thu muc nay.
+    #     Da khai trong cau hinh hoac da dat HUBA_GOC thi bo qua. Bam Cancel = dung thu muc mac dinh (%USERPROFILE%\projects, chua co thi tao).
+    $cfgText = Get-Content (Join-Path $Here 'huba.config.json') -Raw -ErrorAction SilentlyContinue
+    if (-not $env:HUBA_GOC -and ($cfgText -notmatch '"workspace_root"\s*:\s*"[^"]+"')) {
+        $mac = Join-Path $env:USERPROFILE 'projects'
+        $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+        $dlg.Description = 'Chon THU MUC LAM VIEC (noi chua cac du an cua ban). Bam Make New Folder de tao thu muc moi.'
+        $dlg.ShowNewFolderButton = $true
+        $dlg.SelectedPath = $(if (Test-Path $mac) { $mac } else { $env:USERPROFILE })
+        if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK -and $dlg.SelectedPath) {
+            $env:HUBA_GOC = $dlg.SelectedPath
+        } else {
+            $env:HUBA_GOC = $mac
+        }
+        Moc "thu muc lam viec: $env:HUBA_GOC"
+    }
+
+    # 4) Bot Telegram: chua co token trong huba.env thi mo trang dien (trinh duyet, 127.0.0.1), cho toi khi luu xong.
         #    DUNG BOT RIENG cho may Windows - hai hubd cung mot bot se giang getUpdates (409).
         $envf = Join-Path $Here 'huba.env'
         $coToken = (Test-Path $envf) -and ((Get-Content $envf -ErrorAction SilentlyContinue) -match '^\s*HUB_TELEGRAM_BOT_TOKEN\s*=\s*\S+')

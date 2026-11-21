@@ -103,6 +103,8 @@ function Cai-Kem($Py) {
     Chay-Cai @('luat-goc', $Config, (Join-Path $Kem 'CLAUDE.md'))
     Moc 'kem: skill + tac tu (da co thi GIU)'
     Chay-Cai @('skill-goc', $Config, (Join-Path $Kem 'claude'))
+    Moc 'kem: hook nhac chuyen phien (>= 50% ngu canh) vao settings cua goc workspace (gop, khong de)'
+    Chay-Cai @('hook-nhac', $Config, (Join-Path $Kem 'scripts\nhac-chuyen-phien.py'))
     Moc 'kem: thu muc tai khoan + junction projects (so phien chung)'
     Chay-Cai @('thu-muc-acc', $Config)
     $pa = Join-Path $Kem 'bin\project-agent.exe'

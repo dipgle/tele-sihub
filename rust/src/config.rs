@@ -31,7 +31,10 @@ use serde_json::Value;
 #[serde(default)]
 pub struct AutoHandoverCfg {
     pub enabled: bool,
-    /// Ngưỡng ngữ cảnh (%) để bắt đầu nghĩ tới việc đóng sổ.
+    /// Ngưỡng ngữ cảnh (%) để bắt đầu nghĩ tới việc đóng sổ. Mặc định 60 (Quang 12/11 «xuống 60%»):
+    /// đây là giá trị mà `huba init` ghi cho MÁY MỚI — gói cài không mang `huba.config.json`, nên con số
+    /// trong tệp của repo không đi theo gói. Phiên tự chuyển sớm hơn ở 50 % nhờ hook `nhac-chuyen-phien.py`;
+    /// mốc này là lưới đỡ khi phiên không tự chuyển.
     pub at_percent: u8,
     /// Phải đứng yên bao lâu mới coi là "đã chạy hết chỗ dở".
     ///
@@ -61,7 +64,7 @@ impl Default for AutoHandoverCfg {
     fn default() -> Self {
         Self {
             enabled: true,
-            at_percent: 80,
+            at_percent: 60,
             idle_sec: 120,
             on_limit: true,
             on_limit_wait_min: 30,

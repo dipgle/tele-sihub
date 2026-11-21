@@ -44,7 +44,9 @@ Phần dùng chung với bản Linux (thư mục `kem\`) — trình cài làm t�
 · Cổng bảo mật (danh sách lệnh bị cấm của /new) · MCP codetrail (project-agent.exe, ghi vào
   .claude.json của từng tài khoản claude) · mẫu tài khoản claude còn thiếu · junction `projects`
   của từng tài khoản (sổ phiên chung).
-· Gốc dự án mặc định là %USERPROFILE%\projects — tạo thư mục đó trước (hoặc khai workspace_root).
+· Thư mục làm việc (gốc dự án) do BẠN CHỌN lúc cài: `CAI.cmd` hiện hộp chọn thư mục (Make New Folder để tạo
+  mới; Cancel = %USERPROFILE%\projects). Luật chung, skill, hook nhắc chuyển phiên, MCP và huba.env đều đi
+  theo thư mục ấy. Cài bằng lệnh tay thì đặt trước biến môi trường HUBA_GOC=<thư mục>, hoặc khai workspace_root.
 · CẦN PYTHON 3 cho các bước trên. Windows không có sẵn Python, và cài Node.js KHÔNG kéo theo Python.
   Trình cài tự thử `winget install Python.Python.3.12 --scope user` (không cần admin); thiếu winget
   thì BỎ QUA phần `kem\` và nói rõ — cài Python rồi chạy lại trình cài.

@@ -138,9 +138,16 @@ thoát: 0 xong · 1 hỏng · 2 không đo được. Công tắc: `HUBA_HOME`, `
 (không tự cài `claude`/`opencode`), `HUBA_KHONG_MO_TRANG=1` (không mở trang cài đặt).
 
 Gói còn mang `kem/` — phần dùng chung (luật chung cho phiên, skill/tác tử, cổng bảo mật
-đứng sau danh sách cấm của `/new`, MCP `project-agent`, mẫu tài khoản). Đường dẫn của
+đứng sau danh sách cấm của `/new`, MCP `project-agent`, hook nhắc chuyển phiên, mẫu tài khoản). Đường dẫn của
 chúng được ghi vào `huba.env` (`HUBA_LUAT_GOC`, `BAO_MAT_POLICY`, `HUBA_MCP_PROJECT_AGENT`,
 `HUBA_OPENCODE_PLUGIN`).
+
+**Bạn CHỌN thư mục làm việc lúc cài** (gốc workspace chứa các dự án): trình cài hỏi (Enter =
+`~/projects`), hoặc đặt `HUBA_GOC=<thư mục>` để bỏ qua câu hỏi. Chưa có thư mục thì tạo, rồi ghi
+thành `workspace_root`. Mọi thành phần đi theo nó: `CLAUDE.md` và `.claude/{skills,agents,settings.json}`
+nằm **trong** thư mục ấy (tệp đã có thì GIỮ, không ghi đè), hook nhắc chuyển phiên (≥ 50 %) được
+**gộp** vào `settings.json` của nó, MCP `project-agent` nhận `PROJECTS_ROOT` = thư mục ấy, và
+`/new` mở phiên ở đó.
 
 ## Tự chạy cùng máy — macOS (launchd)
 
@@ -194,7 +201,8 @@ chung kèm `project-agent.exe`).
 **Cài, không phải gõ lệnh:** giải nén, mở thư mục `huba-windows-*`, bấm đôi **`CAI.cmd`**.
 Nó gỡ dấu "tải từ mạng", thử chạy `huba.exe`, tạo cấu hình, mở trang điền token bot
 Telegram nếu chưa có, rồi cài và chạy nền (Task Scheduler `huba-hubd`, lúc đăng nhập,
-chết thì chạy lại), hỏi bạn bằng hộp thoại ở chỗ cần. Nhật ký: `cai.log`. ⚠ Dùng **bot
+chết thì chạy lại), hỏi bạn bằng hộp thoại ở chỗ cần — gồm hộp chọn **thư mục làm việc** (Cancel = `%USERPROFILE%\projects`);
+luật, skill, hook nhắc và MCP đều đi theo thư mục ấy. Nhật ký: `cai.log`. ⚠ Dùng **bot
 Telegram riêng** cho máy Windows: hai hubd cùng một bot thì giành `getUpdates` (409
 Conflict). Phần `kem\` cần Python 3; trình cài tự thử
 `winget install Python.Python.3.12 --scope user`, không được thì bỏ qua phần đó và nói rõ.

@@ -67,8 +67,24 @@ def gop_tai_khoan(cfg, mau):
     return them
 
 
-def dat_goc_du_an(cfg, home=HOME):
-    """`workspace_root` trống và có `~/projects` ⟹ đặt nó. Trả câu nói (hoặc None). Thuần + đọc đĩa."""
+def dat_goc_du_an(cfg, home=HOME, chon=""):
+    """Đặt `workspace_root`. Trả câu nói (hoặc None). Đọc/ghi đĩa (tạo thư mục được chọn).
+
+    `chon` (người cài CHỌN thư mục làm việc — env `HUBA_GOC`; Quang 21/11 «khi cài cần chọn luôn thư
+    mục làm việc») THẮNG mọi thứ: tạo thư mục nếu chưa có rồi đặt. Không tạo được ⟹ KHÔNG đặt, báo ⚠.
+    Không chọn: `workspace_root` đã khai ⟹ giữ; trống và có `~/projects` ⟹ đặt nó.
+    """
+    chon = (chon or "").strip()
+    if chon:
+        g = os.path.abspath(os.path.expanduser(chon))
+        try:
+            os.makedirs(g, exist_ok=True)
+        except OSError as e:
+            return f"⚠ không tạo được thư mục làm việc {g} ({e}) — giữ nguyên cấu hình"
+        if cfg.get("workspace_root") == g:
+            return None
+        cfg["workspace_root"] = g
+        return f"gốc dự án = {g} (do người cài chọn)"
     if (cfg.get("workspace_root") or "").strip():
         return None
     goc = os.path.join(home, "projects")
@@ -85,7 +101,7 @@ def cmd_cau_hinh(cfg_p, mau_p):
     cfg = doc_json(cfg_p)
     mau = doc_json(mau_p) if mau_p and os.path.isfile(mau_p) else []
     them = gop_tai_khoan(cfg, mau)
-    goc = dat_goc_du_an(cfg)
+    goc = dat_goc_du_an(cfg, chon=os.environ.get("HUBA_GOC", ""))
     if them or goc and not goc.startswith("⚠"):
         bak = cfg_p + ".bak-truoc-cai"
         if not os.path.exists(bak):
@@ -159,15 +175,21 @@ def tep_cau_hinh_claude(a, home=HOME):
     return os.path.join(d, ".claude.json")
 
 
-def dat_mcp_claude(cfg, mcp_bin, home=HOME):
+def dat_mcp_claude(cfg, mcp_bin, home=HOME, goc=""):
     """MCP codetrail cho MỌI acc claude — Quang 13/11 «trên ubuntu tài khoản claude sao
     không nhận mcp codetrail». Đo Ubuntu: không có `~/projects/.mcp.json` (Mac có, trỏ
     binary macOS), `.claude.json` của acc3/acc6 `mcpServers: []`, `claude mcp list` không
     có `project-agent` — gói chỉ chèn nó cho opencode (`accounts::chen_mcp_codetrail`).
     Ghi `mcpServers.project-agent` phạm vi NGƯỜI DÙNG trỏ `kem/bin/project-agent`: hàng
     đã có thì CHỈ thay `command` (giữ `env`/`args` khác), chưa có thì thêm. Trả danh sách
-    tệp đã ghi."""
-    root = os.path.join(home, "projects")
+    tệp đã ghi.
+
+    `PROJECTS_ROOT` THEO THƯ MỤC LÀM VIỆC ĐÃ CHỌN (`goc` = `workspace_root` của cấu hình; Quang 21/11
+    «các thành phần là liên kết động theo thư mục chọn») — không ghi cứng `~/projects`. Hàng cũ còn
+    đúng giá trị mặc định cũ (`~/projects`) mà gốc đã chọn khác ⟹ chuyển theo gốc; giá trị chủ máy tự
+    đặt (khác mặc định) thì GIỮ."""
+    mac_dinh = os.path.join(home, "projects")
+    root = goc or mac_dinh
     ghi = []
     for a in cfg.get("claude_accounts", []) or [{}]:
         if cli_cua(a) != "claude":
@@ -183,7 +205,8 @@ def dat_mcp_claude(cfg, mcp_bin, home=HOME):
         moi["type"] = "stdio"
         moi["command"] = mcp_bin
         env = dict(moi.get("env") or {})
-        env.setdefault("PROJECTS_ROOT", root)
+        if env.get("PROJECTS_ROOT") in (None, "", mac_dinh):
+            env["PROJECTS_ROOT"] = root
         moi["env"] = env
         if moi == cu:
             continue
@@ -309,6 +332,67 @@ def dat_skill_goc(goc, nguon):
     return kq
 
 
+SU_KIEN_NHAC = ("Stop", "UserPromptSubmit")
+
+
+def _lenh_nhac(script):
+    """Dòng lệnh hook: trình thông dịch + đường script (dấu ngoặc kép — đường có thể có dấu cách).
+
+    Windows không có `python3` chắc chắn trên PATH ⟹ dùng chính Python đang chạy trình cài.
+    """
+    py = f'"{sys.executable}"' if os.name == "nt" else "python3"
+    return f'{py} "{script}"'
+
+
+def _co_hook_nhac(muc):
+    return any("nhac-chuyen-phien.py" in str(h.get("command", ""))
+               for e in muc if isinstance(e, dict) for h in (e.get("hooks") or []) if isinstance(h, dict))
+
+
+def dat_hook_nhac(goc, script):
+    """Đăng ký hook nhắc chuyển phiên (≥ 50 % ngữ cảnh) vào `<gốc>/.claude/settings.json`.
+
+    Gói mang `kem/scripts/nhac-chuyen-phien.py` nhưng claude chỉ gọi hook khi nó được KHAI trong
+    settings — thiếu khai thì script nằm đó mà không ai chạy, và luật «chuyển phiên khi quá 50 %»
+    trong CLAUDE.md chỉ còn trông vào trí nhớ của phiên (Quang 21/11 «làm cả hai đi»).
+    GỘP, không đè: giữ mọi khoá khác; sự kiện đã có hook `nhac-chuyen-phien.py` (kể cả đường khác) thì
+    để yên, không thêm lần hai. Tệp settings hỏng/không phải JSON object ⟹ KHÔNG ghi, báo `hong`.
+    Trả (mã, câu); mã: moi · them · giong · hong · khong-co-goc · khong-co-ban-sach.
+    """
+    if not goc:
+        return "khong-co-goc", "⚠ chưa xác định được gốc workspace — KHÔNG đăng ký hook nhắc chuyển phiên"
+    if not os.path.isfile(script):
+        return "khong-co-ban-sach", f"❌ gói thiếu {script}"
+    dich = os.path.join(goc, ".claude", "settings.json")
+    co_tep = os.path.exists(dich)
+    if co_tep:
+        try:
+            d = doc_json(dich)
+        except (OSError, ValueError) as e:
+            return "hong", f"❌ {dich} không đọc được ({e}) — KHÔNG sửa; đăng ký tay hook `{_lenh_nhac(script)}` cho {'/'.join(SU_KIEN_NHAC)}"
+        if not isinstance(d, dict):
+            return "hong", f"❌ {dich} không phải JSON object — KHÔNG sửa"
+    else:
+        d = {}
+    hooks = d.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        return "hong", f"❌ {dich}: khoá `hooks` không phải object — KHÔNG sửa"
+    them = []
+    for sk in SU_KIEN_NHAC:
+        muc = hooks.setdefault(sk, [])
+        if not isinstance(muc, list):
+            return "hong", f"❌ {dich}: `hooks.{sk}` không phải danh sách — KHÔNG sửa"
+        if not _co_hook_nhac(muc):
+            muc.append({"hooks": [{"type": "command", "command": _lenh_nhac(script), "timeout": 10}]})
+            them.append(sk)
+    if not them:
+        return "giong", f"{dich} đã khai hook nhắc chuyển phiên ({'/'.join(SU_KIEN_NHAC)})"
+    os.makedirs(os.path.dirname(dich), exist_ok=True)
+    ghi_json(dich, d)
+    return ("them" if co_tep else "moi"), (f"{'thêm vào' if co_tep else 'tạo'} {dich}: hook nhắc chuyển phiên cho "
+                                           + "/".join(them) + " (≥ 50 % ngữ cảnh)")
+
+
 def tu_kiem():
     hong = 0
     tong = 0
@@ -335,6 +419,21 @@ def tu_kiem():
         ok(dat_goc_du_an(c, h) and c["workspace_root"] == os.path.join(h, "projects"), "có ~/projects ⟹ đặt")
         c2 = {"workspace_root": "/khac"}
         ok(dat_goc_du_an(c2, h) is None and c2["workspace_root"] == "/khac", "đã đặt ⟹ giữ")
+        # Người cài CHỌN thư mục: tạo nếu chưa có, đặt, và THẮNG cả khi cấu hình đã khai chỗ khác.
+        chon = os.path.join(h, "lam-viec", "du-an")
+        c3 = {}
+        ok(dat_goc_du_an(c3, h, chon).startswith("gốc dự án =") and c3["workspace_root"] == chon
+           and os.path.isdir(chon), "chọn thư mục chưa có ⟹ tạo + đặt")
+        ok(dat_goc_du_an(c3, h, chon) is None, "chọn lại đúng thư mục ấy ⟹ không đổi (bất biến)")
+        c4 = {"workspace_root": "/khac"}
+        dat_goc_du_an(c4, h, chon)
+        ok(c4["workspace_root"] == chon, "chọn thắng cấu hình đã khai (đối chứng ngược của «đã đặt ⟹ giữ»)")
+        tep = os.path.join(h, "la-tep")
+        with open(tep, "w", encoding="utf-8") as f:
+            f.write("x")
+        c5 = {"workspace_root": "/khac"}
+        ok(dat_goc_du_an(c5, h, os.path.join(tep, "con")).startswith("⚠") and c5["workspace_root"] == "/khac",
+           "chọn đường không tạo được ⟹ báo ⚠, KHÔNG đổi cấu hình")
         cfg = {"claude_accounts": [{"name": "acc1"}, {"name": "acc3", "config_dir": os.path.join(h, ".claude-acc3")},
                                    {"name": "acc8", "cli": "opencode", "config_dir": os.path.join(h, ".x8")},
                                    {"name": "acc10", "cli": "codex", "config_dir": os.path.join(h, ".x10")}]}
@@ -375,6 +474,14 @@ def tu_kiem():
                                                  "env": {"PROJECTS_ROOT": os.path.join(h, "projects")}},
            "chưa có tệp ⟹ tạo hàng mới")
         ok(dat_mcp_claude(cfg, bin_, h) == [], "chạy lại ⟹ không ghi gì (bất biến)")
+        # Gốc đã chọn: PROJECTS_ROOT theo gốc; hàng còn mặc định cũ chuyển theo, giá trị chủ máy đặt thì giữ.
+        goc_chon = os.path.join(h, "lam-viec")
+        dat_mcp_claude(cfg, bin_, h, goc=goc_chon)
+        ok(doc_json(os.path.join(h, ".claude.json"))["mcpServers"]["project-agent"]["env"]["PROJECTS_ROOT"] == goc_chon,
+           "MCP: hàng còn mặc định ~/projects ⟹ chuyển theo gốc đã chọn")
+        ok(doc_json(os.path.join(h, ".claude-acc3", ".claude.json"))["mcpServers"]["project-agent"]["env"]["PROJECTS_ROOT"] == "/khac",
+           "MCP: PROJECTS_ROOT chủ máy tự đặt ⟹ GIỮ (đối chứng ngược)")
+        ok(dat_mcp_claude(cfg, bin_, h, goc=goc_chon) == [], "MCP: chạy lại với gốc đã chọn ⟹ không ghi gì")
         ok(not os.path.exists(os.path.join(h, ".x8")), "không đụng acc opencode (mcp)")
         ok(not os.path.exists(os.path.join(h, ".x10")), "không đụng acc codex (mcp)")
     with tempfile.TemporaryDirectory() as h:
@@ -428,6 +535,50 @@ def tu_kiem():
            "đã sửa ⟹ GIỮ, không ghi đè")
         ok(dat_luat_goc("", mau)[0] == "khong-co-goc", "không gốc ⟹ không đặt")
         ok(dat_luat_goc(g, os.path.join(h, "thieu.md"))[0] == "khong-co-ban-sach", "thiếu bản sạch ⟹ báo")
+    with tempfile.TemporaryDirectory() as h:
+        g = os.path.join(h, "ws")
+        os.mkdir(g)
+        sc = os.path.join(h, "kem", "scripts", "nhac-chuyen-phien.py")
+        os.makedirs(os.path.dirname(sc))
+        with open(sc, "w", encoding="utf-8") as f:
+            f.write("# hook\n")
+        st = os.path.join(g, ".claude", "settings.json")
+        ma, _ = dat_hook_nhac(g, sc)
+        d = doc_json(st)
+        ok(ma == "moi" and all(_co_hook_nhac(d["hooks"][s]) for s in SU_KIEN_NHAC),
+           "hook nhắc: chưa có settings ⟹ tạo, đủ Stop + UserPromptSubmit")
+        ok(sc in d["hooks"]["Stop"][0]["hooks"][0]["command"] and d["hooks"]["Stop"][0]["hooks"][0]["timeout"] == 10,
+           "hook nhắc: lệnh trỏ đúng script của gói")
+        ok(dat_hook_nhac(g, sc)[0] == "giong", "hook nhắc: chạy lại ⟹ không đổi (bất biến)")
+        ok(len(doc_json(st)["hooks"]["Stop"]) == 1, "hook nhắc: chạy lại ⟹ không nhân đôi")
+        # Đối chứng ngược: gỡ một sự kiện ⟹ phải thêm lại đúng sự kiện ấy (phép đo đổi được trạng thái).
+        d = doc_json(st)
+        del d["hooks"]["Stop"]
+        ghi_json(st, d)
+        ma, cau = dat_hook_nhac(g, sc)
+        ok(ma == "them" and "Stop" in cau and _co_hook_nhac(doc_json(st)["hooks"]["Stop"]),
+           "hook nhắc: thiếu Stop ⟹ thêm lại (đối chứng ngược)")
+        # Settings của chủ máy có khoá khác + hook khác: gộp, không đè.
+        ghi_json(st, {"permissions": {"defaultMode": "auto"},
+                      "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo cua-toi"}]}]}})
+        ma, _ = dat_hook_nhac(g, sc)
+        d = doc_json(st)
+        ok(ma == "them" and d["permissions"] == {"defaultMode": "auto"}
+           and d["hooks"]["Stop"][0]["hooks"][0]["command"] == "echo cua-toi" and _co_hook_nhac(d["hooks"]["Stop"]),
+           "hook nhắc: gộp vào settings của chủ máy, giữ khoá + hook khác")
+        # Đã khai bằng đường khác ⟹ GIỮ, không thêm lần hai.
+        ghi_json(st, {"hooks": {s: [{"hooks": [{"type": "command", "command": "python3 /dung-khac/nhac-chuyen-phien.py"}]}]
+                                for s in SU_KIEN_NHAC}})
+        ok(dat_hook_nhac(g, sc)[0] == "giong" and len(doc_json(st)["hooks"]["Stop"]) == 1,
+           "hook nhắc: đã khai đường khác ⟹ GIỮ, không nhân đôi")
+        # Settings hỏng ⟹ KHÔNG ghi (tệp giữ nguyên từng byte), báo `hong`.
+        with open(st, "w", encoding="utf-8") as f:
+            f.write("{ day khong phai json")
+        ma, _ = dat_hook_nhac(g, sc)
+        ok(ma == "hong" and open(st, encoding="utf-8").read() == "{ day khong phai json",
+           "hook nhắc: settings hỏng ⟹ không ghi, báo hỏng")
+        ok(dat_hook_nhac("", sc)[0] == "khong-co-goc", "hook nhắc: không gốc ⟹ không đặt")
+        ok(dat_hook_nhac(g, os.path.join(h, "thieu.py"))[0] == "khong-co-ban-sach", "hook nhắc: thiếu script ⟹ báo")
     print(f"== {tong - hong}/{tong} ca đúng ==")
     return 1 if hong else 0
 
@@ -462,9 +613,18 @@ def main(argv):
         if not os.path.isfile(argv[2]) or not os.path.isfile(argv[3]):
             print(f"KHÔNG ĐO ĐƯỢC: thiếu {argv[2]} hoặc {argv[3]}")
             return 2
-        da = dat_mcp_claude(doc_json(argv[2]), argv[3])
+        cfg = doc_json(argv[2])
+        da = dat_mcp_claude(cfg, argv[3], goc=goc_workspace(cfg, os.path.dirname(os.path.abspath(argv[2]))))
         print(f"  MCP codetrail cho claude: {len(da)} tệp ghi" + "".join(f"\n    · {p}" for p in da))
         return 0
+    if len(argv) == 4 and argv[1] == "hook-nhac":
+        if not os.path.isfile(argv[2]):
+            print(f"KHÔNG ĐO ĐƯỢC: chưa có {argv[2]}")
+            return 2
+        goc = goc_workspace(doc_json(argv[2]), os.path.dirname(os.path.abspath(argv[2])))
+        ma, cau = dat_hook_nhac(goc, argv[3])
+        print(f"  {cau}")
+        return 1 if ma in ("khong-co-ban-sach", "hong") else 0
     if len(argv) == 4 and argv[1] == "luat-goc":
         if not os.path.isfile(argv[2]):
             print(f"KHÔNG ĐO ĐƯỢC: chưa có {argv[2]}")

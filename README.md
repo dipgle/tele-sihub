@@ -151,8 +151,16 @@ auto-install `claude`/`opencode`), `HUBA_KHONG_MO_TRANG=1` (do not open the setu
 
 The package also carries `kem/` — the shared bundle (common rules for sessions,
 skills/agents, the security gate behind `/new`'s deny list, the `project-agent`
-MCP server, an account template). Its paths are written into `huba.env`
+MCP server, the context-reminder hook, an account template). Its paths are written into `huba.env`
 (`HUBA_LUAT_GOC`, `BAO_MAT_POLICY`, `HUBA_MCP_PROJECT_AGENT`, `HUBA_OPENCODE_PLUGIN`).
+
+**You choose the working folder at install time** (the workspace root that holds your
+projects): the installer asks (Enter = `~/projects`), or set `HUBA_GOC=<folder>` to skip
+the question. It creates the folder if missing and writes it as `workspace_root`. Everything
+else follows it: `CLAUDE.md` and `.claude/{skills,agents,settings.json}` go **inside** that
+folder (existing files are kept, never overwritten), the context-reminder hook (≥ 50 %) is
+**merged** into its `settings.json`, the `project-agent` MCP server gets `PROJECTS_ROOT` =
+that folder, and `/new` opens sessions there.
 
 ## Start with the machine — macOS (launchd)
 
@@ -212,7 +220,8 @@ double-click **`CAI.cmd`**. It removes the "downloaded from the internet" mark,
 test-runs `huba.exe`, creates the config, opens the page for the Telegram bot token
 if there is none, then installs and starts huba in the background (Task Scheduler
 `huba-hubd`, at logon, restarted if it dies), asking through dialog boxes where it
-needs you. Its log is `cai.log`. ⚠ Use a **separate Telegram bot** for the Windows
+needs you — including a folder picker for your **working folder** (Cancel = `%USERPROFILE%\projects`);
+rules, skills, the reminder hook and the MCP server all follow that folder. Its log is `cai.log`. ⚠ Use a **separate Telegram bot** for the Windows
 machine: two hubd processes on one bot fight over `getUpdates` (409 Conflict).
 Python 3 is needed for the shared bundle; the installer tries
 `winget install Python.Python.3.12 --scope user` and skips that part, saying so,

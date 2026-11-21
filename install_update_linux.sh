@@ -10,7 +10,8 @@
 # Làm theo thứ tự, việc nào đã xong thì bỏ qua (chạy lại bao nhiêu lần cũng được):
 #   ① chép gói vào $HUBA_HOME (mặc định ~/huba) — KHÔNG BAO GIỜ đè huba.config.json · huba.env · data/
 #   ② tmux + linger (cần sudo — mật khẩu do chính người cài gõ; máy không có tty thì chỉ báo)
-#   ③ cấu hình: chưa có ⟹ huba init; gốc dự án ~/projects; thêm các tài khoản CÒN THIẾU từ mẫu
+#   ③ cấu hình: chưa có ⟹ huba init; thư mục làm việc (hỏi, hoặc HUBA_GOC=…, mặc định ~/projects);
+#      thêm các tài khoản CÒN THIẾU từ mẫu
 #   ④ thư mục tài khoản + liên kết projects · ⑤ claude / opencode 2.2.7 nếu thiếu
 #   ⑥ dịch vụ systemd --user huba-hubd · ⑦ lối vào «huba — quản lý» trong menu ứng dụng
 #   ⑧ tự kiểm (linux-tu-kiem) · ⑨ chưa có bot Telegram ⟹ mở trang quản lý (bot + tài khoản)
@@ -123,6 +124,13 @@ buoc "③ cấu hình $CFG"
 if [ ! -f "$CFG" ]; then
   (cd "$DIR" && ./huba init) || { echo "❌ huba init hỏng"; exit 1; }
 fi
+# Thư mục làm việc (gốc workspace) do NGƯỜI CÀI CHỌN: env HUBA_GOC, hoặc hỏi khi chưa khai và có tty
+# (Enter = ~/projects). Luật chung, skill, hook, MCP, huba.env đều đi theo thư mục này.
+if [ -z "${HUBA_GOC:-}" ] && [ "$CO_TTY" = 1 ] && [ -z "$(python3 "$PY" goc-workspace "$CFG" 2>/dev/null)" ]; then
+  read -r -p "  Thư mục làm việc (chứa các dự án; chưa có thì tạo) [$HOME/projects]: " HUBA_GOC
+  HUBA_GOC="${HUBA_GOC:-$HOME/projects}"
+fi
+export HUBA_GOC="${HUBA_GOC:-}"
 python3 "$PY" cau-hinh "$CFG" "$DIR/kem/tai-khoan.mau.json" || exit 1
 # Luật chung của máy = `CLAUDE.md` ở GỐC workspace, đúng cấu trúc chủ máy đang
 # dùng (`~/projects/CLAUDE.md`). Chưa có ⟹ chép bản SẠCH của gói; đã có (kể cả
@@ -134,6 +142,8 @@ GOC=$(python3 "$PY" goc-workspace "$CFG")
 python3 "$PY" luat-goc "$CFG" "$DIR/kem/CLAUDE.md" || exit 1
 # Skill + tác tử của workspace: `<gốc>/.claude/{skills,agents}` — cùng luật «chưa có mới đặt».
 python3 "$PY" skill-goc "$CFG" "$DIR/kem/claude" || exit 1
+# Hook nhắc chuyển phiên (≥ 50 % ngữ cảnh): khai vào `<gốc>/.claude/settings.json` — gộp, không đè.
+python3 "$PY" hook-nhac "$CFG" "$DIR/kem/scripts/nhac-chuyen-phien.py" || exit 1
 LUAT=""
 [ -n "$GOC" ] && [ -f "$GOC/CLAUDE.md" ] && LUAT="$GOC/CLAUDE.md"
 LUAT_ENV=""
