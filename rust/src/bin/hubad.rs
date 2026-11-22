@@ -524,13 +524,18 @@ fn real_main() -> Result<()> {
 
 /// Bao lâu dò sổ `status` của CLI một lần trong lúc ngủ. Mỗi lần chỉ đọc vài
 /// tệp JSON nhỏ — không `osascript`, không gọi CLI.
-const STATUS_PEEK_SEC: u64 = 3;
+///
+/// 🔴 Hà 22/11 «sao lại mất tới 18s». Đo lượt «Ok» (16:16Z): lượt xong 16:16:16.9, tin 💤 gửi 16:16:31.45 = 14,6 s =
+/// ~1,3 s vòng đang dở chưa thấy `idle` + 10 s sàn `STATUS_WAKE_MIN_SEC` + ≤ 3 s nhịp dò + ~2,7 s ảnh chụp
+/// (`sessions_snapshot_ms`). Hạ nhịp dò 3 → 1 s và sàn 10 → 3 s: trần ~1 + 3 + 2,7 ≈ 7 s.
+const STATUS_PEEK_SEC: u64 = 1;
 
 /// Sàn giữa hai vòng do `status` đánh thức. Một vòng tốn ~3 giây `osascript`
 /// (`ms_terminal_probe` 2841 đo 03/10); một phiên chạy Monitor có thể đổi
 /// `status` vài lần mỗi phút. Sàn này đặt trần ~4 vòng/phút cho cả máy, đổi
 /// lại tin "vừa xong" trễ tối đa ~10 giây — vẫn nhanh hơn nhịp 120 giây cũ.
-const STATUS_WAKE_MIN_SEC: u64 = 10;
+/// 22/11: hạ 10 → 3 s (xem `STATUS_PEEK_SEC`); trần ~20 vòng/phút chỉ khi một phiên đổi `status` liên tục.
+const STATUS_WAKE_MIN_SEC: u64 = 3;
 
 // 🔴 ĐÃ BỎ cả nhánh BÁM SÁT (`follow_sleep` + `idle_activity_sleep`),
 // 2026-08-14, cùng lượt gỡ tfl5 theo lời Hà: *"tạm thời không dùng tfl5 để xem
