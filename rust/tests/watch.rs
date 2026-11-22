@@ -370,17 +370,17 @@ fn everything_disappearing_still_reports_each_one() {
     assert_eq!(DEAD, "dead"); // hằng số dùng chung với `state_of`
 }
 
-/// Chạy chớp nhoáng thì KHÔNG phải tin.
+/// Chạy chớp nhoáng CŨNG là tin — ĐẢO ngày 21/11 (không xoá: bài này từng khoá luật ngược lại).
 ///
-/// Đo thật lượt đầu bật loa (2026-08-10): một phiên có người ngồi gõ bắn "vừa
-/// chạy xong" hai lần trong 75 giây — cả hai đều ĐÚNG, nó chạy hai lượt ngắn
-/// thật. Đúng mà vẫn sai chỗ: người ấy đang nhìn thẳng vào phiên đó. Cái loa
-/// này có giá trị ở phiên KHÔNG ai nhìn.
+/// 2026-08-10 bài này khoá «lượt ngắn thì im» (phiên có người ngồi nhìn bắn «vừa xong» hai lần trong 75 giây).
+/// Hà 21/11: *«gửi tin xong xử lý xong thì output kết thúc là phải gửi về tele luôn»* — đo trên phiên a91869f2,
+/// lượt 8 · 25 · 32 · 38 · 63 giây im ⟹ người điều khiển từ xa không nhận được câu trả lời. Cái loa bây giờ
+/// báo MỌI lượt xong; vẫn nói MỘT lần mỗi lượt (luật 11), không nói lúc đang chạy.
 #[test]
-fn a_burst_of_short_turns_stays_quiet() {
+fn a_short_turn_is_announced_too() {
     let now = vec![sess("a", "huba-bd", "terminal", false)];
 
-    // Vừa chạy 10 giây rồi dừng: im.
+    // Vừa chạy 10 giây rồi dừng: BÁO (trước 21/11: im).
     let brief: BTreeMap<String, Mark> = [(
         "a".to_string(),
         mark(&format!("working@{}", NOW - 10), "ttys009", "interactive"),
@@ -388,7 +388,12 @@ fn a_burst_of_short_turns_stays_quiet() {
     .into_iter()
     .collect();
     let (events, _) = changes(&brief, &now, NOW, &[]);
-    assert!(events.is_empty(), "lượt ngắn không được kêu: {events:?}");
+    assert_eq!(events.len(), 1, "lượt ngắn phải có tin: {events:?}");
+    assert!(
+        events[0].say(&Idle::Prompt, None).contains("10 giây"),
+        "{}",
+        events[0].say(&Idle::Prompt, None)
+    );
 
     // Chạy quá ngưỡng rồi dừng: nói, và nói luôn nó chạy bao lâu.
     let long: BTreeMap<String, Mark> = [working_long("a")].into_iter().collect();

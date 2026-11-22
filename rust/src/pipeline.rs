@@ -1302,11 +1302,6 @@ pub fn may_vua_khoi_dong(so_luc: Option<i64>, khoi_dong_luc: Option<i64>) -> boo
     matches!((so_luc, khoi_dong_luc), (Some(s), Some(b)) if b > s)
 }
 
-/// Khoá sổ «lần cuối huba gõ chữ từ Telegram vào phiên này» — đọc ở `announce_changes`.
-pub fn remote_typed_key(session_id: &str) -> String {
-    format!("remote_typed:{session_id}")
-}
-
 pub fn announce_changes(db: &Db, cfg: &Config, snap: &crate::sessions::SessionsSnapshot) {
     let live = &snap.sessions;
     let prev: BTreeMap<String, crate::watch::Mark> = db
@@ -1402,21 +1397,8 @@ pub fn announce_changes(db: &Db, cfg: &Config, snap: &crate::sessions::SessionsS
     // 2026-08-12 hàm này chỉ nhận `sessions`, nên `notes` — chỗ duy nhất ghi
     // chuyện tài khoản hỏng — không tới được đây, và ba phiên còn sống bị báo
     // tắt trong 8 giây.
-    // Phiên nào chủ máy vừa gõ chữ vào TỪ TELEGRAM — lượt của nó xong thì báo kể cả khi ngắn.
-    let remote_typed: std::collections::BTreeMap<String, i64> = live
-        .iter()
-        .filter_map(|s| {
-            let v = db.cursor_or_log(&remote_typed_key(&s.session_id))?;
-            Some((s.session_id.clone(), v.trim().parse::<i64>().ok()?))
-        })
-        .collect();
-    let (changes, next) = crate::watch::changes_remote(
-        &prev,
-        live,
-        chrono::Utc::now().timestamp(),
-        &snap.blind,
-        &remote_typed,
-    );
+    let (changes, next) =
+        crate::watch::changes(&prev, live, chrono::Utc::now().timestamp(), &snap.blind);
 
     // TERMINAL.APP CHẾT THÌ MỌI PHIÊN TRONG NÓ CHẾT THEO — và đó là MỘT tin,
     // không phải N tin. Xem `watch::terminal_restart_text` cho ca 10/09.
@@ -19832,17 +19814,6 @@ fn execute_telegram_commands(db: &Db, cfg: &Config) {
                             "telegram_text_as_typing",
                             json!({ "session": focus, "len": text.len() }),
                         );
-                        // Chủ máy đang ở XA (gõ từ Telegram): lượt này xong là phải báo dù ngắn —
-                        // `watch::REMOTE_LEAD_SEC`. Ghi mốc; lỗi ghi thì NÓI, không im.
-                        if let Err(e) = db.set_cursor(
-                            &remote_typed_key(&focus),
-                            &chrono::Utc::now().timestamp().to_string(),
-                        ) {
-                            logging::error(
-                                "remote_typed_save_failed",
-                                json!({ "session": focus, "err": e.to_string() }),
-                            );
-                        }
                         cmds.push(ChannelCommand {
                             quiet: item.quiet,
                             kind: CommandKind::Type,

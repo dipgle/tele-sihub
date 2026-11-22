@@ -1191,19 +1191,7 @@ pub fn reconcile_dead_book(db: &crate::db::Db, now: &[LiveSession]) {
     }
 }
 
-/// Lượt do CHÍNH chủ máy gõ từ Telegram thì xong là PHẢI báo, dù ngắn.
-///
-/// Hà 21/11: *«lượt xử lý xong ko thấy gửi về tele»* — đo trên chính phiên `a91869f2`: tin 💤 cuối
-/// 12:50:41Z (sau lượt 4 phút); bốn lượt sau đó dài 8 · 32 · 63 · 23 giây, tất cả dưới `MIN_RUN_SEC`
-/// ⟹ im ĐÚNG như luật viết. Nhưng luật ấy sinh ra cho phiên «có người ngồi nhìn» (10/08); chủ máy gõ
-/// câu hỏi từ điện thoại thì người ấy KHÔNG ngồi máy — một lượt hỏi-đáp 30 giây mà không có câu
-/// trả lời quay về là bỏ mất đúng việc huba sinh ra để làm («cầu kết nối»).
-///
-/// Dấu hiệu duy nhất đo được: huba đã GÕ chữ từ Telegram vào phiên này (`remote_typed`). Lượt tính là «của
-/// Telegram» khi lần gõ ấy nằm trong `REMOTE_LEAD_SEC` trước mốc bắt đầu lượt (hoặc sau đó).
-pub const REMOTE_LEAD_SEC: i64 = 90;
-
-/// «N giây» khi lượt dưới một phút (chỉ xảy ra với lượt do Telegram gõ — xem `REMOTE_LEAD_SEC`),
+/// «N giây» khi lượt dưới một phút (mọi lượt xong đều báo, kể cả lượt ngắn — Hà 21/11),
 /// «N phút» còn lại. Câu cũ chia thẳng cho 60 ⟹ lượt 30 giây thành «sau 0 phút chạy».
 pub fn thoi_luong(ran_sec: i64) -> String {
     if ran_sec < 60 {
@@ -1218,17 +1206,6 @@ pub fn changes(
     now: &[LiveSession],
     epoch_sec: i64,
     blind: &[String],
-) -> (Vec<Change>, BTreeMap<String, Mark>) {
-    changes_remote(prev, now, epoch_sec, blind, &BTreeMap::new())
-}
-
-/// `changes` + sổ «lần cuối huba gõ chữ từ Telegram vào phiên X» (epoch giây, theo session_id).
-pub fn changes_remote(
-    prev: &BTreeMap<String, Mark>,
-    now: &[LiveSession],
-    epoch_sec: i64,
-    blind: &[String],
-    remote_typed: &BTreeMap<String, i64>,
 ) -> (Vec<Change>, BTreeMap<String, Mark>) {
     let mut next: BTreeMap<String, Mark> = BTreeMap::new();
     let mut out: Vec<Change> = Vec::new();
@@ -1385,18 +1362,15 @@ pub fn changes_remote(
                 rest: a.rest,
             });
         } else if was_working && state == IDLE {
-            // Cửa thời lượng: chạy chớp nhoáng thì không phải tin — TRỪ lượt chủ máy vừa gõ từ
-            // Telegram (xem `REMOTE_LEAD_SEC`): người ấy đang chờ đúng câu trả lời này.
-            let tu_telegram = remote_typed
-                .get(&s.session_id)
-                .is_some_and(|&t| t + REMOTE_LEAD_SEC >= since && t <= epoch_sec);
-            if epoch_sec - since >= MIN_RUN_SEC || tu_telegram {
-                out.push(Change::Finished {
-                    id: s.session_id.clone(),
-                    name: crate::sessions::shown(s),
-                    ran_sec: epoch_sec - since,
-                });
-            }
+            // MỌI lượt xong đều là tin — dài hay ngắn. Hà 21/11: «gửi tin xong xử lý xong thì output kết thúc
+            // là phải gửi về tele luôn». Cửa 120 giây (`MIN_RUN_SEC`, 10/08) bỏ ở ĐÂY: nó im đúng lượt người điều
+            // khiển từ xa đang chờ (đo 21/11 trên phiên a91869f2: lượt 8 · 25 · 32 · 38 · 63 giây không có tin nào).
+            // `MIN_RUN_SEC` vẫn là mốc TUỔI THỌ (`MIN_LIFE_SEC`) — chuyện khác.
+            out.push(Change::Finished {
+                id: s.session_id.clone(),
+                name: crate::sessions::shown(s),
+                ran_sec: epoch_sec - since,
+            });
         } else if before.is_some() && state == DEAD {
             out.push(Change::Ended {
                 id: s.session_id.clone(),
