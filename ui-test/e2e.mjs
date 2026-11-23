@@ -8,7 +8,8 @@
 // KHÔNG phải nghiệm thu dữ liệu; chúng chỉ chứng minh giao diện không nói dối («0 phiên») khi đọc lỗi.
 import { chromium, webkit } from 'playwright-core';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readdirSync, existsSync, statSync, openSync, readSync, closeSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -17,6 +18,41 @@ const HUBA = resolve(process.argv[2] || resolve(AQUI, '../rust/target/debug/huba
 const UI = resolve(AQUI, '../ui');
 const SHOTS = resolve(AQUI, '../.tmp/ui-shots');
 mkdirSync(SHOTS, { recursive: true });
+
+
+// Nhật ký GỐC của một phiên Claude (độc lập với mã huba): ~/.claude-acc*/projects/*/<id>.jsonl; lời cuối của model trong 2 MB cuối.
+function tepNhatKy(id) {
+  const h = homedir();
+  for (const a of readdirSync(h).filter((x) => x.startsWith('.claude-acc'))) {
+    const pj = `${h}/${a}/projects`;
+    if (!existsSync(pj)) continue;
+    for (const d of readdirSync(pj)) {
+      const f = `${pj}/${d}/${id}.jsonl`;
+      if (existsSync(f)) return f;
+    }
+  }
+  return null;
+}
+function loiCuoiCuaModel(f) {
+  const size = statSync(f).size;
+  const n = Math.min(size, 2 * 1024 * 1024);
+  const buf = Buffer.alloc(n);
+  const fd = openSync(f, 'r');
+  readSync(fd, buf, 0, n, size - n);
+  closeSync(fd);
+  const dong = buf.toString('utf8').split('\n');
+  for (let i = dong.length - 1; i >= 0; i--) {
+    try {
+      const d = JSON.parse(dong[i]);
+      if (d.type !== 'assistant') continue;
+      const c = d.message?.content;
+      const t = Array.isArray(c) ? c.filter((x) => x.type === 'text').map((x) => x.text).join('\n') : '';
+      if (t.trim()) return t;
+    } catch {}
+  }
+  return null;
+}
+const chuanHoa = (t) => String(t).replace(/\s+/g, ' ').trim();
 
 let sai = 0;
 let khongDo = 0;
@@ -129,6 +165,79 @@ async function chayEngine(ten, tc) {
   await page.locator('[data-testid=coming]').waitFor({ timeout: 3000 }).catch(() => {});
   ca(P('6b màn chưa làm hiện «sắp có»'), (await page.locator('[data-testid=coming]').count()) === 1);
   await page.getByRole('navigation').getByRole('link', { name: 'Phiên', exact: true }).click();
+
+  // ── K3: Chat (đọc nội dung MỘT phiên) ──
+  const dsPhien = await page.evaluate(async () => (await (await fetch('/api/sessions')).json()).data.sessions);
+  const claude = dsPhien.find((x) => x.kind === 'interactive' && x.host !== 'shell' && !x.working) || dsPhien.find((x) => x.kind === 'interactive' && x.host !== 'shell');
+  const oc = dsPhien.find((x) => x.kind === 'opencode');
+  if (claude) {
+    await page.fill('#q', claude.name);
+    await page.locator('[data-testid=open-chat]').first().click();
+    await page.locator('[data-testid=ev]').first().waitFor({ timeout: 20000 }).catch(() => {});
+    const nEv = await page.locator('[data-testid=ev]').count();
+    const apiEv = await page.evaluate(async (id) => (await (await fetch('/api/sessions/' + id + '/stream?limit=120')).json()).data?.events?.length ?? -1, claude.session_id);
+    ca(P('K3.1 bấm tên phiên ⟹ chat có sự kiện'), nEv > 0 && (await page.locator('[data-testid=chat-title]').count()) === 1, `${nEv} sự kiện · phiên ${claude.name}`);
+    ca(P('K3.2 số sự kiện trên màn ≈ API (±3: phiên đang chạy có thể thêm)'), nEv > 0 && Math.abs(nEv - apiEv) <= 3, `màn ${nEv} · API ${apiEv}`);
+    const f = tepNhatKy(claude.session_id);
+    const cuoi = f ? loiCuoiCuaModel(f) : null;
+    if (cuoi) {
+      const tren = (await page.locator('[data-testid=ev][data-kind=say][data-role=assistant]').allTextContents()).map(chuanHoa);
+      const mau = chuanHoa(cuoi).slice(0, 40);
+      ca(P('K3.3 ĐỐI CHIẾU NHẬT KÝ GỐC: lời cuối của model trong tệp .jsonl có trên màn'), tren.some((t) => t.includes(mau)), `«${mau}…»`);
+    } else {
+      khongDo++;
+      console.log(P('KHÔNG ĐO ĐƯỢC K3.3: không tìm thấy/đọc được nhật ký gốc của phiên ') + claude.session_id.slice(0, 8));
+    }
+    await page.locator('button[data-tab=goc]').click();
+    ca(P('K3.4 tab «Nội dung gốc» nói thật «Chưa làm», không giả vờ có dữ liệu'), ((await page.locator('[data-testid=tab-goc]').textContent()) || '').includes('Chưa làm'));
+    await page.locator('button[data-tab=phien]').click();
+    ca(P('K3.4b tab «Phiên» hiện thư mục làm việc thật'), ((await page.locator('[data-testid=tab-phien]').textContent()) || '').includes(claude.cwd));
+    ca(P('K3.5 ô nhập bị khoá, nói rõ chưa có gửi từ app'), (await page.locator('#msg').isDisabled()) && ((await page.locator('#msg').getAttribute('placeholder')) || '').includes('K4'));
+    await page.screenshot({ path: `${SHOTS}/${ten}-4-chat.png` });
+    await page.getByRole('link', { name: 'Danh sách phiên' }).click();
+    await page.locator('[data-testid=row]').first().waitFor({ timeout: 5000 }).catch(() => {});
+    ca(P('K3.6 «Danh sách phiên» quay về bảng'), (await page.locator('[data-testid=row]').count()) > 0);
+    await page.fill('#q', '');
+  } else { khongDo++; console.log(P('KHÔNG ĐO ĐƯỢC K3: không có phiên Claude nào để mở chat')); }
+  if (oc) {
+    await page.fill('#q', oc.name);
+    await page.locator('[data-testid=open-chat]').first().click();
+    await page.locator('[data-testid=chat-empty]').waitFor({ timeout: 20000 }).catch(() => {});
+    const t = (await page.locator('[data-testid=chat-empty]').textContent().catch(() => '')) || '';
+    ca(P('K3.7 phiên opencode: nói «chưa đọc được nội dung», KHÔNG phải khung chat rỗng'), t.includes('chưa đọc được nội dung phiên loại') && (await page.locator('[data-testid=ev]').count()) === 0, t.slice(0, 70));
+    await page.evaluate(() => { location.hash = '#sessions'; });
+    await page.fill('#q', '');
+  }
+  // 404: id không có trong danh sách
+  await page.evaluate(() => { location.hash = '#chat/khong-co-phien'; });
+  await page.locator('[data-testid=notice]').waitFor({ timeout: 8000 }).catch(() => {});
+  ca(P('K3.8 phiên không có trong danh sách ⟹ báo «Không có phiên này»'), ((await page.locator('[data-testid=notice]').textContent().catch(() => '')) || '').includes('Không có phiên này'));
+  // XSS + markdown: nội dung model có HTML/script/khối mã (ĐỐI CHỨNG GIẢ LỖI qua page.route — khai báo ở đầu tệp)
+  if (claude) {
+    await page.route('**/api/sessions/*/stream*', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ now_ms: Date.now(), error: null, data: { session_id: 'x', older_hidden: 7, events: [
+      { kind: 'say', role: 'assistant', ts: null, name: '', withheld: false, text: 'x **đậm** <img src=x onerror="window.__x3=1"> `a<b>` ```js\nconst z = "<script>window.__x3=2</script>";\n```' },
+      { kind: 'tool', role: 'assistant', ts: null, name: '<b>Bash</b>', text: 'ls', withheld: false },
+      { kind: 'say', role: 'user', ts: null, name: '', withheld: true, text: '[đã gác]' },
+    ] } }) }));
+    await page.evaluate((id) => { location.hash = '#sessions'; setTimeout(() => { location.hash = '#chat/' + id; }, 50); }, claude.session_id);
+    await page.locator('[data-testid=ev]').first().waitFor({ timeout: 8000 }).catch(() => {});
+    const x3 = await page.evaluate(() => ({ bien: window.__x3 ?? null, img: document.querySelectorAll('img[src="x"]').length, scriptTrongBang: document.querySelectorAll('#timeline script').length }));
+    ca(P('K3.9 HTML/script trong nội dung model KHÔNG thực thi'), x3.bien === null && x3.img === 0 && x3.scriptTrongBang === 0, JSON.stringify(x3));
+    const code = (await page.locator('#timeline pre code').first().textContent().catch(() => '')) || '';
+    ca(P('K3.9b khối mã hiện nguyên văn + có nút sao chép'), code.includes('<script>window.__x3=2</script>') && (await page.locator('#timeline button[data-copy]').count()) === 1);
+    ca(P('K3.9b2 **đậm** thành thẻ strong, không còn dấu sao'), ((await page.locator('#timeline .bubble strong').first().textContent().catch(() => '')) || '') === 'đậm');
+    ca(P('K3.9c tên công cụ chứa HTML hiện nguyên chữ'), ((await page.locator('.ev.tool b').first().textContent()) || '') === '<b>Bash</b>');
+    ca(P('K3.9d «sự kiện cũ hơn» và «nội dung bị giữ lại» đều được nói ra'), (await page.locator('[data-testid=older]').count()) === 1 && ((await page.locator('#timeline').textContent()) || '').includes('Nội dung bị giữ lại'));
+    await page.unroute('**/api/sessions/*/stream*');
+    // lỗi nguồn: 500 ⟹ báo lỗi, KHÔNG hiện «chưa có hội thoại»
+    await page.route('**/api/sessions/*/stream*', (r) => r.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'đọc nhật ký hỏng', data: null }) }));
+    await page.evaluate(() => { location.hash = '#sessions'; });
+    await page.evaluate((id) => { setTimeout(() => { location.hash = '#chat/' + id + '-khac'; }, 50); }, 'ghost');
+    await page.locator('[data-testid=notice]').waitFor({ timeout: 8000 }).catch(() => {});
+    ca(P('K3.10 nguồn lỗi ⟹ báo lỗi, không giả vờ «chưa có hội thoại»'), (await page.locator('[data-testid=chat-empty]').count()) === 0 && (await page.locator('[data-testid=notice]').count()) >= 1);
+    await page.unroute('**/api/sessions/*/stream*');
+    await page.evaluate(() => { location.hash = '#sessions'; });
+  }
 
   // ── giả lỗi (khai báo ở đầu tệp) ──
   const thuc = await page.evaluate(async () => await (await fetch('/api/sessions')).json());
