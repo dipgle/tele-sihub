@@ -460,6 +460,9 @@ fn cmd_effort(cfg: &Config, level: &str, session: Option<&str>) -> i32 {
         return 2;
     };
     let who = huba::sessions::shown(target);
+    // Hạng gấp — cùng lý do với `cmd_gui`: sau lượt chụp danh sách, hạng nền có
+    // thể đã hết ngân sách hỏi Terminal và `window_of` bị cấm hỏi.
+    let _lane = huba::exec::urgent();
     let w = match huba::keys::window_of(&target.tty) {
         Ok(Some(w)) => w,
         Ok(None) => {
@@ -547,6 +550,11 @@ fn cmd_gui(cfg: &Config, session: &str, text: &str) -> i32 {
         return 1;
     }
     let den_ten = huba::sessions::shown(den);
+    // Có một phiên đang CHỜ câu trả lời này — hạng gấp như một cú bấm Telegram
+    // (`telegram.rs`). Đo 23/11 (load ~100): ở hạng nền, lượt chụp danh sách vừa
+    // tiêu hết ngân sách hỏi Terminal (20s/10s) ⟹ `window_of` bị cấm hỏi ⟹ 3/3
+    // lượt `huba gui` ra mã 2 dù phiên đích sống và rảnh.
+    let _lane = huba::exec::urgent();
     let w = match huba::keys::window_of(&den.tty) {
         Ok(Some(w)) => w,
         Ok(None) => {
