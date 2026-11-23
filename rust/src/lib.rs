@@ -45,6 +45,8 @@ pub mod confirm;
 pub mod db;
 pub mod effort;
 pub mod exec;
+/// `huba gui` — một phiên nhờ phiên khác làm việc, đi qua huba (Quang 19/11 · 23/11).
+pub mod gui_phien;
 /// Gõ phím vào cửa sổ terminal của một phiên, và chụp lại cửa sổ ấy.
 ///
 /// Hà chốt 2026-08-09 sau khi tôi nêu rõ đánh đổi. Đọc đầu tệp `keys.rs` trước

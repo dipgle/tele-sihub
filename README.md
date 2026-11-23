@@ -360,6 +360,15 @@ channel a command came from.
 | `/set <key> <value>` | change one config field (validated + backed up + written atomically) |
 | `/help` | this table, read straight from the code (`commands::ROUTES` is the source) |
 
+**From one session to another** (CLI — a session runs these from its own Bash; all
+inter-session talk goes through huba, not `SendMessage` straight to another session's socket)
+
+| Command | What it does |
+|---|---|
+| `huba gui <id> "<text>"` | **ask another session to do something**: types `[huba · từ <sender>] <text>` into that session's input box and sends it (same typing core as `/type`), then posts one `📨 sender → target` line to Telegram so the owner sees every hand-off. Refuses: an id prefix matching several sessions · the caller itself · a bare shell window (`win-<tty>` — text there would run as a shell command, outside the deny list) · a target with a choice dialog open (Enter would pick an option) · text over 2000 characters (write a file and send its path). Exit 0 sent (the text left the input box, read off the screen) · 1 refused · 2 could not measure, or typed but not seen to leave the box |
+| `huba ask <id> "<question>"` | **ask a question only**: answered by a read-only fork; the target session gains no turn |
+| `huba sessions` | the ids to use above |
+
 `/ask`, `/handover`, `/new` call the real `claude`, so they **use your
 plan's quota** — exactly as if you typed them in a terminal, no more.
 
@@ -384,6 +393,9 @@ account. The `spend` table records that gauge silently; nothing shows it on scre
   is blindest.
 - **One way in, one set of books**: everything that changes state goes through
   Telegram as an ORDER, so there is always a trace where a person can read it.
+  The one session-to-session door, `huba gui` (owner's choice, 2026-11-23: *send
+  straight, tell Telegram*), does not wait for a tap — so it posts every hand-off
+  to Telegram instead, and it never types into a bare shell or an open dialog.
 - **huba does not hide text from the owner.** The destination is the owner's own
   private chat, so session text is passed through as-is; a possible secret is
   *logged* (`preview_risk_noted`), not blanked out. huba's own secrets (bot token,
