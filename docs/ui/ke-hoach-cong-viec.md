@@ -6,14 +6,25 @@ nữa, mỗi việc phải càng nhỏ nhanh ngắn càng tốt»* · chọn b�
 Quy ước: mỗi việc ≤ ~15 phút (ước lượng của tôi, **chưa đo** — việc nào quá thì tách tiếp), có **«xong khi»** đo được. 🅲 = bạn làm
 (cần mắt/tay/mật khẩu) · 🅷 = tôi làm · ⛔ = chờ bạn quyết. Việc đổi mã lõi (`rust/`) luôn có test đỏ → xanh. Thứ tự: xong cả khối mới sang khối sau.
 
-> **Trạng thái 23/11 (cuối phiên a91869f2):** W1 XONG (commit `293dc42` trên main, gate xanh) · W2.1–W2.4 XONG trên nhánh `ui/w2`:
-> `/api/sessions` có bản đệm 10 s (snapshot tốn ~4,7 s) + thread làm mới chịu được panic · giao diện THẬT ở `ui/` (index.html · app.js · live.css ·
-> style.css chép từ bản mẫu; không bước build; CSP `default-src 'self'`) · bộ kiểm `ui-test/e2e.mjs` bằng TRÌNH DUYỆT THẬT (Chromium + WebKit),
-> máy chủ + dữ liệu phiên THẬT: **38/38 đạt** (STT liên tục · tìm/lọc so với API · thu gọn menu · XSS nội dung phiên · lỗi/mất kết nối/401/rỗng
-> giữ «dữ liệu CŨ» thay vì «0 phiên» · vé dùng lại ⟹ 401). Ca giả lỗi dùng `page.route` — khai báo ở đầu tệp, không phải nghiệm thu dữ liệu.
+> **Trạng thái 23/11 09:05 (phiên kế nhiệm sau a91869f2):** W1 `293dc42` (gate xanh) · W2 trên nhánh `ui/w2`:
+> `/api/sessions` có bản đệm 10 s (snapshot tốn ~4,7 s) + thread làm mới chịu được panic · giao diện THẬT ở `ui/`
+> (index.html · app.js · live.css · style.css chép từ bản mẫu; không bước build; CSP `default-src 'self'`) ·
+> bộ kiểm `ui-test/e2e.mjs` bằng TRÌNH DUYỆT THẬT (Chromium + WebKit), máy chủ + dữ liệu phiên THẬT: **38/38 đạt**
+> (STT liên tục · tìm/lọc so với API · thu gọn menu · XSS nội dung phiên · lỗi/mất kết nối/401/rỗng giữ «dữ liệu CŨ»
+> thay vì «0 phiên» · vé dùng lại ⟹ 401). Ca giả lỗi dùng `page.route` — khai báo ở đầu tệp, không phải nghiệm thu dữ liệu.
 > `ui-test/` là gốc pnpm riêng, cài bằng `cong-node cai` (cùng inode với kho chung: 0 byte nhân bản). Ảnh: `.tmp/ui-shots/`.
-> **Chưa làm:** gate.sh ĐẦY ĐỦ cho nhánh ui/w2 · README · đưa `ui/` vào gói cài (3 script dong-goi) · gốc `huba.config.json` cho vị trí ui/ khi cài ·
-> K3 (chat đọc một phiên) · K4 (gửi từ app) · ⛔ mức «gốc» chủ máy cần (K3.5) · Linux chỉ có Firefox ⟹ `huba ui` mở tab, chưa phải cửa sổ riêng (W3.1).
+>
+> **23/11 — phần còn lại của W2 nay XONG:** `./gate.sh` ĐẦY ĐỦ trên `ui/w2` **GATE_EXIT=0** (FMT/CLIPPY/WIN/LINUX/BUILD/DOC 0 ·
+> MAU_SO 251 · DA_CHAY 251/251 · FAILED 0 · đối chứng ngược của bộ chạy 101/0; log `.tmp/gate-uiw2-20261123.log`) ·
+> `ui/` vào **cả 3 gói** (`dong-goi-{linux,mac,windows}.sh` dừng mã 2 nếu thiếu `ui/index.html`) + **cả 3 trình cài** chép
+> `ui/` cạnh binary CLI, `--verify`/`-Verify` **ĐỎ được** khi thiếu · README mục «`huba ui`».
+> Đo trên **BẢN CÀI** (gói `huba-linux-02de23e`, sha256 `549e91ef…`; hubd pid 544212, `--verify` KHỚP `ccdfb563…`):
+> `.tmp/kiem-ui-ban-cai.py` **15/15** (vé một lần → 303 + cookie HttpOnly/SameSite=Strict · vé dùng lại 401 ·
+> 3 tệp tĩnh từ `~/huba/ui` · `/api/sessions` 11 phiên = `huba sessions` 11 · chặn `../../etc/passwd`).
+> **Đối chứng ngược**: rút `~/huba/ui` ⇒ `--verify` = 1 (❌ thiếu index.html) và `huba ui` báo «không thấy thư mục giao diện»;
+> trả lại ⇒ verify = 0. ⚠ `install_update.ps1` **CHƯA đo** (máy không có `pwsh`).
+> **Chưa làm:** K3 (chat đọc một phiên) · K4 (gửi từ app) · ⛔ mức «gốc» chủ máy cần (K3.5) · Linux chỉ có Firefox
+> ⟹ `huba ui` mở tab, chưa phải cửa sổ riêng (W3.1).
 
 ## PHƯƠNG ÁN W — giao diện là trang web do huba phục vụ (thay K0–K2 nếu bỏ Tauri)
 
@@ -48,6 +59,9 @@ Quy ước: mỗi việc ≤ ~15 phút (ước lượng của tôi, **chưa đo*
 | ✅ W2.2 | Nối danh sách phiên của bản mẫu vào API | ảnh chụp có phiên thật | 🅷 |
 | ✅ W2.3 | Ba trạng thái rỗng / lỗi-dữ liệu cũ / bình thường | giả lỗi đọc ⟹ «Dữ liệu cũ», không hiện rỗng | 🅷 |
 | ✅ W2.4 | Playwright Chromium + WebKit: mở bằng cookie, N hàng = API, 0 lỗi console | exit 0 cả hai engine | 🅷 |
+| ✅ W2.5 | `./gate.sh` đầy đủ trên nhánh `ui/w2` | `GATE_EXIT=0` · 251/251 · FAILED=0 · WIN/LINUX đo được (log `.tmp/gate-uiw2-20261123.log`) | 🅷 |
+| ✅ W2.6 | `ui/` vào 3 gói cài + 3 trình cài | gói Linux có `ui/` 4 tệp; cài ⟹ `~/huba/ui`; **rút `ui/` ⟹ `--verify`=1** rồi trả lại ⟹ 0 | 🅷 |
+| ✅ W2.7 | README mục «`huba ui`» | nói đúng việc đang làm được, nói rõ K3/K4 CHƯA có | 🅷 |
 | W3.1 | Linux: ưu tiên `chromium`/`google-chrome` `--app` nếu có | máy có Chrome ⟹ cửa sổ riêng; máy chỉ Firefox ⟹ rơi về `xdg-open` (đo cả hai nhánh) | 🅷 |
 
 K3 trở đi giữ nguyên (đọc nhật ký, gửi…), chỉ khác là gọi qua `/api/*`.
