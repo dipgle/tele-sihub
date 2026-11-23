@@ -52,3 +52,14 @@ việc sang phiên `huba`). Chép vào đây để giữ lâu; **chuỗi đo g�
   bằng chứng `cd …/huba &&`.
 - **Còn**: gate đầy đủ + cài + nghiệm thu bằng mắt trên Telegram (xem `memory/active-context.md`).
 
+### Chốt của chủ máy (23/11 22:2x, qua hộp chọn trên Telegram)
+
+> *«Phiên mở của dự án nào là cố định mãi không có đổi, trừ khi map nhầm ngay từ đầu»*
+
+- Tên chốt **một lần** ở vài lượt đầu; có tên rồi thì không đọc lại nhật ký.
+- Nạp lạnh (memo rỗng) phải ra **cùng tên** với nạp nóng ⇒ bộ giảm đi XUÔI và dừng ở lần
+  nhận ĐẦU TIÊN (`folder_for_session_ev`, `session_identity_history`).
+- **opencode có `head` riêng** (`fill_heads_v2`, 40 bản ghi đầu) — đặt tên đọc head; tail chỉ
+  để xem trước/làn/câu hỏi.
+- Luật cũ «đổi dự án thật thì đổi tên» **bỏ**; 4 bài kiểm đảo chiều, giữ nguyên văn luật cũ.
+- Commit: `6c05ee9`.
