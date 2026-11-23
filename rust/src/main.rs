@@ -76,6 +76,24 @@ enum Command {
         #[arg(long)]
         dir: Option<std::path::PathBuf>,
     },
+    /// Sổ GHIM tên phiên: xem · tự đặt tên · bỏ ghim (Quang 23/11: tên phiên phải gắn cố định)
+    ///
+    /// Tên của một phiên được ghim xuống đĩa lần đầu huba thấy nó (`data/ten-phien.json`) và không đổi nữa — trừ khi bạn
+    /// đặt lại ở đây. Không đối số: liệt kê. `<mã>` (8 ký tự đầu là đủ) kèm `--dat "<tên>"`: đặt tên. `<mã> --bo`: bỏ ghim,
+    /// phiên học lại tên từ đầu ở vòng chụp kế.
+    TenPhien {
+        /// Mã phiên (đủ hoặc tiền tố duy nhất). Bỏ trống = liệt kê sổ ghim
+        id: Option<String>,
+        /// Đặt tên cho phiên này (thắng mọi nhãn tính lại)
+        #[arg(long)]
+        dat: Option<String>,
+        /// Bỏ ghim phiên này
+        #[arg(long)]
+        bo: bool,
+        /// Nạp sổ ghim từ SỔ THEO DÕI (nhãn hubd đang hiện cho từng phiên) — chạy một lần khi nâng cấp để không mất tên đang có
+        #[arg(long)]
+        nap: bool,
+    },
     /// In dòng lệnh mở phiên của một tài khoản — ĐÚNG dòng `/new` gõ vào Terminal
     ///
     /// Quang 12/11 chọn *"acc8 cạnh tranh bình đẳng"* cho vai mở bằng
@@ -259,6 +277,9 @@ fn real_main() -> Result<()> {
                     anyhow::anyhow!("không thấy thư mục giao diện (cần index.html) — đặt HUBA_UI_DIR hoặc --dir")
                 })?;
             huba::uiserver::serve(cfg.clone(), dir, !no_open)
+        }
+        Command::TenPhien { id, dat, bo, nap } => {
+            cmd_ten_phien(&db, &cfg, id.as_deref(), dat.as_deref(), bo, nap)
         }
         Command::LenhMo { acc, prompt } => {
             if !cfg
@@ -795,6 +816,95 @@ fn cmd_ask(cfg: &Config, session: &str, question: &str) -> Result<()> {
 
 /// What `claude` is doing on this machine right now. Read-only: this lists and
 /// reads transcripts, it never starts, stops, or types into a session.
+/// `huba ten-phien` — xem / đặt / bỏ ghim tên phiên. Xem doc-comment của `Command::TenPhien`.
+fn cmd_ten_phien(
+    db: &huba::db::Db,
+    cfg: &Config,
+    id: Option<&str>,
+    dat: Option<&str>,
+    bo: bool,
+    nap: bool,
+) -> Result<()> {
+    use huba::ten_phien::PinBook;
+    if cfg.hub_home.as_os_str().is_empty() {
+        anyhow::bail!("không biết thư mục huba (hub_home rỗng) nên không có sổ ghim");
+    }
+    let path = cfg.hub_home.join("data").join("ten-phien.json");
+    let (mut book, canh_bao) = PinBook::load(&path);
+    if let Some(c) = canh_bao {
+        anyhow::bail!("{c}");
+    }
+    let now = chrono::Utc::now().timestamp();
+    if nap {
+        // Nhãn hubd cũ ĐANG HIỆN nằm trong sổ theo dõi (`Mark.l`, ghi xuống đĩa mỗi vòng) — nạp những phiên CHƯA có ghim.
+        let raw = db.get_cursor(huba::pipeline::WATCH_KEY)?.ok_or_else(|| {
+            anyhow::anyhow!("chưa có sổ theo dõi trong cơ sở dữ liệu — không có gì để nạp")
+        })?;
+        let marks: std::collections::BTreeMap<String, huba::watch::Mark> =
+            serde_json::from_str(&raw)?;
+        let mut moi = 0;
+        for (k, m) in &marks {
+            if !m.l.trim().is_empty() && !book.pins.contains_key(k) {
+                book.set(k, m.l.trim(), now);
+                moi += 1;
+            }
+        }
+        book.save(&path)?;
+        println!(
+            "đã nạp {moi} ghim từ sổ theo dõi ({} phiên trong sổ, {} ghim tổng cộng)",
+            marks.len(),
+            book.pins.len()
+        );
+        return Ok(());
+    }
+    let Some(prefix) = id else {
+        if book.pins.is_empty() {
+            println!("sổ ghim trống: {}", path.display());
+            return Ok(());
+        }
+        println!("{} phiên đang ghim ({}):", book.pins.len(), path.display());
+        for (k, p) in &book.pins {
+            let tuoi = now - p.seen;
+            println!(
+                "  {:<10} {}  (thấy {} phút trước)",
+                huba::sessions::short_id(k),
+                p.label,
+                tuoi / 60
+            );
+        }
+        return Ok(());
+    };
+    let key = book.find(prefix).map_err(|e| anyhow::anyhow!(e))?;
+    match (dat, bo) {
+        (Some(_), true) => anyhow::bail!("--dat và --bo không đi cùng nhau"),
+        (Some(ten), false) => {
+            if ten.trim().is_empty() {
+                anyhow::bail!("tên rỗng");
+            }
+            book.set(&key, ten.trim(), now);
+            book.save(&path)?;
+            println!(
+                "đã đặt: {} → {}",
+                huba::sessions::short_id(&key),
+                ten.trim()
+            );
+        }
+        (None, true) => {
+            book.remove(&key);
+            book.save(&path)?;
+            println!(
+                "đã bỏ ghim {} — vòng chụp kế sẽ học lại tên",
+                huba::sessions::short_id(&key)
+            );
+        }
+        (None, false) => {
+            let p = &book.pins[&key];
+            println!("{}  {}", huba::sessions::short_id(&key), p.label);
+        }
+    }
+    Ok(())
+}
+
 fn cmd_sessions(db: &huba::db::Db, cfg: &Config, as_json: bool) -> Result<()> {
     let mut snap = huba::sessions::snapshot(cfg);
     // Cùng một nguồn sự thật với ảnh chụp: màn và CLI không được nói khác nhau
