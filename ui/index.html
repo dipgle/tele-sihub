@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>huba</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="live.css">
+</head>
+<body>
+  <header class="app-header">
+    <a href="#sessions" class="brand"><span class="logo">h</span><strong>huba<span>Không gian làm việc của bạn</span></strong></a>
+    <label class="quick-search" for="q"><span>⌕</span><input id="q" type="search" placeholder="Tìm phiên, dự án, tài khoản…" autocomplete="off"></label>
+    <div class="header-right"><span class="local-status" id="conn"><i></i> <span id="conn-text">Đang kết nối…</span></span></div>
+  </header>
+  <div class="app-body">
+    <aside class="sidebar" aria-label="Điều hướng chính">
+      <button class="collapse" id="collapse" aria-label="Thu gọn menu" aria-expanded="true"><span>☰</span><span class="nav-label">Không gian làm việc</span></button>
+      <nav id="nav"></nav>
+    </aside>
+    <main id="main" tabindex="-1"></main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+{
+  "name": "huba-ui-test",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Kiểm giao diện huba ui bằng trình duyệt thật (Playwright). Cài qua `cong-node cai` — cùng kho .pnpm-store với các dự án khác, 0 byte nhân bản.",
+  "devDependencies": {
+    "playwright-core": "1.61.1"
+  }
+}

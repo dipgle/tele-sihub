@@ -258,7 +258,7 @@ fn real_main() -> Result<()> {
                 .ok_or_else(|| {
                     anyhow::anyhow!("không thấy thư mục giao diện (cần index.html) — đặt HUBA_UI_DIR hoặc --dir")
                 })?;
-            huba::uiserver::serve(dir, !no_open)
+            huba::uiserver::serve(cfg.clone(), dir, !no_open)
         }
         Command::LenhMo { acc, prompt } => {
             if !cfg

@@ -57,7 +57,15 @@ if ($Verify) {
     if (-not (Test-Path $SrcHubd)) { Moc "KHONG DO DUOC: khong co ban dung $SrcHubd"; exit 2 }
     $a = (Get-FileHash $DstHubd -Algorithm SHA256).Hash
     $b = (Get-FileHash $SrcHubd -Algorithm SHA256).Hash
-    if ($a -eq $b) { Moc "KHOP — ban cai la ban dung hien co ($a)"; exit 0 }
+    if ($a -eq $b) {
+        # Giao diện web: `huba ui` tìm `ui/` cạnh huba.exe — thiếu thì lệnh chết dù binary khớp.
+        if (Test-Path (Join-Path $Dest 'ui\index.html')) {
+            Moc "KHOP — ban cai la ban dung hien co ($a) · giao dien ui/ co"
+            exit 0
+        }
+        Moc "KHOP binary ($a) NHUNG thieu $(Join-Path $Dest 'ui\index.html') — chay lai trinh cai tu goi co thu muc ui"
+        exit 1
+    }
     Moc "LECH — ban cai $a, ban dung $b"; exit 1
 }
 
@@ -180,6 +188,17 @@ New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 Copy-Item $SrcHubd $DstHubd -Force
 Copy-Item $SrcCli  $DstCli  -Force
 Moc "da cai $DstHubd + $DstCli"
+
+# Giao diện web `huba ui`: `default_ui_dir` tìm `ui/` CẠNH huba.exe, nên nó phải nằm trong $Dest.
+$SrcUi = Join-Path $Here 'ui'
+if (Test-Path (Join-Path $SrcUi 'index.html')) {
+    $DstUi = Join-Path $Dest 'ui'
+    New-Item -ItemType Directory -Force -Path $DstUi | Out-Null
+    Copy-Item (Join-Path $SrcUi '*') $DstUi -Recurse -Force
+    Moc "da cai giao dien web $DstUi"
+} else {
+    Moc 'goi khong co thu muc ui — huba ui se bao khong thay giao dien'
+}
 
 # ④ PATH + HUB_CONFIG cho người dùng (không đụng biến của máy).
 $p = [Environment]::GetEnvironmentVariable('Path', 'User')

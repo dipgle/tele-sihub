@@ -193,3 +193,23 @@ Chuyển phiên: d454f92 đã push/remote-match. Cổng chọn acc10, tạo pane
 
 ## 2026-11-20 09:05 — nhãn phiên gốc (TODO.md:30) XONG + cài
 `c1bb2ad`: danh tính không còn suy từ đường dẫn log; scope=cwd; 1 tiền tố assistant không gieo tên (2 lượt hoặc khớp scope). RED 2/5 → GREEN; gate FAILED=0 · 242/242 · clippy0 (GATE_EXIT=1 chỉ do WIN/LINUX_EXIT=2 KHÔNG ĐO ĐƯỢC). Cài hubd sha `04497c1c…` khớp. CÒN: bấm `/session` Telegram thật; đẩy (commit nằm trên `4699bca` của lõi); đóng tiền nhiệm 2180157. NỢ MỞ ⛔: duyệt P04/P06/P07/P15/P20/P22 · A/B trace · helper hòm thư.
+
+## 2026-11-23 08:20 +07 — W1 + W2 giao diện web `huba ui` (phiên a91869f2, chuyển phiên 50 %)
+
+Chủ máy: «bảo mật làm ưu tiên trước» rồi «tự làm hết, chạy được thì dừng báo». Chọn phương án W (trang web do huba phục vụ) thay Tauri: Ubuntu thiếu 7 gói hệ thống (cần sudo), Playwright không lái được WebKitGTK; bản mẫu `docs/ui` đã là web.
+- W1 `293dc42` (main, gate xanh 250 binary): `rust/src/uiserver.rs` hàm thuần `handle` + `serve_loop`; Host · Origin · trần thân 1 MiB · vé MỘT lần → cookie HttpOnly/SameSite=Strict · chặn thoát `ui/` · CSP; token getrandom 128 bit. `localserver::read_request` có trần đầu 64 KiB/thân 1 MiB (bản cũ cấp phát theo Content-Length tự khai). Đột biến gỡ 8 hàng rào ⟹ đỏ cả 8.
+- W2 (nhánh `ui/w2`, CHƯA vào main): `/api/sessions` bản đệm 10 s (+ thread làm mới sống sót panic, lỗi KHÔNG xoá bản cũ) · `ui/` giao diện thật · `ui-test/e2e.mjs` trình duyệt thật Chromium+WebKit, phiên thật: 38/38 (log `.tmp/e2e-4.log`, ảnh `.tmp/ui-shots/`).
+- Lỗi do chính tôi gây rồi sửa: `aria-disabled` nói sai ở menu «Sắp có»; bộ kiểm dùng chung MỘT vé cho hai engine (vé 1 lần ⟹ WebKit 401); ca lọc «Đang làm» dùng `every()` trên mảng rỗng (phép đo mù) — nay so với API.
+- Việc kế: gate.sh đầy đủ cho `ui/w2` rồi vào main · đưa `ui/` vào gói · README · K3 chat đọc một phiên. ⛔ chờ chủ máy: mức «gốc» (K3.5). Chi tiết: `docs/ui/ke-hoach-cong-viec.md`.
+
+## 2026-11-23 09:05 +07 — W2: gate đầy đủ + `ui/` vào gói cài + đo trên BẢN CÀI (phiên kế nhiệm 08:25)
+
+`gate.sh` trên `ui/w2` (mã TRƯỚC commit đóng gói): **GATE_EXIT=0** · FMT/CLIPPY/WIN/LINUX/BUILD/DOC 0 · MAU_SO 251 · DA_CHAY 251/251 · FAILED 0 · đối chứng ngược bộ chạy 101/0 · log `.tmp/gate-uiw2-20261123.log` (01:21→01:50Z, ~29 phút).
+
+Commit `02de23e` (7 tệp): `ui/` vào 3 gói (`dong-goi-{linux,mac,windows}.sh`, thiếu `ui/index.html` ⇒ dừng mã 2) + 3 trình cài chép `ui/` cạnh binary CLI (`~/huba/ui`, `$LOCALAPPDATA\hub\bin\ui`) + `--verify`/`-Verify` nay kiểm `ui/index.html` (**đỏ được**) + README «A window on the machine — `huba ui`». `bash -n` 5 tệp = 0 lỗi.
+
+Gói Linux thật `huba-linux-02de23e.tar.gz` sha256 `549e91ef…` (log `.tmp/dong-goi-uiw2-20261123.log`) → cài `.tmp/cai-uiw2-20261123.log` (**CAI_EXIT=0**, hubd pid 544212) → `--verify` KHỚP `ccdfb563…` + ✅ giao diện `~/huba/ui`. Đo trên bản cài (`.tmp/kiem-ui-ban-cai.py`, `.log`): **15/15** — vé → 303 + cookie `HttpOnly/SameSite=Strict`, vé dùng lại 401, 3 tệp tĩnh từ `~/huba/ui`, `/api/sessions` 11 phiên = `huba sessions` 11, chặn `../../etc/passwd`. Đối chứng ngược: `mv ~/huba/ui` ⇒ `--verify`=1 + `huba ui` «không thấy thư mục giao diện»; trả lại ⇒ 0.
+
+Ba lỗi của CHÍNH TÔI khi viết phép đo (ghi để không lặp): ① đọc `api["sessions"]` trong khi API trả `{loading,error,ok_at_ms,data:{sessions}}`; ② lấy `len(dict)` của `huba sessions --json` (in CẢ ảnh chụp) làm «số phiên»; ③ quên vé đổi bằng **303** nên không thấy `Set-Cookie` ở phản hồi cuối.
+
+CHƯA: `install_update.ps1` (máy không có `pwsh`) · gói mac/win thật · gộp `ui/w2` vào main + đẩy · K3/K4. Nền: không có.

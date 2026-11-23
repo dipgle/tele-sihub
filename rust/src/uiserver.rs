@@ -17,6 +17,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::RwLock;
 
 pub use crate::localserver::MAX_BODY;
 use crate::localserver::{parse_form, percent_decode, Req};
@@ -32,12 +33,30 @@ pub struct Resp {
     pub body: Vec<u8>,
 }
 
+/// Bộ nhớ đệm danh sách phiên. `snapshot` tốn ~4,7 giây (đo 23/11: 11 phiên) nên KHÔNG tính theo từng yêu cầu — một thread
+/// riêng làm mới, giao diện đọc bản đệm. Lỗi làm mới KHÔNG xoá bản cũ: giao diện phải thấy «dữ liệu cũ + lỗi», không thấy «0 phiên».
+#[derive(Default)]
+struct SessionsCache {
+    data: Option<serde_json::Value>,
+    ok_at_ms: Option<i64>,
+    tried_at_ms: Option<i64>,
+    error: Option<String>,
+}
+
 pub struct UiState {
     pub port: u16,
     pub ui_dir: PathBuf,
     session: String,
     ticket: String,
     ticket_used: AtomicBool,
+    sessions: RwLock<SessionsCache>,
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// 16 byte ngẫu nhiên của hệ điều hành ⟹ 32 chữ số hex.
@@ -63,6 +82,32 @@ impl UiState {
             session,
             ticket,
             ticket_used: AtomicBool::new(false),
+            sessions: RwLock::new(SessionsCache::default()),
+        })
+    }
+
+    /// Ghi kết quả một lần làm mới danh sách phiên. `Ok` thay bản đệm; `Err` giữ bản cũ và ghi lỗi.
+    pub fn put_sessions(&self, r: Result<serde_json::Value, String>, now: i64) {
+        let mut c = self.sessions.write().unwrap_or_else(|e| e.into_inner());
+        c.tried_at_ms = Some(now);
+        match r {
+            Ok(v) => {
+                c.data = Some(v);
+                c.ok_at_ms = Some(now);
+                c.error = None;
+            }
+            Err(e) => c.error = Some(e),
+        }
+    }
+
+    fn sessions_json(&self) -> serde_json::Value {
+        let c = self.sessions.read().unwrap_or_else(|e| e.into_inner());
+        serde_json::json!({
+            "loading": c.tried_at_ms.is_none(),
+            "error": c.error,
+            "ok_at_ms": c.ok_at_ms,
+            "now_ms": now_ms(),
+            "data": c.data,
         })
     }
 
@@ -204,6 +249,13 @@ fn route(state: &UiState, req: &Req) -> Resp {
     }
     if path == "/api/health" {
         return mk(200, "application/json", br#"{"ok":true}"#.to_vec());
+    }
+    if path == "/api/sessions" {
+        return mk(
+            200,
+            "application/json",
+            state.sessions_json().to_string().into_bytes(),
+        );
     }
     if path.starts_with("/api/") {
         return text(404, "Không có đường API này");
@@ -368,8 +420,37 @@ fn write_out(stream: &mut std::net::TcpStream, r: Resp) -> anyhow::Result<()> {
     crate::localserver::write_resp(stream, status, &r.ctype, &hs, &r.body)
 }
 
+/// Thread làm mới danh sách phiên: gọi `produce` mỗi `every`, ghi vào bản đệm. `produce` panic cũng chỉ thành một lỗi được ghi,
+/// không làm chết thread (không thì bản đệm đứng im mà không ai biết).
+pub fn spawn_refresher<F>(state: std::sync::Arc<UiState>, every: std::time::Duration, produce: F)
+where
+    F: Fn() -> Result<serde_json::Value, String> + Send + 'static,
+{
+    std::thread::spawn(move || loop {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&produce))
+            .unwrap_or_else(|_| Err("việc đọc danh sách phiên bị panic".to_string()));
+        if let Err(e) = &r {
+            crate::logging::warn(
+                "ui_sessions_refresh_failed",
+                serde_json::json!({ "err": e }),
+            );
+        }
+        state.put_sessions(r, now_ms());
+        std::thread::sleep(every);
+    });
+}
+
+/// Danh sách phiên THẬT: cùng nguồn với `huba sessions --json` (snapshot + đánh dấu phiên do huba mở).
+fn produce_sessions(cfg: &crate::config::Config) -> Result<serde_json::Value, String> {
+    let mut snap = crate::sessions::snapshot(cfg);
+    let db =
+        crate::db::Db::open(&cfg.db).map_err(|e| format!("không mở được cơ sở dữ liệu: {e}"))?;
+    crate::pipeline::mark_started_by_hub(&db, &mut snap);
+    serde_json::to_value(&snap).map_err(|e| format!("không mã hoá được snapshot: {e}"))
+}
+
 /// `huba ui`: mở cổng 127.0.0.1, in URL (có vé), tuỳ chọn mở cửa sổ, rồi phục vụ mãi.
-pub fn serve(ui_dir: PathBuf, open: bool) -> anyhow::Result<()> {
+pub fn serve(cfg: crate::config::Config, ui_dir: PathBuf, open: bool) -> anyhow::Result<()> {
     if !ui_dir.join("index.html").is_file() {
         anyhow::bail!(
             "thư mục giao diện «{}» không có index.html — đặt HUBA_UI_DIR hoặc --dir",
@@ -385,7 +466,14 @@ pub fn serve(ui_dir: PathBuf, open: bool) -> anyhow::Result<()> {
     if open {
         crate::localserver::open_window(&url, "ui");
     }
-    serve_loop(listener, std::sync::Arc::new(state));
+    let state = std::sync::Arc::new(state);
+    let cfg_dem = cfg.clone();
+    spawn_refresher(
+        std::sync::Arc::clone(&state),
+        std::time::Duration::from_secs(10),
+        move || produce_sessions(&cfg_dem),
+    );
+    serve_loop(listener, state);
     Ok(())
 }
 

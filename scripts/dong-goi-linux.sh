@@ -28,7 +28,7 @@ echo "dựng bằng: cargo $DUNG ($TARGET)"
 # Cờ bỏ siêu dữ liệu Mac chỉ có ở bsdtar; GNU tar báo «unrecognized option» và DỪNG.
 TAR_CO=(); [ "$(uname -s)" = Darwin ] && TAR_CO=(--no-mac-metadata --no-xattrs)
 
-if [ -n "$(git -C "$H" status --porcelain -- rust install_update_linux.sh cli-ghim.env DOC-TRUOC-LINUX.txt huba.env.example scripts/huba_cai_linux.py scripts/CLAUDE-goc-workspace.md huba.config.json)" ]; then
+if [ -n "$(git -C "$H" status --porcelain -- rust install_update_linux.sh cli-ghim.env DOC-TRUOC-LINUX.txt huba.env.example scripts/huba_cai_linux.py scripts/CLAUDE-goc-workspace.md huba.config.json ui)" ]; then
   echo "⚠ cây có thay đổi CHƯA commit trong phần đóng gói — tên gói mang sha HEAD nhưng nội dung là cây hiện tại"
 fi
 SHA=$(git -C "$H" rev-parse --short HEAD)
@@ -70,6 +70,11 @@ cp "$KEM_SRC/cong_bao_mat.py" "$KEM_SRC/bao-mat-policy.json" "$D/kem/scripts/"
 cp "$KEM_SRC/mo-dau-phien.py" "$KEM_SRC/nhac-chuyen-phien.py" "$KEM_SRC/nhac-vao-phien.py" "$D/kem/scripts/"
 cp "$H/cli-ghim.env" "$D/"
 cp "$KEM_SRC/cong-bao-mat-plugin/index.js" "$KEM_SRC/cong-bao-mat-plugin/package.json" "$D/kem/scripts/cong-bao-mat-plugin/"
+# Giao diện web `huba ui` (W2, 23/11): phục vụ tệp tĩnh từ thư mục `ui/` CẠNH binary —
+# `uiserver::default_ui_dir` hỏi `exe.parent()/ui` trước cả `<hub_home>/docs/ui`. Gói thiếu
+# thư mục này thì `huba ui` chết với «không thấy thư mục giao diện» dù lệnh có trong help.
+[ -f "$H/ui/index.html" ] || { echo "KHÔNG ĐO ĐƯỢC: thiếu $H/ui/index.html — gói thiếu giao diện thì không đóng"; exit 2; }
+cp -Rp "$H/ui" "$D/ui"
 # Phần cấu hình của trình cài + mẫu tài khoản (CHỈ các hàng `claude_accounts` của kho — không
 # có bí mật nào trong đó: khoá nằm ở env_file/huba.env của từng máy). Trình cài chỉ THÊM hàng thiếu.
 cp "$H/scripts/huba_cai_linux.py" "$D/kem/huba_cai_linux.py"

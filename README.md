@@ -146,6 +146,30 @@ build exactly the leak the 600 permission exists to prevent.
 Setting up the workspace from scratch (folders, workspace root, the three
 questions people usually ask): `ARCHITECTURE.md`.
 
+## A window on the machine — `huba ui`
+
+```bash
+./huba ui            # opens a window (Chrome/Edge `--app` when one is installed)
+./huba ui --no-open  # print the URL and serve — headless, or a machine with no display
+```
+
+A small web page served by huba itself from `ui/` (next to the `huba` binary), for
+when you are sitting at the machine and want a list instead of chat commands. It
+reads the same snapshot `huba sessions` reads, so the two agree on the count.
+
+- **Loopback only.** It binds `127.0.0.1`, prints a **one-time ticket** in the URL and
+  trades it for a `HttpOnly; SameSite=Strict` cookie; the ticket is refused the second
+  time. `Host` must be the exact loopback authority (DNS-rebinding), `POST` checks
+  `Origin`, request body is capped at 1 MiB, and a path cannot climb out of `ui/`.
+  The page ships a CSP (`default-src 'self'`, no scripts but its own files) and
+  `frame-ancestors 'none'`.
+- **What it does today:** the session list with the machine's real sessions, search
+  and paging over the whole list, and three states that never lie — empty, normal, and
+  *data is stale* (a failed read keeps the last picture instead of drawing "0 sessions").
+- **What it does not do yet:** read one session's conversation (K3), send anything
+  (K4), or the account/token screens. Telegram remains the full command channel; this
+  is a read-only window while it grows.
+
 ## Start with the machine — Linux (systemd --user)
 
 Needs `tmux`. Sessions you want huba to drive must run inside tmux panes (`/new`
