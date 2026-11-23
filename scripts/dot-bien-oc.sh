@@ -38,12 +38,9 @@ cay bo_nua_enter 'l.contains("esc dismiss") && (l.contains("enter submit") || l.
 cay khong_dung_o_nhap_opencode 'let screen = match opencode_input_text(screen) {' 'let screen = match None::<String> {'
 cay bo_nhan_dan_opencode '(seen.contains("[Pastedtext") || seen.contains("[Pasted~"))' 'seen.contains("[Pastedtext")'
 cay nhan_dan_khong_can_nhieu_dong 'if typed.contains('"'"'\n'"'"') && (seen.contains("[Pastedtext")' 'if (seen.contains("[Pastedtext")'
-cay doc_ca_lich_su_vao_o_nhap '        let Some(rest) = lines[i].trim_start().strip_prefix('"'"'┃'"'"') else {
-            break;
-        };' '        let Some(rest) = lines[i].trim_start().strip_prefix('"'"'┃'"'"') else {
-            trong.push(lines[i].trim());
-            continue;
-        };'
+# Ô nhập = khối giữa hai dòng đệm `┃` trống (tin vừa gửi sát ô nhập — 23/11 16:18):
+cay nuot_ca_dong_trong_vao_o_nhap '            Some(t) if !t.is_empty() => trong.push(t),' '            Some(t) => trong.push(t),'
+cay khong_bo_dem_duoi '    if sau_le(j) == Some("") {' '    if false {'
 cay bo_kiem_dong_agent_model '    if !model.starts_with('"'"'┃'"'"') || !model.contains(" · ") {
         return None;
     }
