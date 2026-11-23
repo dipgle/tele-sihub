@@ -1500,6 +1500,90 @@ pub fn update_cfg(fresh: &Config) {
     }
 }
 
+/// Tên tệp nhận vào `.inbox`: NGÀY-GIỜ _ DỰ ÁN _ MÃ PHIÊN _ tên người gửi.
+///
+/// 🔴 Phiếu zkey 23/11 (Hà chuyển sang huba): `anh-<file_unique_id>.jpg` không
+/// có ngày, không phiên, không dự án, không người gửi — mở thư mục ra không biết
+/// tệp nào của việc nào. `file_unique_id` vẫn được giữ trong tên để tra ngược
+/// Telegram nếu tên gốc là ảnh.
+pub fn inbox_file_name(at: &str, du_an: &str, short: &str, goc: &str) -> String {
+    format!(
+        "{}_{}_{}_{}",
+        crate::exec::truncate(at, 20),
+        lam_sach(du_an, 24),
+        lam_sach(short, 16),
+        goc
+    )
+}
+
+/// Chỉ giữ chữ/số/`-`/`_`; thay phần còn lại bằng `-` (dự án có `/`, làn có khoảng trắng).
+fn lam_sach(s: &str, toi_da: usize) -> String {
+    let t: String = s
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let t = t.trim_matches('-');
+    let t: String = t.chars().take(toi_da).collect();
+    if t.is_empty() {
+        "khong-ro".to_string()
+    } else {
+        t
+    }
+}
+
+/// Hậu tố `-2`, `-3` … trước phần đuôi: `image.jpg` → `image-2.jpg`.
+fn chen_hau_to(ten: &str, lan: u32) -> String {
+    match ten.rsplit_once('.') {
+        Some((goc, duoi)) if !goc.is_empty() => format!("{goc}-{lan}.{duoi}"),
+        _ => format!("{ten}-{lan}"),
+    }
+}
+
+/// Ghi `bytes` vào `dir/ten` và **KHÔNG BAO GIỜ đè**: trùng tên thì thêm `-2`,
+/// `-3` … (tối đa 50), mỗi lần trùng ghi log `inbox_name_collision`.
+///
+/// 🔴 Đo được trên bản cũ (phiếu zkey 23/11): hai tệp cùng tên `image.jpg` ⟹
+/// `std::fs::write` ghi đè, bản 1 mất **im lặng**.
+pub fn ghi_khong_de(
+    dir: &std::path::Path,
+    ten: &str,
+    bytes: &[u8],
+) -> std::io::Result<std::path::PathBuf> {
+    use std::io::Write as _;
+    for lan in 1..=50u32 {
+        let dat = if lan == 1 {
+            ten.to_string()
+        } else {
+            chen_hau_to(ten, lan)
+        };
+        let dest = dir.join(&dat);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&dest)
+        {
+            Ok(mut f) => {
+                f.write_all(bytes)?;
+                return Ok(dest);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                logging::info("inbox_name_collision", json!({ "ten": dat, "lan": lan }));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "trùng tên quá 50 lần",
+    ))
+}
+
 impl Inbox {
     /// Bản cấu hình ĐANG dùng — đọc mỗi lượt, không giữ bản chụp lúc boot.
     ///
@@ -1765,7 +1849,11 @@ impl Inbox {
         // ấy; đổ chung một chỗ thì sau một tuần không ai biết cái nào còn dùng.
         // Id NGẮN (8 ký tự) — đúng thứ danh sách phiên và `claude stop` đang
         // dùng, nên nhìn thư mục là ghép được với dòng trên màn.
-        let short = focus.split('-').next().unwrap_or("").to_string();
+        //
+        // 🔴 Phiếu zkey 23/11: bản cũ cắt ở dấu `-`, nên id opencode (`ses_…`)
+        // ra NGUYÊN 30 ký tự và thư mục `.inbox` có hai kiểu đặt tên. Dùng
+        // `short_id` — CÙNG một nguồn với danh sách phiên.
+        let short = crate::sessions::short_id(&focus).to_string();
         let dir = dir.join(".inbox");
         let dir = if short.is_empty() {
             dir
@@ -1786,21 +1874,65 @@ impl Inbox {
             .and_then(|n| n.to_str())
             .filter(|n| !n.is_empty() && *n != "." && *n != "..")
             .unwrap_or("tep-nhan-duoc");
-        let dest = dir.join(safe);
-        if let Err(e) = std::fs::write(&dest, &bytes) {
-            logging::error(
-                "telegram_file_write_failed",
-                json!({ "err": e.to_string() }),
-            );
-            // Hỏng thì KHÔNG rút thành emoji: một dấu mặt buồn không nói được
-            // hỏng ở đâu, mà đây đúng lúc người gửi cần biết.
-            mark("😢");
-            let _ = self.send_text(&format!("\u{26a0} không ghi được tệp: {e}"));
-            return;
+        let at = chrono::Local::now().format("%Y%m%d-%H%M").to_string();
+        let du_an = crate::sessions::project_of(&focus)
+            .or_else(|| crate::pipeline::project_of_focus(&self.cfg()))
+            .unwrap_or_else(|| "khong-ro".to_string());
+        let ten_tep = inbox_file_name(&at, &du_an, &short, safe);
+        let dest = match ghi_khong_de(&dir, &ten_tep, &bytes) {
+            Ok(d) => d,
+            Err(e) => {
+                logging::error(
+                    "telegram_file_write_failed",
+                    json!({ "err": e.to_string(), "ten": ten_tep }),
+                );
+                // Hỏng thì KHÔNG rút thành emoji: một dấu mặt buồn không nói được
+                // hỏng ở đâu, mà đây đúng lúc người gửi cần biết.
+                mark("😢");
+                let _ = self.send_text(&format!("\u{26a0} không ghi được tệp: {e}"));
+                return;
+            }
+        };
+        // Sidecar cạnh tệp (phiếu zkey 23/11): tra ngược được tin nào gửi, lúc
+        // nào, caption gì, bao nhiêu byte, vân tay sha256 để biết hai tệp có
+        // THẬT SỰ giống nhau hay chỉ trùng tên.
+        let soi = serde_json::to_string_pretty(&json!({
+            "msg_id": msg_id,
+            "gui_luc": chrono::Utc::now().to_rfc3339(),
+            "nguoi_gui": serde_json::Value::Null,
+            "caption": caption,
+            "bytes": bytes.len(),
+            "sha256": crate::sha256::hex(&bytes),
+        }))
+        .unwrap_or_default();
+        let _ = ghi_khong_de(
+            &dir,
+            &format!(
+                "{}.json",
+                dest.file_name().and_then(|n| n.to_str()).unwrap_or("tep")
+            ),
+            soi.as_bytes(),
+        );
+        // Sổ mục của thư mục: phiên `tail` là thấy hết, không phải `ls` từng tệp.
+        let dong = format!(
+            "{}\t{}\t{}\n",
+            at,
+            dest.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+            crate::exec::truncate(caption.unwrap_or(""), 80).replace(['\n', '\t'], " ")
+        );
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("index.tsv"))
+        {
+            use std::io::Write as _;
+            let _ = f.write_all(dong.as_bytes());
         }
         logging::info(
             "telegram_file_received",
-            json!({ "name": safe, "bytes": bytes.len(), "dir": dir.display().to_string() }),
+            json!({ "name": dest.file_name().and_then(|n| n.to_str()).unwrap_or(""),
+                    "bytes": bytes.len(), "dir": dir.display().to_string(),
+                    "du_an": du_an, "short": short }),
         );
         // ✍ = đã nhận và đã ghi xuống đĩa. Đường dẫn KHÔNG cần thành một tin
         // riêng: nó đi vào phiên ngay dưới đây, tức tới đúng chỗ cần nó.

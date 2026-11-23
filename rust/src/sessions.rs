@@ -763,6 +763,15 @@ fn recall_folder(session_id: &str) -> Option<String> {
 }
 
 /// Chỉ trả nhãn mà phiên TỰ KHAI — `None` nếu cái đang nhớ chỉ là đếm được.
+/// Dự án đang NHỚ cho một phiên — cùng nguồn với nhãn trên màn.
+///
+/// Dùng cho tên tệp `.inbox` (phiếu zkey 23/11): tên tệp phải nói cùng một dự
+/// án mà dòng phiên nói. `recall_*` là bộ nhớ trong tiến trình `hubad`, nên chỗ
+/// gọi phải là CÙNG tiến trình với ảnh chụp phiên (Telegram thread là vậy).
+pub fn project_of(session_id: &str) -> Option<String> {
+    recall_declared(session_id).or_else(|| recall_folder(session_id))
+}
+
 fn recall_declared(session_id: &str) -> Option<String> {
     folder_memo()
         .lock()
@@ -873,6 +882,23 @@ fn strip_drawer(root: &Path, label: &str) -> String {
 /// Bỏ phiên editor khỏi danh sách (cùng ngày) làm ca `[dwork]` ấy hết, nhưng
 /// KHÔNG làm hết cả lớp: đo cùng lúc, `projects-fd` và `merge xem init-project`
 /// đều mang `AI/codetrail`.
+/// Tên GỐC của một hàng: dự án (+ làn) khi đã được giao, ngược lại là TIÊU ĐỀ
+/// phiên cắt ở 34 ký tự.
+///
+/// 🔴 Phiếu zkey 23/11: nhánh opencode từng trả `[projects]·<id8>` cho phiên mở
+/// ở gốc workspace — một cái tên KHÔNG nói việc gì, trong khi tiêu đề phiên thì
+/// có. Tách hàm để khoá được bằng bài kiểm (`phieu_zkey_20261123`).
+fn base_label(root: &Path, folder: &str, lane: &str, name: &str) -> String {
+    let f = folder.trim_matches('/');
+    if f.is_empty() {
+        crate::exec::truncate(name, 34)
+    } else if lane.is_empty() {
+        format!("[{}]", strip_drawer(root, f))
+    } else {
+        format!("[{}/{}]", strip_drawer(root, f), lane)
+    }
+}
+
 pub fn label_sessions(rows: &mut [LiveSession], root: &Path) {
     // 🔴 LÀN PHIÊN TỰ KHAI ĐỨNG TRONG NGOẶC, không phải tên việc đứng sau dấu
     // `·` — Hà 2026-08-22, ảnh chụp một tin có cả hai cái tên trong một khung:
@@ -890,16 +916,7 @@ pub fn label_sessions(rows: &mut [LiveSession], root: &Path) {
     // có trùng nhãn hay không nữa (xem khối 🔄 trong vòng lặp).
     let base: Vec<String> = rows
         .iter()
-        .map(|s| {
-            let f = s.folder.trim_matches('/');
-            if f.is_empty() {
-                s.name.clone()
-            } else if s.lane.is_empty() {
-                format!("[{}]", strip_drawer(root, f))
-            } else {
-                format!("[{}/{}]", strip_drawer(root, f), s.lane)
-            }
-        })
+        .map(|s| base_label(root, &s.folder, &s.lane, &s.name))
         .collect();
     // VIỆC ĐANG LÀM là thứ đứng sau dấu `·`, không phải mã id — Hà 2026-08-19.
     //
@@ -2294,12 +2311,32 @@ fn remember_lane(session_id: &str, lane: &str) {
 /// [`declared_in_tail_counted`].
 const KHAI_QUET_LUOT: usize = 12;
 
-fn assistant_label_text(record: &Value) -> Option<String> {
-    if record.get("type").and_then(Value::as_str) == Some("assistant") {
-        text_of(record)
-    } else {
-        None
+/// Chữ THẬT của một lượt assistant — bỏ khối chỉ-gọi-công-cụ.
+///
+/// 🔴 Phiếu zkey 23/11 (Hà chuyển sang huba): cửa sổ `KHAI_QUET_LUOT` đếm **bản
+/// ghi**, không đếm **lượt nói**. [`text_of`] dựng `[dùng Bash]` cho khối
+/// `tool_use` để dòng xem trước khỏi rỗng — và bộ đếm đọc nhãn ấy thành một
+/// lượt nói. Đo trên phiên opencode `ses_dfef9718…` (23/11 16:40): **12 bản ghi
+/// assistant gần nhất có 0 khối `text`**, toàn `reasoning` + `tool` ⇒ cửa sổ
+/// 12 đầy trước khi tới lượt nói nào, và lời tự khai thật rơi ra ngoài.
+fn assistant_spoken_text(record: &Value) -> Option<String> {
+    if record.get("type").and_then(Value::as_str) != Some("assistant") {
+        return None;
     }
+    let content = record.get("message")?.get("content")?;
+    if let Some(s) = content.as_str() {
+        return Some(s.trim().to_string()).filter(|s| !s.is_empty());
+    }
+    let joined = content
+        .as_array()?
+        .iter()
+        .filter_map(|block| match block.get("type").and_then(|t| t.as_str()) {
+            Some("text") => block.get("text").and_then(|t| t.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(joined.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 /// Lời tự khai mới nhất **kèm SỐ LƯỢT đồng ý với nó** trong `KHAI_QUET_LUOT`
@@ -2341,7 +2378,9 @@ fn declared_in_tail_counted(tail: &str, workspace_root: &str) -> Option<(String,
         let Ok(record) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        let Some(text) = assistant_label_text(&record) else {
+        // LƯỢT NÓI, không phải bản ghi: khối chỉ-gọi-công-cụ không tiêu một ô
+        // của cửa sổ — xem [`assistant_spoken_text`].
+        let Some(text) = assistant_spoken_text(&record) else {
             continue;
         };
         da_soi += 1;
@@ -2370,7 +2409,7 @@ fn declared_in_tail(tail: &str, workspace_root: &str) -> Option<(String, String)
             // Dòng đầu cụt là bình thường: đuôi bắt đầu giữa tệp.
             continue;
         };
-        let Some(text) = assistant_label_text(&record) else {
+        let Some(text) = assistant_spoken_text(&record) else {
             continue;
         };
         if let Some(parts) = declared_parts(&text, workspace_root) {
@@ -2522,13 +2561,107 @@ pub fn folder_for_session(
     workspace_root: &str,
     scope: &str,
 ) -> Option<String> {
+    folder_for_session_ev(session_id, tail, workspace_root, scope, None)
+}
+
+/// Dự án mà **tin nhắn ĐẦU** của người dùng chỉ ra: `cd <gốc>/<dự án> && …`.
+///
+/// 🔴 Phiếu zkey 23/11: cửa sổ tự khai đòi HAI lời khai khi `scope` rỗng, nhưng
+/// phiên opencode viết 10–20 bản ghi cho mỗi lượt (xem [`assistant_spoken_text`])
+/// nên thường chỉ còn MỘT. Câu `cd` là bằng chứng ĐỘC LẬP thứ hai: nó do chính
+/// người dùng gõ (`lenh-mo`/mở tay in ra), không phải tiền tố assistant tự viết.
+/// Cửa vẫn đứng: đường phải nằm TRONG workspace và thư mục phải CÓ THẬT.
+pub fn prompt_project(first: &str, workspace_root: &str) -> Option<String> {
+    let root = Path::new(workspace_root.trim_end_matches('/'));
+    if root.as_os_str().is_empty() {
+        return None;
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    for line in first.lines().take(40) {
+        let t = line.trim_start();
+        let Some(rest) = t.strip_prefix("cd ") else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        // Ba dạng đã đo: `cd /đường &&` · `cd '/đường' &&` · `cd "/đường" &&`.
+        let (path, sau) = if let Some(x) = rest.strip_prefix('\'') {
+            let Some((p, tail)) = x.split_once('\'') else {
+                continue;
+            };
+            (p, tail)
+        } else if let Some(x) = rest.strip_prefix('"') {
+            let Some((p, tail)) = x.split_once('"') else {
+                continue;
+            };
+            (p, tail)
+        } else {
+            let Some(p) = rest.split_whitespace().next() else {
+                continue;
+            };
+            // Phần SAU đường dẫn, không phải cả dòng — phải thấy `&&` mới tính.
+            (p, &rest[p.len()..])
+        };
+        if !sau.trim_start().starts_with("&&") || path.is_empty() {
+            continue;
+        }
+        let path = match path.strip_prefix('~') {
+            Some(duoi) if !home.is_empty() => format!("{home}{duoi}"),
+            _ => path.to_string(),
+        };
+        let full = Path::new(&path);
+        let rel = match full.strip_prefix(root) {
+            Ok(r) => r.to_path_buf(),
+            Err(_) => {
+                // Đường thật khác đường cấu hình (symlink — CLAUDE.md workspace).
+                let (Ok(r), Ok(f)) = (root.canonicalize(), full.canonicalize()) else {
+                    continue;
+                };
+                let Ok(r) = f.strip_prefix(&r) else { continue };
+                r.to_path_buf()
+            }
+        };
+        let parts: Vec<String> = rel
+            .components()
+            .filter_map(|c| c.as_os_str().to_str().map(str::to_string))
+            .collect();
+        // Chính gốc workspace = CHƯA giao dự án nào.
+        if parts.is_empty() {
+            continue;
+        }
+        let mut label = parts[0].clone();
+        for next in &parts[1..] {
+            let d = root.join(&label);
+            if !d.is_dir() || crate::config::looks_like_project(&d) {
+                break;
+            }
+            label = format!("{label}/{next}");
+        }
+        if root.join(&label).is_dir() {
+            return Some(label);
+        }
+    }
+    None
+}
+
+/// [`folder_for_session`] + bằng chứng thứ hai là chữ của **tin nhắn đầu** người
+/// dùng (opencode giữ nó ở `OcSession::first_prompt`).
+pub fn folder_for_session_ev(
+    session_id: &str,
+    tail: &str,
+    workspace_root: &str,
+    scope: &str,
+    first_prompt: Option<&str>,
+) -> Option<String> {
     let scope = (!scope.trim().is_empty()).then(|| scope.trim().to_string());
-    if let Some((declared, _lane, dong_y)) = declared_in_tail_counted(tail, workspace_root) {
+    let bang_chung = first_prompt.and_then(|p| prompt_project(p, workspace_root));
+    let khai = declared_in_tail_counted(tail, workspace_root);
+    let co_khai = khai.as_ref().map(|(d, _, _)| d.clone());
+    if let Some((declared, lane, dong_y)) = khai {
         // 🔴 MỘT LẦN LÀ NHẮC, HAI LẦN MỚI LÀ KHAI — cổng chống LẬT nhãn thêm
         // 2026-09-16, và từ 20/11 cũng là cổng chống GIEO: một tiền tố assistant
         // tự viết không phải bằng chứng độc lập về việc chủ máy đã giao dự án gì
-        // (ca 16/11). Lời khai đơn chỉ gieo được khi khớp scope; xem
-        // [`declared_in_tail_counted`] cho ca thật của cổng lật.
+        // (ca 16/11). Lời khai đơn chỉ gieo được khi khớp scope, hoặc khi tin
+        // nhắn ĐẦU của người dùng `cd` vào đúng dự án ấy ([`prompt_project`]).
         let cu = recall_declared(session_id);
         let initial = cu
             .clone()
@@ -2540,7 +2673,7 @@ pub fn folder_for_session(
             .lines()
             .rev()
             .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-            .filter_map(|record| assistant_label_text(&record))
+            .filter_map(|record| assistant_spoken_text(&record))
             .take(KHAI_QUET_LUOT)
             .collect();
         for text in texts.iter().rev() {
@@ -2548,6 +2681,16 @@ pub fn folder_for_session(
         }
         match reducer.current {
             Some((accepted, module)) => {
+                if accepted != declared && bang_chung.as_deref() == Some(declared.as_str()) {
+                    logging::info(
+                        "folder_label_seed_confirmed_by_prompt",
+                        json!({ "session": session_id, "du_an": declared,
+                                "why": "tin nhắn đầu của người dùng `cd` vào đúng dự án — bằng chứng \
+                                        độc lập thứ hai cho lời khai đơn lẻ" }),
+                    );
+                    remember_folder_ranked(session_id, &declared, &lane, true);
+                    return Some(declared);
+                }
                 if accepted != declared {
                     logging::info(
                         "folder_label_flip_refused",
@@ -2561,17 +2704,43 @@ pub fn folder_for_session(
                 return Some(accepted);
             }
             // Không nói im lặng: một lời khai bị từ chối là một quyết định.
-            None => logging::info(
-                "folder_label_seed_refused",
-                json!({ "session": session_id, "vua_thay": declared, "scope": scope,
-                        "dong_y": dong_y, "quet_luot": KHAI_QUET_LUOT,
-                        "why": "một tiền tố assistant đơn lẻ không khớp scope cwd — là NHẮC, chưa phải \
-                                được giao dự án" }),
-            ),
+            None => {
+                if bang_chung.as_deref() == Some(declared.as_str()) {
+                    logging::info(
+                        "folder_label_seed_confirmed_by_prompt",
+                        json!({ "session": session_id, "du_an": declared, "scope": scope,
+                                "dong_y": dong_y,
+                                "why": "lời khai đơn lẻ + tin nhắn đầu của người dùng `cd` vào đúng dự án" }),
+                    );
+                    remember_folder_ranked(session_id, &declared, &lane, true);
+                    return Some(declared);
+                }
+                logging::info(
+                    "folder_label_seed_refused",
+                    json!({ "session": session_id, "vua_thay": declared, "scope": scope,
+                            "dong_y": dong_y, "quet_luot": KHAI_QUET_LUOT,
+                            "why": "một tiền tố assistant đơn lẻ không khớp scope cwd — là NHẮC, chưa phải \
+                                    được giao dự án" }),
+                );
+            }
         }
     }
     if let Some(declared) = recall_declared(session_id) {
         return Some(declared);
+    }
+    // Chưa có lời khai nào, nhưng chính người dùng đã `cd` vào một dự án.
+    if let Some(du_an) = bang_chung {
+        if let Some(vua_thay) = co_khai {
+            // Lời khai đơn lẻ nói một dự án KHÁC bằng chứng ⟹ mâu thuẫn: không đoán.
+            logging::info(
+                "folder_label_seed_ambiguous",
+                json!({ "session": session_id, "vua_thay": vua_thay, "bang_chung": du_an,
+                        "why": "tin nhắn đầu `cd` vào dự án khác lời khai đơn lẻ — hai bằng chứng                                 không đồng ý thì để trung tính, không chọn hộ" }),
+            );
+            return None;
+        }
+        remember_folder_ranked(session_id, &du_an, "", true);
+        return Some(du_an);
     }
     let scope = scope?;
     // Ghi scope vào sổ để `lane_for_session` biết dự án đang giữ (một làn của lời
@@ -5970,13 +6139,26 @@ fn opencode_live_session(
             remember_folder_ranked(&s.id, &project, &module, true);
         }
     }
-    let folder = folder_for_session(&s.id, &s.tail, &ws, &scope)
+    // Bằng chứng thứ hai: chữ của tin nhắn ĐẦU (opencode giữ ở `first_prompt`) —
+    // phiếu zkey 23/11. Gốc workspace KHÔNG phải một dự án: trả RỖNG để nhãn rơi
+    // về TIÊU ĐỀ phiên (`label_sessions`), thay vì `[projects]·<id8>`.
+    let folder = folder_for_session_ev(&s.id, &s.tail, &ws, &scope, s.first_prompt.as_deref())
         .filter(|f| !f.is_empty())
         .unwrap_or_else(|| {
-            opencode_project_label(
+            let nhan = opencode_project_label(
                 &cfg.workspace_root,
                 s.project_dir.as_deref().unwrap_or(&s.directory),
-            )
+            );
+            let goc = cfg
+                .workspace_root
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            if scope.is_empty() && nhan == goc {
+                String::new()
+            } else {
+                nhan
+            }
         });
     let lane = lane_for_session(&s.id, &s.tail, &ws, head);
     let identity_note = history_error.into_inner().map(|err| {
@@ -10964,5 +11146,114 @@ mod denied_tools_tests {
         );
         assert!(tu_file.iter().any(|t| t == "WebFetch"));
         assert!(tu_file.iter().any(|t| t == "Bash(*deploy*)"));
+    }
+}
+
+#[cfg(test)]
+mod phieu_zkey_20261123 {
+    //! Phiếu zkey 23/11 (Hà chuyển sang huba): nhãn phiên + tên tệp `.inbox`.
+    //! Đây là các bài khoá RIÊNG cho phần nhãn; phần `.inbox` nằm ở
+    //! `tests/phieu_zkey_dat_ten.rs`.
+    use super::*;
+
+    fn dong_noi(text: &str) -> String {
+        json!({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}})
+            .to_string()
+    }
+
+    fn dong_tool() -> String {
+        json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "bash"}]}})
+            .to_string()
+    }
+
+    fn goc_co_du_an() -> tempfile::TempDir {
+        let d = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(d.path().join("zkey")).expect("mkdir zkey");
+        std::fs::create_dir_all(d.path().join("AI")).expect("mkdir AI");
+        d
+    }
+
+    /// Bằng chứng thứ hai: `cd <gốc>/<dự án> &&` ở tin nhắn ĐẦU.
+    #[test]
+    fn prompt_project_doc_ba_dang_cd() {
+        let d = goc_co_du_an();
+        let root = d.path().to_string_lossy().to_string();
+        assert_eq!(
+            prompt_project(&format!("cd {root}/zkey && đọc CLAUDE.md"), &root).as_deref(),
+            Some("zkey")
+        );
+        assert_eq!(
+            prompt_project(&format!("cd '{root}/zkey' && x"), &root).as_deref(),
+            Some("zkey")
+        );
+        assert_eq!(
+            prompt_project(&format!("cd \"{root}/zkey\" && x"), &root).as_deref(),
+            Some("zkey")
+        );
+        // Chính gốc workspace = CHƯA giao dự án nào (ca thật 23/11).
+        assert_eq!(prompt_project(&format!("cd {root} && x"), &root), None);
+        // Ngoài workspace, không có `cd`, và `cd` không kèm `&&` đều KHÔNG tính.
+        assert_eq!(prompt_project("cd /tmp/khong-co && x", &root), None);
+        assert_eq!(prompt_project("đọc CLAUDE.md", &root), None);
+        assert_eq!(prompt_project(&format!("cd {root}/zkey"), &root), None);
+    }
+
+    /// LƯỢT NÓI, không phải bản ghi: 20 bản ghi chỉ-gọi-công-cụ không được tiêu
+    /// ô của cửa sổ 12. Bản cũ đếm chúng ⟹ hai lời khai bị đẩy ra ngoài ⟹ từ
+    /// chối oan (đo trên `ses_dfef9718…`: 12 bản ghi gần nhất có 0 khối text).
+    #[test]
+    fn luot_chi_goi_cong_cu_khong_tieu_o_cua_so() {
+        let d = goc_co_du_an();
+        let root = d.path().to_string_lossy().to_string();
+        let mut tail = dong_noi("[zkey] bắt đầu việc");
+        for _ in 0..20 {
+            tail.push('\n');
+            tail.push_str(&dong_tool());
+        }
+        tail.push('\n');
+        tail.push_str(&dong_noi("[zkey] làm tiếp"));
+        let (du_an, _lan, dong_y) =
+            declared_in_tail_counted(&tail, &root).expect("phải thấy lời khai");
+        assert_eq!(du_an, "zkey");
+        assert_eq!(dong_y, 2, "hai LƯỢT NÓI, không phải hai bản ghi");
+    }
+
+    /// Một lời khai + tin nhắn đầu `cd` vào đúng dự án ⟹ NHẬN; thiếu bằng chứng
+    /// thứ hai ⟹ vẫn TỪ CHỐI (đối chứng ngược, để cổng không bị mở toang).
+    #[test]
+    fn loi_khai_don_can_bang_chung_tu_tin_nhan_dau() {
+        let d = goc_co_du_an();
+        let root = d.path().to_string_lossy().to_string();
+        let tail = dong_noi("[zkey] bắt đầu việc");
+        let id = "ses_test_phieu_zkey_loi_khai_don";
+        assert_eq!(folder_for_session_ev(id, &tail, &root, "", None), None);
+        let fp = format!("cd {root}/zkey && đọc CLAUDE.md");
+        assert_eq!(
+            folder_for_session_ev(id, &tail, &root, "", Some(&fp)).as_deref(),
+            Some("zkey")
+        );
+        // Bằng chứng cho dự án KHÁC thì không được nhận.
+        let id2 = "ses_test_phieu_zkey_bang_chung_sai";
+        let fp2 = format!("cd {root}/AI && x");
+        assert_eq!(
+            folder_for_session_ev(id2, &tail, &root, "", Some(&fp2)),
+            None
+        );
+    }
+
+    /// Chưa được giao dự án ⟹ nhãn là TIÊU ĐỀ phiên (cắt 34), không phải
+    /// `[projects]`/`[projects]·id8`.
+    #[test]
+    fn nhan_goc_la_tieu_de_phien() {
+        let root = Path::new("/x/projects");
+        assert_eq!(
+            base_label(root, "", "", "Zkey project handoff continuation"),
+            "Zkey project handoff continuation"
+        );
+        assert_eq!(base_label(root, "zkey", "", "Zkey"), "[zkey]");
+        assert_eq!(
+            base_label(root, "dwork", "A-DSIGN", "Zkey"),
+            "[dwork/A-DSIGN]"
+        );
     }
 }

@@ -959,10 +959,20 @@ fn cmd_sessions(db: &huba::db::Db, cfg: &Config, as_json: bool) -> Result<()> {
             })
             .unwrap_or_else(|| "—".into());
 
+        // CÙNG MỘT CHUỖI với dòng Telegram (phiếu zkey 23/11): `label` là danh
+        // tính đã chốt; `name` là tiêu đề phiên, chỉ in thêm khi nó KHÁC.
+        let ten = if s.label.is_empty() {
+            s.name.clone()
+        } else {
+            s.label.clone()
+        };
         println!(
             "  [{}] {:<24} {:>5} trước  pid {:<7} {}",
-            s.account, s.name, ago, s.pid, s.kind
+            s.account, ten, ago, s.pid, s.kind
         );
+        if !s.label.is_empty() && s.label != s.name {
+            println!("        «{}»", huba::exec::truncate(&s.name, 60));
+        }
         // Only when there is text. A withheld preview prints its reason on the
         // note line below; printing "(không có chữ)" there would read as "the
         // session said nothing", which is the opposite of what happened.

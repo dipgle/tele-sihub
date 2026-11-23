@@ -31,3 +31,4 @@ memory/
 
 # Cấu hình cục bộ của CLI (đường dẫn máy này) — không lên kho công khai.
 .claude/
+*.goc

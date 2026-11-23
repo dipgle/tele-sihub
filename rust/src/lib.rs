@@ -83,6 +83,7 @@ pub mod redis_mini;
 pub mod runtime;
 pub mod sessions;
 pub mod setup;
+pub mod sha256;
 /// Sổ việc một cửa trên Redis Streams: nhận → thực thi → trả, mỗi vai đánh dấu bước.
 pub mod so_viec;
 /// Telegram làm kênh RA LỆNH hai chiều, không chỉ cái loa.
