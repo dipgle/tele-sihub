@@ -34,8 +34,21 @@ việc sang phiên `huba`). Chép vào đây để giữ lâu; **chuỗi đo g�
 - `create_new`, trùng tên thì `-2`, `-3`, ghi log `inbox_name_collision`.
 - Thư mục luôn `short_id(session)`; thêm `index.tsv` mỗi thư mục (giờ · tên · caption 80 ký tự).
 
-## Trạng thái thực hiện (phiên huba, 23/11 — nhánh `feat/dat-ten`)
+## Trạng thái thực hiện (phiên huba, 23/11 — nhánh `feat/dat-ten` @ `604e048`)
 
-- A1–A4 + B: đã viết mã (xem commit trên nhánh). Bài kiểm: `rust/tests/phieu_zkey_dat_ten.rs`
-  và `mod phieu_zkey_20261123` trong `rust/src/sessions.rs`.
-- Số đo cuối cùng: xem khối sổ `memory/active-context.md` cùng ngày (ghi sau khi chạy gate).
+- **A1–A4 + B: đã viết + đo.**
+  - `assistant_spoken_text` — cửa sổ 12 đếm LƯỢT NÓI (bản ghi chỉ-gọi-công-cụ không tiêu ô).
+  - `prompt_project` / `folder_for_session_ev` — lời khai đơn + `cd … &&` ở tin nhắn đầu;
+    hai bằng chứng nói hai dự án khác nhau ⟹ trung tính + `folder_label_seed_ambiguous`.
+  - `base_label` — gốc workspace không còn `[projects]·id8`, nhãn = tiêu đề phiên.
+  - `huba sessions` in cùng chuỗi `label` với Telegram.
+  - `.inbox`: `inbox_file_name` + `ghi_khong_de` (`create_new`, `-2`/`-3`) + sidecar `.json`
+    (sha256 tự viết, khoá bằng véc-tơ FIPS) + `index.tsv`.
+- **Bài kiểm**: 4/4 unit (`mod phieu_zkey_20261123`) + 3/3 tích hợp (`tests/phieu_zkey_dat_ten.rs`).
+- **Đối chứng ngược**: `scripts/dot-bien-dat-ten.sh` — 3/3 ca cấy ĐỎ, mã gốc trả nguyên vẹn.
+- **fmt + clippy `-D warnings`** (all targets): sạch.
+- **Chạy thật** `huba sessions` trên 13 phiên: phiên `ses_dfef9718…` ra **`[zkey]`**
+  (trước: `[projects]·dfef9718`); phiên huba này ra `[huba]·df863a01` nhờ chính đường
+  bằng chứng `cd …/huba &&`.
+- **Còn**: gate đầy đủ + cài + nghiệm thu bằng mắt trên Telegram (xem `memory/active-context.md`).
+

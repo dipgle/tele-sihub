@@ -106,7 +106,6 @@ fn khai_hai_lan_thi_van_lat_duoc_nhan() {
         "khai HAI lần là đổi thật — cổng chống lật không được chặn ca này"
     );
 }
-
 /// 🔄 ĐẢO CHIỀU 2026-11-20, không xoá: phiên CHƯA có nhãn nào thì MỘT lời khai
 /// KHÔNG còn đủ để gieo — trừ khi nó khớp scope `cwd`.
 ///

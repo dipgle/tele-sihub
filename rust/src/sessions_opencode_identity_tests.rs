@@ -360,18 +360,13 @@ fn tool_paths(f: &Fixture, seq: i64, project: &str) {
     .unwrap();
 }
 
-fn root_dir_name(f: &Fixture) -> String {
-    f.cfg
-        .workspace_root
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned()
-}
-
 /// 16/11 real case: opened at the workspace root, the owner assigned nothing, a
-/// tool result named `zkey/…` paths. The label must stay the neutral scope (the
-/// root directory name), warm AND cold — never `zkey`, never `scripts`.
+/// tool result named `zkey/…` paths. Vế bất biến: đường dẫn công cụ không được
+/// gieo tên — never `zkey`, never `scripts`, warm AND cold.
+///
+/// 🔄 ĐẢO CHIỀU 2026-11-23 (Hà: *"Chỉ nên lấy tên ở vài lượt đầu thôi…"* · phiếu
+/// zkey): gốc workspace KHÔNG còn đọc ra `[projects]` kèm `·id8`; phiên chưa
+/// được giao dự án thì nhãn là TIÊU ĐỀ phiên.
 #[test]
 fn root_session_is_not_renamed_by_paths_in_tool_results() {
     let f = Fixture::new_at("root_paths", "");
@@ -383,11 +378,22 @@ fn root_session_is_not_renamed_by_paths_in_tool_results() {
     let warm = f.live(f.source());
     folder_memo().lock().unwrap().remove(&f.id);
     let cold = f.live(f.source());
-    let neutral = root_dir_name(&f);
-    assert_eq!(warm.folder, neutral, "warm: path census named the project");
-    assert_eq!(cold.folder, neutral, "cold: path census named the project");
+    assert!(
+        warm.folder.is_empty(),
+        "warm: path census named the project"
+    );
+    assert!(
+        cold.folder.is_empty(),
+        "cold: path census named the project"
+    );
     assert!(warm.lane.is_empty() && cold.lane.is_empty());
-    assert_eq!(f.label(warm).label, format!("[{neutral}]"));
+    let row = f.label(warm);
+    assert_eq!(
+        row.label, "UI handoff",
+        "nhãn = TIÊU ĐỀ phiên khi chưa giao dự án"
+    );
+    assert_ne!(row.label, "[zkey]");
+    assert_ne!(row.label, "[scripts]");
 }
 
 /// The assistant's lone prefix at the root is a mention, not an assignment —
@@ -396,12 +402,17 @@ fn root_session_is_not_renamed_by_paths_in_tool_results() {
 fn root_session_needs_two_prefixes_warm_and_cold() {
     let f = Fixture::new_at("root_one_prefix", "");
     f.message(1, "assistant", "[huba] Only one sentence says so.");
-    let neutral = root_dir_name(&f);
     let warm = f.live(f.source());
     folder_memo().lock().unwrap().remove(&f.id);
     let cold = f.live(f.source());
-    assert_eq!(warm.folder, neutral, "warm: a lone prefix seeded the name");
-    assert_eq!(cold.folder, neutral, "cold: a lone prefix seeded the name");
+    assert!(
+        warm.folder.is_empty(),
+        "warm: a lone prefix seeded the name"
+    );
+    assert!(
+        cold.folder.is_empty(),
+        "cold: a lone prefix seeded the name"
+    );
 
     f.message(2, "assistant", "[huba] And again, consistently.");
     let warm = f.live(f.source());

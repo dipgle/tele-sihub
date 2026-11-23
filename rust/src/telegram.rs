@@ -1898,7 +1898,7 @@ impl Inbox {
         // THẬT SỰ giống nhau hay chỉ trùng tên.
         let soi = serde_json::to_string_pretty(&json!({
             "msg_id": msg_id,
-            "gui_luc": chrono::Utc::now().to_rfc3339(),
+            "gui_luc": chrono::Local::now().to_rfc3339(),
             "nguoi_gui": serde_json::Value::Null,
             "caption": caption,
             "bytes": bytes.len(),
