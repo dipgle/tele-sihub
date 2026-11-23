@@ -43,6 +43,14 @@ struct SessionsCache {
     error: Option<String>,
 }
 
+/// Nhà cung cấp nội dung một phiên: nhận hàng phiên (JSON trong bản đệm) + giới hạn, trả JSON hoặc lời lỗi.
+pub type StreamFn =
+    Box<dyn Fn(&serde_json::Value, usize) -> Result<serde_json::Value, String> + Send + Sync>;
+
+/// Trần/mặc định số sự kiện của `/api/sessions/<id>/stream` (kẹp phía máy chủ, không tin tham số).
+const STREAM_DEFAULT: usize = 80;
+const STREAM_MAX: usize = 300;
+
 pub struct UiState {
     pub port: u16,
     pub ui_dir: PathBuf,
@@ -50,6 +58,7 @@ pub struct UiState {
     ticket: String,
     ticket_used: AtomicBool,
     sessions: RwLock<SessionsCache>,
+    stream_fn: RwLock<Option<StreamFn>>,
 }
 
 fn now_ms() -> i64 {
@@ -83,6 +92,7 @@ impl UiState {
             ticket,
             ticket_used: AtomicBool::new(false),
             sessions: RwLock::new(SessionsCache::default()),
+            stream_fn: RwLock::new(None),
         })
     }
 
@@ -98,6 +108,23 @@ impl UiState {
             }
             Err(e) => c.error = Some(e),
         }
+    }
+
+    /// Gắn nhà cung cấp nội dung phiên (mã chạy thật gắn `sessions::stream`; test gắn bản giả).
+    pub fn set_stream_provider(&self, f: StreamFn) {
+        *self.stream_fn.write().unwrap_or_else(|e| e.into_inner()) = Some(f);
+    }
+
+    /// Hàng phiên (JSON) theo id trong bản đệm; `None` nếu id không có trong danh sách đang đệm.
+    fn session_row(&self, id: &str) -> Option<serde_json::Value> {
+        let c = self.sessions.read().unwrap_or_else(|e| e.into_inner());
+        c.data
+            .as_ref()?
+            .get("sessions")?
+            .as_array()?
+            .iter()
+            .find(|s| s.get("session_id").and_then(|v| v.as_str()) == Some(id))
+            .cloned()
     }
 
     fn sessions_json(&self) -> serde_json::Value {
@@ -257,10 +284,68 @@ fn route(state: &UiState, req: &Req) -> Resp {
             state.sessions_json().to_string().into_bytes(),
         );
     }
+    if let Some(rest) = path.strip_prefix("/api/sessions/") {
+        if let Some(id) = rest.strip_suffix("/stream") {
+            return stream_route(state, id, query);
+        }
+    }
     if path.starts_with("/api/") {
         return text(404, "Không có đường API này");
     }
     serve_static(&state.ui_dir, path)
+}
+
+fn json_resp(status: u16, v: serde_json::Value) -> Resp {
+    mk(status, "application/json", v.to_string().into_bytes())
+}
+
+/// `GET /api/sessions/<id>/stream[?limit=N]`. `<id>` đi vào việc tìm TỆP nhật ký ⟹ chỉ nhận [A-Za-z0-9_-]{1,80} (sai ⟹ 400,
+/// không phải 404: không cho thử dò); id phải CÓ trong bản đệm (lạ ⟹ 404, không chạm nhà cung cấp); `limit` kẹp trong [1, 300].
+fn stream_route(state: &UiState, raw_id: &str, query: &str) -> Resp {
+    let id = percent_decode(raw_id);
+    if id.is_empty()
+        || id.len() > 80
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return json_resp(
+            400,
+            serde_json::json!({ "error": "id phiên không hợp lệ", "data": null }),
+        );
+    }
+    let limit = parse_form(query)
+        .get("limit")
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|n| *n >= 0)
+        .map(|n| (n as usize).clamp(1, STREAM_MAX))
+        .unwrap_or(STREAM_DEFAULT);
+    let Some(row) = state.session_row(&id) else {
+        return json_resp(
+            404,
+            serde_json::json!({ "error": "không có phiên này trong danh sách", "data": null }),
+        );
+    };
+    let guard = state.stream_fn.read().unwrap_or_else(|e| e.into_inner());
+    let Some(f) = guard.as_ref() else {
+        return json_resp(
+            503,
+            serde_json::json!({ "error": "chưa cấu hình nguồn nội dung phiên", "data": null }),
+        );
+    };
+    match f(&row, limit) {
+        Ok(v) => json_resp(
+            200,
+            serde_json::json!({ "data": v, "now_ms": now_ms(), "error": null }),
+        ),
+        Err(e) => {
+            crate::logging::warn(
+                "ui_stream_failed",
+                serde_json::json!({ "session": id, "err": e }),
+            );
+            json_resp(500, serde_json::json!({ "error": e, "data": null }))
+        }
+    }
 }
 
 /// Tệp tĩnh dưới `ui_dir`. `400` cho đường dẫn dị dạng, `404` cho không thấy HOẶC thoát khỏi `ui_dir`.
@@ -449,6 +534,28 @@ fn produce_sessions(cfg: &crate::config::Config) -> Result<serde_json::Value, St
     serde_json::to_value(&snap).map_err(|e| format!("không mã hoá được snapshot: {e}"))
 }
 
+/// Nội dung MỘT phiên từ nhật ký của CLI. Hiện chỉ Claude có nguồn (`sessions::stream`); phiên khác trả ghi chú thật thà thay vì
+/// một khung chat rỗng (rỗng = nói dối rằng phiên chưa nói gì).
+fn produce_stream(
+    cfg: &crate::config::Config,
+    row: &serde_json::Value,
+    limit: usize,
+) -> Result<serde_json::Value, String> {
+    let id = row.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
+    let cwd = row.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+    let kind = row.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+    if kind != "interactive" {
+        return Ok(serde_json::json!({
+            "session_id": id,
+            "events": [],
+            "older_hidden": 0,
+            "note": format!("Giao diện chưa đọc được nội dung phiên loại «{kind}» (hiện chỉ Claude). Xem bằng Telegram /shot hoặc terminal.")
+        }));
+    }
+    let st = crate::sessions::stream(cfg, id, cwd, limit);
+    serde_json::to_value(&st).map_err(|e| format!("không mã hoá được nội dung phiên: {e}"))
+}
+
 /// `huba ui`: mở cổng 127.0.0.1, in URL (có vé), tuỳ chọn mở cửa sổ, rồi phục vụ mãi.
 pub fn serve(cfg: crate::config::Config, ui_dir: PathBuf, open: bool) -> anyhow::Result<()> {
     if !ui_dir.join("index.html").is_file() {
@@ -466,6 +573,10 @@ pub fn serve(cfg: crate::config::Config, ui_dir: PathBuf, open: bool) -> anyhow:
     if open {
         crate::localserver::open_window(&url, "ui");
     }
+    let cfg_stream = cfg.clone();
+    state.set_stream_provider(Box::new(move |row, limit| {
+        produce_stream(&cfg_stream, row, limit)
+    }));
     let state = std::sync::Arc::new(state);
     let cfg_dem = cfg.clone();
     spawn_refresher(

@@ -13,3 +13,22 @@
 .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 .nav-badge{white-space:nowrap}
 .sidebar .collapse .nav-label{font-size:12px;line-height:1.3;text-align:left}
+
+/* Chat (K3) */
+.sess-link{color:inherit;text-decoration:none}.sess-link:hover b{color:var(--accent);text-decoration:underline}
+.chat-wrap{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:18px;align-items:start}
+.timeline{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:18px;max-height:calc(100vh - 380px);min-height:260px;overflow:auto}
+.ev.say{margin:14px 0}.ev .who{font-size:10px;color:var(--muted);margin-bottom:4px;letter-spacing:.3px}
+.ev .bubble{padding:10px 14px;border-radius:12px;background:#f3f6f7;overflow-wrap:anywhere;font-size:13px}
+.ev.say.user .bubble{background:var(--accent-bg)}
+.ev.tool{font-size:11px;color:var(--muted);margin:6px 0 6px 6px;overflow-wrap:anywhere}
+.ev.tool code,.bubble code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;background:#eef1f3;padding:1px 5px;border-radius:4px}
+details.ev{margin:6px 0 6px 6px;font-size:11px;color:var(--muted)}details.ev pre{max-height:220px}
+.codeblock{position:relative;margin:8px 0}.codeblock .copy{position:absolute;right:8px;top:8px;font-size:10px;padding:2px 8px}
+pre{background:#f4f6f7;padding:12px;border-radius:8px;overflow:auto;font-size:11.5px;margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.details{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:14px}
+.tabs{display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap}.tab{font-size:11px;padding:5px 10px;border-radius:8px;border:0;background:none}
+.tab.on{background:var(--accent-bg);color:var(--accent)}
+.meta{display:grid;grid-template-columns:auto 1fr;gap:6px 12px;font-size:12px;margin:0}.meta dt{color:var(--muted)}.meta dd{margin:0;overflow-wrap:anywhere}
+.composer{display:flex;gap:10px;margin-top:16px}.composer textarea{flex:1;resize:none;font-size:12px;padding:10px;border-radius:10px;border:1px solid var(--line);background:#f6f8f9}
+@media(max-width:1000px){.chat-wrap{grid-template-columns:1fr}}

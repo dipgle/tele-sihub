@@ -11,7 +11,7 @@ const NAV = [
   ['chat', '◫', 'Chat'], ['sessions', '▦', 'Phiên'], ['reports', '▥', 'Báo cáo token'], ['accounts', '♙', 'Tài khoản & model'],
   ['connections', '⌁', 'Kết nối'], ['projects', '▱', 'Dự án'], ['activity', '≋', 'Hoạt động'], ['settings', '⚙', 'Cài đặt'],
 ];
-const LIVE = new Set(['sessions']); // màn đã làm thật; còn lại hiện «Sắp có»
+const LIVE = new Set(['sessions', 'chat']); // màn đã làm thật; còn lại hiện «Sắp có»
 const PAGE_SIZE = 10;
 const REFRESH_MS = 5000;
 const STALE_MS = 30000; // bản đệm cũ hơn mức này ⟹ gọi là «dữ liệu cũ» dù không có lỗi
@@ -19,8 +19,10 @@ const STALE_MS = 30000; // bản đệm cũ hơn mức này ⟹ gọi là «dữ
 const S = { resp: null, netError: null, fetchedAt: 0, q: '', status: 'all', page: 1 };
 
 function route() {
-  const h = (location.hash || '#sessions').slice(1);
-  return NAV.some((n) => n[0] === h) ? h : 'sessions';
+  const [h, arg] = (location.hash || '#sessions').slice(1).split('/');
+  let a = '';
+  try { a = arg ? decodeURIComponent(arg) : ''; } catch { a = ''; }
+  return { name: NAV.some((n) => n[0] === h) ? h : 'sessions', arg: a };
 }
 
 // ── dữ liệu ────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -90,7 +92,7 @@ function filtered(all) {
 
 // ── dựng trang ───────────────────────────────────────────────────────────────────────────────────────────────────────
 function renderNav() {
-  const cur = route();
+  const cur = route().name;
   $('#nav').innerHTML = NAV.map(([id, icon, label]) => {
     const live = LIVE.has(id);
     return `<a href="#${id}" title="${esc(label)}" class="nav-item ${cur === id ? 'active' : ''}${live ? '' : ' soon'}"` +
@@ -142,7 +144,7 @@ function renderSessions() {
     const tr = slice.map((s, i) => {
       const st = stateOf(s);
       return `<tr data-testid="row" data-id="${esc(s.session_id)}"><td>${from + i + 1}</td>` +
-        `<td><b>${esc(s.label || s.name)}</b><br><small>${esc(s.name)}</small></td>` +
+        `<td><a class="sess-link" href="#chat/${encodeURIComponent(s.session_id)}" data-testid="open-chat"><b>${esc(s.label || s.name)}</b></a><br><small>${esc(s.name)}</small></td>` +
         `<td>${esc(s.folder || base(s.cwd) || '—')}</td><td>${esc(s.account || '—')}</td>` +
         `<td><span class="pill ${st.cls}"><span class="dot"></span>${esc(st.label)}</span></td>` +
         `<td title="${esc(s.last_activity)}">${esc(relTime(s.last_activity))}</td>` +
@@ -172,15 +174,136 @@ function renderComing(id) {
     `<p>Màn này chưa được làm. Kế hoạch: <code>docs/ui/ke-hoach-cong-viec.md</code>.</p></div></div>`;
 }
 
+// ── Chat: xem nội dung MỘT phiên (K3). Chỉ đọc — gửi từ ứng dụng là K4. ────────────────────────────────────────────────
+const C = { id: '', data: null, error: null, netError: null, fetchedAt: 0, tab: 'phien', loading: false };
+
+async function loadChat() {
+  const { name, arg } = route();
+  if (name !== 'chat' || !arg) return;
+  if (C.id !== arg) { C.id = arg; C.data = null; C.error = null; C.netError = null; C.tab = 'phien'; }
+  C.loading = C.data === null;
+  try {
+    const r = await fetch('/api/sessions/' + encodeURIComponent(arg) + '/stream?limit=120', { credentials: 'same-origin', cache: 'no-store' });
+    const j = await r.json().catch(() => ({}));
+    if (r.status === 401) C.netError = 'Phiên đăng nhập hết hạn — chạy lại `huba ui` để lấy liên kết mới';
+    else if (r.status === 404) { C.error = 'Không có phiên này trong danh sách (có thể đã tắt).'; C.data = null; C.netError = null; }
+    else if (!r.ok) { C.error = j.error || 'Máy chủ huba trả mã ' + r.status; C.netError = null; }
+    else { C.data = j.data; C.error = null; C.netError = null; C.fetchedAt = Date.now(); }
+  } catch (e) {
+    C.netError = 'Mất kết nối tới huba (' + e.message + ')';
+  }
+  C.loading = false;
+  if (route().name === 'chat' && route().arg === arg) render();
+}
+
+/** Markdown AN TOÀN tối thiểu: khối ```, `mã` và **đậm** (xử lý SAU khi escape) — mọi thứ khác là chữ thường đã escape; không liên kết, không HTML. */
+function md(text) {
+  const parts = String(text ?? '').split('```');
+  return parts.map((seg, i) => {
+    if (i % 2 === 1) {
+      const code = seg.replace(/^[^\n]*\n/, (m) => (/^[A-Za-z0-9_+-]*\n$/.test(m) ? '' : m)); // bỏ dòng tên ngôn ngữ
+      return `<div class="codeblock"><button type="button" class="copy" data-copy>Sao chép</button><pre><code>${esc(code.replace(/\n$/, ''))}</code></pre></div>`;
+    }
+    return esc(seg).replace(/`([^`\n]+)`/g, '<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>');
+  }).join('');
+}
+
+function eventHtml(ev) {
+  const who = ev.role === 'user' ? 'Bạn' : 'Claude';
+  const when = ev.ts ? ` · ${esc(new Date(ev.ts).toLocaleTimeString('vi-VN'))}` : '';
+  const held = ev.withheld ? '<span class="pill red">Nội dung bị giữ lại</span> ' : '';
+  if (ev.kind === 'say') {
+    return `<div class="ev say ${esc(ev.role)}" data-testid="ev" data-kind="say" data-role="${esc(ev.role)}"><div class="who">${who}${when}</div>` +
+      `<div class="bubble">${held}${md(ev.text)}</div></div>`;
+  }
+  if (ev.kind === 'tool') {
+    return `<div class="ev tool" data-testid="ev" data-kind="tool">▸ <b>${esc(ev.name || 'công cụ')}</b> <code>${esc(cut(ev.text, 160))}</code></div>`;
+  }
+  const label = ev.kind === 'think' ? 'Suy nghĩ' : 'Kết quả công cụ';
+  return `<details class="ev ${esc(ev.kind)}" data-testid="ev" data-kind="${esc(ev.kind)}"><summary>${label}${ev.name ? ' · ' + esc(ev.name) : ''}</summary>` +
+    `<pre>${esc(cut(ev.text, 4000))}</pre></details>`;
+}
+
+function chatMeta(id) {
+  const all = sessions() || [];
+  return all.find((x) => x.session_id === id) || null;
+}
+
+function renderChat() {
+  const { arg } = route();
+  if (!arg) {
+    return `<div class="page"><div class="page-top"><div><div class="eyebrow">Chat</div><h1>Chọn một phiên</h1></div></div>` +
+      `<div class="card empty" data-testid="chat-pick"><div class="empty-icon">◫</div><h2>Chưa chọn phiên</h2>` +
+      `<p>Mở màn <a href="#sessions">Phiên</a> rồi bấm tên một phiên để xem nội dung.</p></div></div>`;
+  }
+  if (C.id !== arg) { C.id = arg; C.data = null; C.error = null; C.netError = null; C.tab = 'phien'; loadChat(); }
+  const m = chatMeta(arg);
+  const evs = C.data && Array.isArray(C.data.events) ? C.data.events : null;
+  let tl;
+  if (C.netError && evs === null) tl = `<div class="notice error" role="alert" data-testid="notice">⚠ ${esc(C.netError)}</div>`;
+  else if (C.error && evs === null) tl = `<div class="notice error" role="alert" data-testid="notice">⚠ ${esc(C.error)}</div>`;
+  else if (evs === null) tl = '<div data-testid="loading"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>';
+  else if (evs.length === 0) {
+    tl = `<div class="empty" data-testid="chat-empty"><h2>${C.data.note ? 'Chưa đọc được nội dung' : 'Chưa có hội thoại'}</h2>` +
+      `<p>${esc(C.data.note || 'Phiên này chưa có lượt nào đọc được trong nhật ký.')}</p></div>`;
+  } else {
+    tl = (C.data.older_hidden > 0 ? `<div class="notice info" data-testid="older">${C.data.older_hidden} sự kiện cũ hơn chưa hiện.</div>` : '') + evs.map(eventHtml).join('');
+  }
+  const warn = (C.netError && evs !== null ? `<div class="notice error" role="alert" data-testid="notice">⚠ ${esc(C.netError)} — đang hiện nội dung CŨ.</div>` : '') +
+    (C.error && evs !== null ? `<div class="notice error" role="alert" data-testid="notice">⚠ ${esc(C.error)} — đang hiện nội dung CŨ.</div>` : '');
+  const st = m ? stateOf(m) : null;
+  const tabs = [['phien', 'Phiên'], ['goc', 'Nội dung gốc'], ['hoat-dong', 'Hoạt động']];
+  let panel;
+  if (C.tab === 'goc') panel = '<p data-testid="tab-goc">Chưa làm. Cần chủ máy chốt mức dữ liệu «gốc» cần xem (kế hoạch K3.5) — không tự đoán.</p>';
+  else if (C.tab === 'hoat-dong') panel = '<p data-testid="tab-hd">Sắp có.</p>';
+  else if (!m) panel = '<p data-testid="tab-phien">Phiên này không còn trong danh sách phiên đang chạy.</p>';
+  else panel = `<dl class="meta" data-testid="tab-phien"><dt>Tài khoản</dt><dd>${esc(m.account || '—')}</dd><dt>Loại</dt><dd>${esc(m.kind)}</dd>` +
+    `<dt>Thư mục</dt><dd>${esc(m.cwd || '—')}</dd><dt>Trạng thái</dt><dd>${esc(st.label)}</dd><dt>Hoạt động cuối</dt><dd>${esc(relTime(m.last_activity))}</dd>` +
+    `<dt>Mã phiên</dt><dd><code>${esc(m.session_id)}</code></dd></dl>`;
+  return `<div class="page chat-page"><div class="page-top"><div><div class="eyebrow">Chat</div>` +
+    `<h1 data-testid="chat-title">${esc(m ? (m.label || m.name) : arg)}</h1>` +
+    `<p>${st ? `<span class="pill ${st.cls}"><span class="dot"></span>${esc(st.label)}</span> · ` : ''}Chỉ xem — làm mới mỗi ${REFRESH_MS / 1000} giây.</p></div>` +
+    `<div class="actions"><a class="link-button" href="#sessions">‹ Danh sách phiên</a></div></div>${warn}` +
+    `<div class="chat-wrap"><section class="timeline" id="timeline" aria-label="Nội dung phiên">${tl}</section>` +
+    `<aside class="details"><div class="tabs" role="tablist">${tabs.map(([k, t]) => `<button type="button" role="tab" class="tab${C.tab === k ? ' on' : ''}" aria-selected="${C.tab === k}" data-tab="${k}">${t}</button>`).join('')}</div>` +
+    `<div class="tabpanel">${panel}</div></aside></div>` +
+    `<div class="composer" data-testid="composer"><label for="msg" class="sr-only">Tin nhắn</label>` +
+    `<textarea id="msg" disabled rows="2" placeholder="Gửi từ ứng dụng chưa có (bước K4). Hiện chỉ xem; gõ vào phiên bằng Telegram hoặc terminal."></textarea>` +
+    `<button type="button" disabled>Gửi</button></div></div>`;
+}
+
+/** Giữ vị trí cuộn của khung hội thoại qua mỗi lần dựng lại; đang ở đáy thì bám đáy. */
+function chatScroll() {
+  const t = document.getElementById('timeline');
+  if (!t) return null;
+  return { top: t.scrollTop, bottom: t.scrollHeight - t.scrollTop - t.clientHeight < 40 };
+}
+function chatRestore(k) {
+  const t = document.getElementById('timeline');
+  if (!t) return;
+  if (k === null) { t.scrollTop = t.scrollHeight; return; } // lần đầu vào: xuống cuối (tin mới nhất)
+  t.scrollTop = k.bottom ? t.scrollHeight : k.top;
+}
+
 function render() {
   renderNav();
   renderHeader();
-  const id = route();
-  $('#main').innerHTML = LIVE.has(id) ? renderSessions() : renderComing(id);
+  const { name: id } = route();
+  const keep = chatScroll();
+  $('#main').innerHTML = id === 'chat' ? renderChat() : LIVE.has(id) ? renderSessions() : renderComing(id);
+  chatRestore(keep);
 }
 
 // ── sự kiện (không có trình xử lý nội dòng: CSP chặn) ───────────────────────────────────────────────────────────────────
 $('#main').addEventListener('click', (e) => {
+  const cp = e.target.closest('button[data-copy]');
+  if (cp) {
+    const code = cp.parentElement.querySelector('code');
+    navigator.clipboard?.writeText(code ? code.textContent : '').then(() => { cp.textContent = 'Đã chép'; setTimeout(() => (cp.textContent = 'Sao chép'), 1200); }).catch(() => { cp.textContent = 'Không chép được'; });
+    return;
+  }
+  const tb = e.target.closest('button[data-tab]');
+  if (tb) { C.tab = tb.dataset.tab; render(); return; }
   const b = e.target.closest('button[data-act]');
   if (!b || b.disabled) return;
   S.page += b.dataset.act === 'next' ? 1 : -1;
@@ -195,9 +318,11 @@ $('#collapse').addEventListener('click', () => {
   $('#collapse').setAttribute('aria-expanded', String(!c));
   $('#collapse').setAttribute('aria-label', c ? 'Mở rộng menu' : 'Thu gọn menu');
 });
-window.addEventListener('hashchange', render);
+window.addEventListener('hashchange', () => { render(); loadChat(); });
 
 render();
 load();
 setInterval(load, REFRESH_MS);
+setInterval(loadChat, REFRESH_MS);
+loadChat();
 setInterval(() => { renderHeader(); }, 1000); // đồng hồ «cũ» chạy cả khi chưa có lần tải mới
