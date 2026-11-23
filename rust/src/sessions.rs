@@ -6734,6 +6734,20 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
     // là nối vào một câu đã nói xong.
     mark_lane_from_ledger(&mut out.sessions, &cfg.workspace_root);
     label_sessions(&mut out.sessions, &cfg.workspace_root);
+    // GHIM tên xuống đĩa sau khi nhãn đã tính (Quang 23/11) — `hub_home` rỗng (test dựng tay) thì không có chỗ ghi.
+    if !cfg.hub_home.as_os_str().is_empty() {
+        let root_name = cfg
+            .workspace_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        crate::ten_phien::pin_labels_at(
+            &mut out.sessions,
+            &cfg.hub_home.join("data").join("ten-phien.json"),
+            root_name,
+            chrono::Utc::now().timestamp(),
+        );
+    }
     out.hidden_editor = hidden_editor;
     if hidden_editor > 0 {
         logging::info(
