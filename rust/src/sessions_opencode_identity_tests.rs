@@ -243,8 +243,9 @@ fn an_accepted_project_change_does_not_reuse_the_old_module() {
     f.message(2, "assistant", "[other] New project, explicitly repeated.");
     f.message(3, "assistant", "[other] New project, still no module.");
     let row = f.live(f.source());
-    assert_eq!(row.folder, "other");
-    assert!(row.lane.is_empty());
+    // `[huba/ui]` khớp scope `huba` ⇒ đó là danh tính ĐẦU TIÊN ĐƯỢC CHỐT; các lượt
+    // `[other]` sau đó KHÔNG đổi tên (Hà 23/11 22:2x).
+    assert_eq!((row.folder.as_str(), row.lane.as_str()), ("huba", "ui"));
 }
 
 #[test]
@@ -320,12 +321,19 @@ fn warm_and_cold_accept_a_repeated_project_transition() {
     append_tool_batch(&f);
     folder_memo().lock().unwrap().remove(&f.id);
     let cold = f.live(f.source());
-    assert_eq!((warm.folder, warm.lane), ("other".into(), "review".into()));
-    assert_eq!((cold.folder, cold.lane), ("other".into(), "review".into()));
+    assert_eq!((warm.folder, warm.lane), ("huba".into(), "ui".into()));
+    assert_eq!((cold.folder, cold.lane), ("huba".into(), "ui".into()));
 }
 
+/// 🔄 ĐẢO CHIỀU 2026-11-23 22:2x — Hà: *"Phiên mở của dự án nào là cố định mãi
+/// không có đổi, trừ khi map nhầm ngay từ đầu"*. Danh tính ĐẦU TIÊN ĐƯỢC CHỐT là
+/// `other` (hai lượt); lượt quay lại `huba` sau đó KHÔNG đổi tên.
+///
+/// 🪦 Luật cũ: *"a real intervening transition must clear the old module"* — hết
+/// hiệu lực cùng ngày, vì nó đòi đọc nhật ký mọi vòng chỉ để có thể đổi một cái
+/// tên Hà nói không cần đổi.
 #[test]
-fn missed_intervening_project_change_does_not_resurrect_a_module() {
+fn later_project_moves_do_not_rewrite_the_first_identity() {
     let f = Fixture::new("unseen_transition");
     f.message(1, "assistant", "[huba/ui] Original identity.");
     f.live(f.source());
@@ -334,11 +342,9 @@ fn missed_intervening_project_change_does_not_resurrect_a_module() {
     f.message(4, "assistant", "[huba] Returned, no module declared.");
     f.message(5, "assistant", "[huba] Return confirmed.");
     let row = f.live(f.source());
-    assert_eq!(row.folder, "huba");
-    assert!(
-        row.lane.is_empty(),
-        "a real intervening transition must clear the old module"
-    );
+    // Chốt một lần: `[huba/ui]` khớp scope nên đó là danh tính ĐẦU TIÊN ĐƯỢC CHỐT;
+    // đi ra `other` rồi quay lại cũng KHÔNG đổi (Hà 23/11 22:2x).
+    assert_eq!((row.folder.as_str(), row.lane.as_str()), ("huba", "ui"));
 }
 
 /// A tool result naming `project` paths, shaped like the real 16/11 case.

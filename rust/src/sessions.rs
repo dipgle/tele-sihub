@@ -2653,6 +2653,13 @@ pub fn folder_for_session_ev(
     first_prompt: Option<&str>,
 ) -> Option<String> {
     let scope = (!scope.trim().is_empty()).then(|| scope.trim().to_string());
+    // 🔴 Hà 23/11 22:2x (chốt qua hộp chọn trên Telegram): **tên chốt MỘT LẦN**.
+    // *"Chỉ nên lấy tên ở vài lượt đầu thôi, sau thì lấy làm gì"* — đã có tên thì
+    // KHÔNG đọc lại nhật ký để đổi nữa (đọc 256 KiB × mọi phiên × mỗi vòng ~10 s
+    // cũng là cái giá thật). Luật cũ «đổi dự án thật thì đổi được tên» ĐÃ BỎ.
+    if let Some(da_chot) = recall_declared(session_id) {
+        return Some(da_chot);
+    }
     let bang_chung = first_prompt.and_then(|p| prompt_project(p, workspace_root));
     let khai = declared_in_tail_counted(tail, workspace_root);
     let co_khai = khai.as_ref().map(|(d, _, _)| d.clone());
@@ -2676,10 +2683,20 @@ pub fn folder_for_session_ev(
             .filter_map(|record| assistant_spoken_text(&record))
             .take(KHAI_QUET_LUOT)
             .collect();
+        // 🔴 CHỐT Ở LẦN NHẬN ĐẦU TIÊN (Hà 23/11 22:2x): đi XUÔI từ đầu cửa sổ và
+        // DỪNG ngay khi bộ giảm nhận một cái tên — nên "nạp lạnh" (memo rỗng,
+        // phát lại lịch sử) ra CÙNG tên với "nạp nóng" đang giữ memo. Nếu lấy
+        // `reducer.current` sau khi đẩy hết, lượt khai giữa đời phiên sẽ thắng và
+        // nạp lạnh lệch nạp nóng — đúng thứ 3 bài kiểm warm/cold canh.
+        let mut da_chot: Option<(String, String)> = None;
         for text in texts.iter().rev() {
             reducer.push(declared_parts(text, workspace_root));
+            if let Some(cur) = reducer.current.clone() {
+                da_chot = Some(cur);
+                break;
+            }
         }
-        match reducer.current {
+        match da_chot {
             Some((accepted, module)) => {
                 if accepted != declared && bang_chung.as_deref() == Some(declared.as_str()) {
                     logging::info(
@@ -6142,24 +6159,30 @@ fn opencode_live_session(
     // Bằng chứng thứ hai: chữ của tin nhắn ĐẦU (opencode giữ ở `first_prompt`) —
     // phiếu zkey 23/11. Gốc workspace KHÔNG phải một dự án: trả RỖNG để nhãn rơi
     // về TIÊU ĐỀ phiên (`label_sessions`), thay vì `[projects]·<id8>`.
-    let folder = folder_for_session_ev(&s.id, &s.tail, &ws, &scope, s.first_prompt.as_deref())
-        .filter(|f| !f.is_empty())
-        .unwrap_or_else(|| {
-            let nhan = opencode_project_label(
-                &cfg.workspace_root,
-                s.project_dir.as_deref().unwrap_or(&s.directory),
-            );
-            let goc = cfg
-                .workspace_root
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default();
-            if scope.is_empty() && nhan == goc {
-                String::new()
-            } else {
-                nhan
-            }
-        });
+    // Tên đọc từ ĐẦU phiên (xem `opencode::fill_heads_v2`); `tail` chỉ để xem
+    // trước/làn/câu hỏi. Hà 23/11 22:2x: *"tên lấy ở vài lượt đầu"*.
+    let nguon_ten = if s.head.is_empty() {
+        s.tail.as_str()
+    } else {
+        s.head.as_str()
+    };
+    let folder = folder_for_session_ev(&s.id, nguon_ten, &ws, &scope, s.first_prompt.as_deref());
+    let folder = folder.filter(|f| !f.is_empty()).unwrap_or_else(|| {
+        let nhan = opencode_project_label(
+            &cfg.workspace_root,
+            s.project_dir.as_deref().unwrap_or(&s.directory),
+        );
+        let goc = cfg
+            .workspace_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if scope.is_empty() && nhan == goc {
+            String::new()
+        } else {
+            nhan
+        }
+    });
     let lane = lane_for_session(&s.id, &s.tail, &ws, head);
     let identity_note = history_error.into_inner().map(|err| {
         format!(

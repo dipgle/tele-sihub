@@ -81,12 +81,15 @@ fn mot_lan_nhac_ten_khong_lat_duoc_nhan_dang_giu() {
     );
 }
 
-/// Chiều ngược: phiên THẬT SỰ đổi dự án thì vẫn phải đổi được nhãn.
+/// 🔄 ĐẢO CHIỀU 2026-11-23 22:2x — Hà chốt qua hộp chọn trên Telegram:
+/// **tên chốt MỘT LẦN**, không đổi giữa đời phiên (*"sau thì lấy làm gì"*).
 ///
-/// Cổng chống lật mà chặn luôn cả lượt đổi thật thì nó không phải cổng, nó là
-/// một cái nhãn đông cứng.
+/// 🪦 Luật cũ (giữ nguyên văn): *"Chiều ngược: phiên THẬT SỰ đổi dự án thì vẫn
+/// phải đổi được nhãn. Cổng chống lật mà chặn luôn cả lượt đổi thật thì nó
+/// không phải cổng, nó là một cái nhãn đông cứng."* — hết hiệu lực: cái giá của
+/// nó là đọc nhật ký mọi vòng để có thể đổi một cái tên Hà nói không cần đổi.
 #[test]
-fn khai_hai_lan_thi_van_lat_duoc_nhan() {
+fn ten_da_chot_khong_doi_du_khai_hai_lan() {
     let ws = workspace();
     let sid = "test-doi-that-9c44d3fe";
 
@@ -102,8 +105,8 @@ fn khai_hai_lan_thi_van_lat_duoc_nhan() {
     ]);
     assert_eq!(
         huba::sessions::folder_for_session(sid, &sau, &ws, "").as_deref(),
-        Some("huba"),
-        "khai HAI lần là đổi thật — cổng chống lật không được chặn ca này"
+        Some("dwork"),
+        "tên đã chốt thì các lượt sau KHÔNG được đổi (Hà 23/11 22:2x)"
     );
 }
 /// 🔄 ĐẢO CHIỀU 2026-11-20, không xoá: phiên CHƯA có nhãn nào thì MỘT lời khai

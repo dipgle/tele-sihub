@@ -54,6 +54,10 @@ pub struct OcSession {
     /// Claude — xem [`fill_tails_v2`]. Rỗng khi kho không có `session_message`.
     #[serde(skip)]
     pub tail: String,
+    /// ĐẦU phiên dựng theo cùng hình dạng với `tail` (xem [`fill_heads_v2`]) —
+    /// nguồn ĐẶT TÊN: Hà 23/11 *"tên lấy ở vài lượt đầu"*, không lấy ở đuôi.
+    #[serde(skip)]
+    pub head: String,
     /// `true` bận · `false` rảnh · `None` kho không khai — từ `time_busy` /
     /// `time_idle` của `session_v2` ([`fill_state_v2`]).
     #[serde(skip)]
@@ -141,8 +145,110 @@ pub fn read_sessions_at(path: &Path) -> Result<Vec<OcSession>, String> {
         out.retain(|s| !fork_cua_huba.contains(&s.id));
     }
     fill_tails_v2(&conn, &mut out)?;
+    fill_heads_v2(&conn, &mut out)?;
     fill_first_prompts_v2(&conn, &mut out)?;
     Ok(out)
+}
+
+/// Dựng MỘT bản ghi nhật ký kiểu Claude vào `out` từ một bản ghi `session_message`
+/// thật của opencode: dòng thô (để xem trước) + câu hỏi treo + chữ.
+///
+/// Dùng chung cho [`fill_tails_v2`] (đuôi — xem trước/làn/câu hỏi) và
+/// [`fill_heads_v2`] (đầu — ĐẶT TÊN), nên hai cửa không thể đọc khác nhau.
+fn them_ban_ghi(out: &mut String, kind: &str, data: &str) {
+    out.push_str(&exec::truncate(data, TAIL_RAW_CHARS).replace('\n', " "));
+    out.push('\n');
+    if kind != "assistant" {
+        return;
+    }
+    let Ok(v) = serde_json::from_str::<Value>(data) else {
+        return;
+    };
+    let hoi = v
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|items| cau_hoi_treo_kieu_claude(items))
+        .unwrap_or_default();
+    if !hoi.is_empty() {
+        let rec = serde_json::json!({ "type": "assistant", "message": { "content": hoi } });
+        out.push_str(&rec.to_string());
+        out.push('\n');
+    }
+    let text = v
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter(|it| it.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|it| it.get("text").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    if text.is_empty() {
+        return;
+    }
+    let rec = serde_json::json!({
+        "type": "assistant",
+        "message": { "content": [ { "type": "text", "text": text } ] }
+    });
+    out.push_str(&rec.to_string());
+    out.push('\n');
+}
+
+/// ĐẦU phiên (bản ghi `HEAD_ROWS` đầu) — nguồn ĐẶT TÊN.
+///
+/// 🔴 Hà 23/11 22:2x: *"Phiên mở của dự án nào là cố định mãi không có đổi"* +
+/// *"tên lấy ở vài lượt đầu"*. Đuôi của phiên dài là việc hôm nay; đọc đuôi để
+/// đặt tên vừa sai vừa đắt. Nạp lạnh (memo rỗng) phải ra CÙNG tên với nạp nóng —
+/// đó là điều 3 bài kiểm warm/cold canh.
+fn fill_heads_v2(conn: &Connection, sessions: &mut [OcSession]) -> Result<(), String> {
+    use rusqlite::params_from_iter;
+    if !has_table(conn, "session_message")? {
+        return Ok(());
+    }
+    let ids: Vec<&str> = sessions
+        .iter()
+        .take(TAIL_SESSIONS)
+        .map(|s| s.id.as_str())
+        .collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let ph = vec!["?"; ids.len()].join(",");
+    let sql = format!(
+        "SELECT session_id, type, data FROM ( \
+             SELECT session_id, type, data, seq, \
+                    ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY seq ASC) rn \
+             FROM session_message WHERE session_id IN ({ph}) \
+         ) WHERE rn <= {HEAD_ROWS} ORDER BY session_id, seq ASC"
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("đọc đầu session_message: {e}"))?;
+    let rows = stmt
+        .query_map(params_from_iter(ids.iter()), |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| format!("truy vấn đầu session_message: {e}"))?;
+    let mut heads: BTreeMap<String, String> = BTreeMap::new();
+    for row in rows {
+        let (sid, kind, data) = row.map_err(|e| format!("đọc đầu session_message: {e}"))?;
+        them_ban_ghi(heads.entry(sid).or_default(), &kind, &data);
+    }
+    for s in sessions.iter_mut() {
+        if let Some(t) = heads.remove(&s.id) {
+            s.head = t;
+        }
+    }
+    Ok(())
 }
 
 /// [`OcSession::first_prompt`] — `text` của bản ghi `user` có `seq` nhỏ nhất.
@@ -275,6 +381,10 @@ const TAIL_ROWS: usize = 40;
 /// Trần ký tự cho một bản ghi thô trong đuôi (chỉ để ĐẾM đường dẫn).
 const TAIL_RAW_CHARS: usize = 6000;
 
+/// Bao nhiêu bản ghi ĐẦU phiên dùng để ĐẶT TÊN (Hà 23/11: *"lấy tên ở vài lượt
+/// đầu"*). 4× cửa sổ đếm 12 lượt nói, đủ cho phiên opencode ghi 10–20 bản ghi/lượt.
+const HEAD_ROWS: usize = 40;
+
 /// Dựng đuôi phiên theo hình dạng nhật ký Claude cho [`OcSession::tail`].
 ///
 /// 🔴 Quang 2026-11-12: *"làm sao để chạy được như dùng acc khác, nó phải cùng
@@ -324,48 +434,7 @@ fn fill_tails_v2(conn: &Connection, sessions: &mut [OcSession]) -> Result<(), St
     let mut tails: BTreeMap<String, String> = BTreeMap::new();
     for row in rows {
         let (sid, kind, data) = row.map_err(|e| format!("đọc đuôi session_message: {e}"))?;
-        let tail = tails.entry(sid).or_default();
-        tail.push_str(&exec::truncate(&data, TAIL_RAW_CHARS).replace('\n', " "));
-        tail.push('\n');
-        if kind != "assistant" {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(&data) else {
-            continue;
-        };
-        let hoi = v
-            .get("content")
-            .and_then(Value::as_array)
-            .map(|items| cau_hoi_treo_kieu_claude(items))
-            .unwrap_or_default();
-        if !hoi.is_empty() {
-            let rec = serde_json::json!({ "type": "assistant", "message": { "content": hoi } });
-            tail.push_str(&rec.to_string());
-            tail.push('\n');
-        }
-        let text = v
-            .get("content")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter(|it| it.get("type").and_then(Value::as_str) == Some("text"))
-                    .filter_map(|it| it.get("text").and_then(Value::as_str))
-                    .map(str::trim)
-                    .filter(|t| !t.is_empty())
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .unwrap_or_default();
-        if text.is_empty() {
-            continue;
-        }
-        let rec = serde_json::json!({
-            "type": "assistant",
-            "message": { "content": [ { "type": "text", "text": text } ] }
-        });
-        tail.push_str(&rec.to_string());
-        tail.push('\n');
+        them_ban_ghi(tails.entry(sid).or_default(), &kind, &data);
     }
     for s in sessions.iter_mut() {
         if let Some(t) = tails.remove(&s.id) {
@@ -925,6 +994,7 @@ fn query_sessions(
                 first_prompt: None,
                 project_dir,
                 tail: String::new(),
+                head: String::new(),
                 busy: None,
             })
         })

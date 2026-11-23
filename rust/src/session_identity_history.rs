@@ -116,11 +116,18 @@ pub(super) fn opencode_head(
         super::KHAI_QUET_LUOT,
         Some(scope.to_string()),
     );
+    // 🔴 Hà 23/11 22:2x: danh tính chốt ở lần nhận ĐẦU TIÊN — nạp lạnh phải ra
+    // cùng tên với nạp nóng. Đi XUÔI lịch sử và DỪNG ngay khi bộ giảm nhận.
+    let mut da_chot: Option<(String, String)> = None;
     for row in rows {
         let text = row.map_err(|e| format!("read identity history: {e}"))?;
         reducer.push(super::declared_parts(&text, workspace_root));
+        if let Some(cur) = reducer.current.clone() {
+            da_chot = Some(cur);
+            break;
+        }
     }
-    Ok(reducer.current.map(|(folder, lane)| {
+    Ok(da_chot.map(|(folder, lane)| {
         as_tail(&if lane.is_empty() {
             folder
         } else {
