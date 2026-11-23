@@ -6497,9 +6497,18 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
                     // Danh tính nằm gọn trong `folder_for_session`: phiên tự khai
                     // (hai lượt, hoặc một lượt khớp scope `cwd`) > scope > chưa
                     // giao. Đường dẫn trong log KHÔNG phải nguồn nào cả.
-                    row.folder =
-                        folder_for_session(&row.session_id, &tail, &ws, &scope_label(&ws, &cwd))
-                            .unwrap_or_default();
+                    // 🔴 Hà 23/11: *"Chỉ nên lấy tên ở vài lượt đầu thôi, sau thì
+                    // lấy làm gì"* — tên đọc từ **64 KiB ĐẦU** của nhật ký (vài lượt
+                    // đầu), không đọc đuôi: đuôi của phiên dài là việc hôm nay, không
+                    // phải dự án được giao lúc mở phiên.
+                    let head_cho_ten = read_head(&path).ok();
+                    row.folder = folder_for_session(
+                        &row.session_id,
+                        head_cho_ten.as_deref().unwrap_or(&tail),
+                        &ws,
+                        &scope_label(&ws, &cwd),
+                    )
+                    .unwrap_or_default();
                     // SAU `folder_for_session`, không trước: chính lượt ấy ghi
                     // lời khai mới nhất vào sổ, nên hỏi trước là đọc sổ cũ.
                     row.lane =
