@@ -41,13 +41,19 @@ if [ "${1:-}" = "--verify" ]; then
   if cmp -s "$t/a" "$t/b"; then echo "✅ KHỚP — bản cài là hubad của thư mục này"; else echo "❌ LỆCH — bản cài khác hubad của thư mục này"; exit 1; fi
   launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 \
     && echo "✅ $LABEL đang nạp" || { echo "❌ $LABEL KHÔNG nạp — ~/Library/Logs/hubd.err"; exit 1; }
+  # Giao diện web: `huba ui` tìm `ui/` cạnh binary CLI ($DIR/huba) — thiếu thì lệnh chết dù bản cài khớp.
+  if [ -f "$DIR/ui/index.html" ]; then
+    echo "✅ giao diện $DIR/ui ($(ls "$DIR/ui" | tr '\n' ' '))"
+  else
+    echo "❌ thiếu $DIR/ui/index.html — chạy lại trình cài từ gói có thư mục ui/"; exit 1
+  fi
   exit 0
 fi
 
 for f in kem/scripts/cong_bao_mat.py kem/scripts/bao-mat-policy.json kem/scripts/cong-bao-mat-plugin/index.js \
          kem/scripts/mo-dau-phien.py kem/scripts/nhac-chuyen-phien.py \
          kem/bin/project-agent kem/huba_cai_linux.py kem/CLAUDE.md kem/tai-khoan.mau.json \
-         cli-ghim.env com.dipgle.hubd.plist sign.sh make-signing-cert.sh; do
+         cli-ghim.env com.dipgle.hubd.plist sign.sh make-signing-cert.sh ui/index.html; do
   [ -f "$SRC/$f" ] || { echo "❌ gói thiếu $f — dựng lại bằng scripts/dong-goi-mac.sh"; exit 2; }
 done
 for f in kem/claude/skills kem/claude/agents; do
@@ -64,6 +70,8 @@ if [ "$SRC" != "$(mkdir -p "$DIR" && cd "$DIR" && pwd)" ]; then
     cp -p "$SRC/$f" "$DIR/$f.moi" && mv -f "$DIR/$f.moi" "$DIR/$f" || exit 1
   done
   rm -rf "$DIR/kem.moi" && cp -Rp "$SRC/kem" "$DIR/kem.moi" && rm -rf "$DIR/kem" && mv "$DIR/kem.moi" "$DIR/kem" || exit 1
+  # Giao diện web `huba ui`: `default_ui_dir` tìm `ui/` CẠNH binary CLI, mà CLI nằm ở $DIR/huba.
+  rm -rf "$DIR/ui.moi" && cp -Rp "$SRC/ui" "$DIR/ui.moi" && rm -rf "$DIR/ui" && mv "$DIR/ui.moi" "$DIR/ui" || exit 1
   echo "  ✓ $(ls "$DIR" | tr '\n' ' ')"
   exec bash "$DIR/install_mac.sh" "$@"
 fi

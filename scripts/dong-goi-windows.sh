@@ -72,6 +72,9 @@ cp "$KEM_SRC/cong-bao-mat-plugin/index.js" "$KEM_SRC/cong-bao-mat-plugin/package
 # Bộ cấu hình dùng chung với Linux (cùng tệp nguồn; trên Windows nó tạo JUNCTION thay symlink).
 cp "$H/scripts/huba_cai_linux.py" "$D/kem/huba_cai.py"
 cp "$H/scripts/CLAUDE-goc-workspace.md" "$D/kem/CLAUDE.md"
+# Giao diện web `huba ui`: `default_ui_dir` tìm `ui/` cạnh binary CLI (huba.exe) ⇒ gói phải mang nó.
+[ -f "$H/ui/index.html" ] || { echo "KHÔNG ĐO ĐƯỢC: thiếu $H/ui/index.html — gói thiếu giao diện thì không đóng"; exit 2; }
+cp -Rp "$H/ui" "$D/ui"
 for k in skills agents; do
   rsync -a --exclude '.DS_Store' "$W/.claude/$k/" "$D/kem/claude/$k/"
 done

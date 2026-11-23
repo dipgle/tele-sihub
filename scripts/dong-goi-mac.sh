@@ -54,6 +54,9 @@ cp "$KEM_SRC/cong_bao_mat.py" "$KEM_SRC/bao-mat-policy.json" "$KEM_SRC/mo-dau-ph
 cp "$KEM_SRC/cong-bao-mat-plugin/index.js" "$KEM_SRC/cong-bao-mat-plugin/package.json" "$D/kem/scripts/cong-bao-mat-plugin/"
 cp "$H/scripts/huba_cai_linux.py" "$D/kem/huba_cai_linux.py"
 cp "$H/scripts/CLAUDE-goc-workspace.md" "$D/kem/CLAUDE.md"
+# Giao diện web `huba ui`: `default_ui_dir` tìm `ui/` cạnh binary CLI ⇒ gói phải mang nó.
+[ -f "$H/ui/index.html" ] || { echo "KHÔNG ĐO ĐƯỢC: thiếu $H/ui/index.html — gói thiếu giao diện thì không đóng"; exit 2; }
+cp -Rp "$H/ui" "$D/ui"
 for k in skills agents; do
   mkdir -p "$D/kem/claude"
   rsync -a --exclude '.DS_Store' "$W/.claude/$k/" "$D/kem/claude/$k/"
