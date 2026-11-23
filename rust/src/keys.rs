@@ -6221,27 +6221,48 @@ fn la_chan_opencode(line: &str) -> bool {
 ///   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀      ← viền đáy
 /// ```
 ///
-/// Neo ở viền đáy `╹▀`: dòng ngay trên phải là dòng `┃ … · …` (agent · model), rồi lấy dải dòng có lề `┃` liền kề phía trên.
-/// Lời nhắn cũ của chủ máy trong lịch sử cũng có lề `┃`, nhưng chúng cách ô nhập bởi dòng chân lượt trả lời (không lề) nên
-/// dải dừng ở đó. Màn chưa có hội thoại (trang chào) không có dòng `agent · model` ngay trên viền ⟹ `None`.
+/// Neo ở viền đáy `╹▀`: dòng ngay trên phải là dòng `┃ … · …` (agent · model). Ô nhập là KHỐI GIỮA hai dòng đệm `┃` trống:
+/// bỏ đúng MỘT dòng đệm dưới (ngay trên dòng agent·model), rồi gom các dòng CÓ CHỮ liền nhau đi lên, dừng ở dòng `┃` trống
+/// (đệm trên). Ô trống ⟹ dòng ngay sau đệm dưới đã trống ⟹ kết quả rỗng.
+///
+/// 🔴 KHÔNG lấy «mọi dòng `┃` liền kề» (bản đầu, sai) — Quang 23/11 16:18: *«Tin gửi được rồi nhưng vẫn báo thế này»*. Lịch sử
+/// cũng vẽ lời nhắn của chủ máy bằng lề `┃`, và khi phiên CHƯA trả lời thì tin vừa gửi nằm SÁT ô nhập, chỉ cách vài dòng `┃`
+/// trống (màn thật: `tests/fixtures/man-opencode-tin-vua-gui-sat-o-nhap-20261123.txt`, bốn dòng trống rồi tới dòng agent·model).
+/// Bản đầu nuốt tin ấy vào «ô nhập» ⟹ `still_in_box` thấy chữ ⟹ HAI Enter thừa vào phiên + báo «chữ VẪN NẰM trong ô nhập».
+/// Màn chưa có hội thoại (trang chào) không có dòng `agent · model` ngay trên viền ⟹ `None`.
 pub fn opencode_input_text(screen: &str) -> Option<String> {
     let lines: Vec<&str> = screen.lines().collect();
     let day = lines.iter().rposition(|l| {
         let t = l.trim_start();
         t.starts_with('╹') && t.chars().nth(1) == Some('▀')
     })?;
-    let model = lines.get(day.checked_sub(1)?)?.trim_start();
+    let dong_model = day.checked_sub(1)?;
+    let model = lines.get(dong_model)?.trim_start();
     if !model.starts_with('┃') || !model.contains(" · ") {
         return None;
     }
+    // Chữ sau lề `┃` của dòng `k` (`None` nếu dòng không có lề).
+    let sau_le = |k: usize| lines[k].trim_start().strip_prefix('┃').map(str::trim);
+    let Some(mut j) = dong_model.checked_sub(1) else {
+        return Some(String::new());
+    };
+    if sau_le(j) == Some("") {
+        // đệm dưới
+        match j.checked_sub(1) {
+            Some(k) => j = k,
+            None => return Some(String::new()),
+        }
+    }
     let mut trong: Vec<&str> = Vec::new();
-    let mut i = day - 1;
-    while i > 0 {
-        i -= 1;
-        let Some(rest) = lines[i].trim_start().strip_prefix('┃') else {
-            break;
-        };
-        trong.push(rest.trim());
+    loop {
+        match sau_le(j) {
+            Some(t) if !t.is_empty() => trong.push(t),
+            _ => break, // đệm trên (┃ trống) hoặc hết lề ⟹ hết ô nhập
+        }
+        match j.checked_sub(1) {
+            Some(k) => j = k,
+            None => break,
+        }
     }
     trong.reverse();
     Some(trong.join("\n"))

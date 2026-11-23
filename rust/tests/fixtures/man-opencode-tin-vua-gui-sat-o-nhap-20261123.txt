@@ -1,0 +1,18 @@
+     + Thought · 7.5s
+     → Asked 1 question
+     Build · DeepSeek V4.1 Flash 1017 · 7h 18m · 57.2 tok/s · interrupted
+  ┃
+  ┃  Kiểm lại bộ 1000 tài khoản đi có pass rồi trước vẫn làm sao giờ lại hỏi
+  ┃
+  ┃  [NHẮC VÀO PHIÊN — cơ chế tự chèn, thay hook SessionStart mà phiên opencode không có] Trước khi trả lời tin trên, làm theo luật «LỆNH ĐẦU TIÊN CỦA
+  ┃  MỌI PHIÊN» của CLAUDE.md: cổng duy nhất là `bash ~/projects/scripts/phien.sh mo <tên-dự-án>` (rồi đọc `<dự án>/CLAUDE.md`). Tin trên ĐÃ nêu tên dự
+  ┃  án ⇒ chạy cổng ngay với tên đó. CHƯA nêu ⇒ đừng tự đứng vào dự án nào, HỎI MỘT CÂU: «Bạn làm việc ở dự án nào? (nêu tên) — hoặc chỉ trao đổi.» Nếu
+  ┃  người dùng chọn chỉ trao đổi ⇒ cứ trao đổi, không mở dự án, không ghi tệp vào dự án nào. Câu hỏi thật ngắn của tin trên vẫn trả lời bình thường sau
+  ┃  khi đã hỏi/chạy xong.
+  ┃
+  ┃
+  ┃
+  ┃
+  ┃  Build · DeepSeek V4.1 Flash 1017 OpenCode Go · high
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ■■■■■■⬝⬝ esc interrupt                                                                                                    364.4K (36%)  ctrl+p commands    /mnt/data/projects:main

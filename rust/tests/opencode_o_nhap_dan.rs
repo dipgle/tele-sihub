@@ -81,6 +81,71 @@ fn the_placeholder_only_counts_for_a_multi_line_paste() {
     assert!(!still_in_box(MAN_KET, "một câu một dòng dài hơn sáu ký tự"));
 }
 
+// ── Tin VỪA GỬI nằm SÁT ô nhập (Quang 23/11 16:18: «Tin gửi được rồi nhưng vẫn báo thế này») ────────────────────────────
+//
+// Bản đầu của `opencode_input_text` lấy MỌI dòng có lề `┃` liền kề phía trên dòng agent·model. Khi phiên chưa kịp trả lời, lịch
+// sử cuối cùng là chính tin vừa gửi — cũng vẽ bằng lề `┃`, chỉ cách ô nhập bằng vài dòng `┃` trống — nên tin ấy bị nuốt vào «ô
+// nhập», `still_in_box` thấy chữ của nó, huba bấm HAI Enter thừa rồi báo «chữ VẪN NẰM trong ô nhập» (log 09:18:48
+// `keys_enter_again` ×2 · `keys_text_stuck_in_box`). Màn thật: `fixtures/man-opencode-tin-vua-gui-sat-o-nhap-20261123.txt`.
+const MAN_SAT: &str = include_str!("fixtures/man-opencode-tin-vua-gui-sat-o-nhap-20261123.txt");
+const TIN_VUA_GUI: &str = "Kiểm lại bộ 1000 tài khoản đi có pass rồi trước vẫn làm sao giờ lại hỏi";
+const BON_DONG_TRONG_VA_DONG_MODEL: &str =
+    "  ┃\n  ┃\n  ┃\n  ┃\n  ┃  Build · DeepSeek V4.1 Flash 1017 OpenCode Go · high";
+
+#[test]
+fn a_message_just_sent_that_sits_flush_against_the_box_is_not_the_input() {
+    assert!(
+        MAN_SAT.contains(BON_DONG_TRONG_VA_DONG_MODEL),
+        "tệp mẫu phải đúng hình dạng thật: tin cũ, bốn dòng `┃` trống, dòng agent·model"
+    );
+    assert_eq!(
+        opencode_input_text(MAN_SAT).as_deref(),
+        Some(""),
+        "ô nhập trống: tin cũ trong lịch sử KHÔNG phải chữ trong ô"
+    );
+    assert!(
+        !still_in_box(MAN_SAT, TIN_VUA_GUI),
+        "tin đã đi (hiện trong lịch sử) mà bị đọc là còn nằm trong ô"
+    );
+    assert_eq!(delivery_on_screen(MAN_SAT, TIN_VUA_GUI), Delivered::Gone);
+}
+
+#[test]
+fn text_waiting_in_the_box_after_a_flush_message_is_still_seen_and_the_old_message_is_not() {
+    // Chống sửa quá tay: tin cũ sát ô nhập VÀ ô có một câu chưa gửi ⟹ thấy câu của ô, không thấy tin cũ.
+    let cau_cho = "Câu tôi vừa gõ mà chưa bấm gửi đi nhé";
+    let man = MAN_SAT.replacen(
+        BON_DONG_TRONG_VA_DONG_MODEL,
+        &format!(
+            "  ┃\n  ┃\n  ┃  {cau_cho}\n  ┃\n  ┃  Build · DeepSeek V4.1 Flash 1017 OpenCode Go · high"
+        ),
+        1,
+    );
+    assert_ne!(man, MAN_SAT, "bài kiểm phải thật sự cấy câu vào ô");
+    assert_eq!(opencode_input_text(&man).as_deref(), Some(cau_cho));
+    assert!(
+        still_in_box(&man, cau_cho),
+        "chữ đang chờ trong ô phải được thấy"
+    );
+    assert!(
+        !still_in_box(&man, TIN_VUA_GUI),
+        "tin cũ trong lịch sử không được tính là chữ trong ô"
+    );
+}
+
+#[test]
+fn a_two_line_input_is_read_whole() {
+    let man = MAN_SAT.replacen(
+        BON_DONG_TRONG_VA_DONG_MODEL,
+        "  ┃\n  ┃\n  ┃  dòng một của câu chưa gửi\n  ┃  dòng hai của câu chưa gửi\n  ┃\n  ┃  Build · DeepSeek V4.1 Flash 1017 OpenCode Go · high",
+        1,
+    );
+    assert_eq!(
+        opencode_input_text(&man).as_deref(),
+        Some("dòng một của câu chưa gửi\ndòng hai của câu chưa gửi")
+    );
+}
+
 #[test]
 fn input_text_is_read_from_the_opencode_box_only() {
     let trong = opencode_input_text(MAN_KET).expect("màn phiên opencode có ô nhập");
