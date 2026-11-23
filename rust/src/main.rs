@@ -168,6 +168,19 @@ enum Command {
         #[arg(short = 's', long = "session")]
         session: Option<String>,
     },
+    /// Gửi chữ vào ô nhập của MỘT phiên khác rồi Enter — phiên nhờ phiên, qua huba
+    ///
+    /// Quang 19/11 *«mọi giao tiếp phiên qua huba»*; 23/11 chọn *gửi thẳng, báo
+    /// Tele*. Cùng lõi gõ với route `/type` (`keys::type_and_send`); chữ đi kèm nhãn
+    /// `[huba · từ <phiên gửi>]`, và mỗi lần gõ chủ máy nhận một dòng 📨 trên
+    /// Telegram. KHÔNG gõ khi phiên đích đang mở hộp chọn. Xem `gui_phien.rs`.
+    /// Thoát 0 đã gửi · 1 từ chối · 2 không đo được / gõ mà chưa thấy chữ đi.
+    Gui {
+        /// id phiên đích — đủ hoặc rút gọn (tiền tố phải khớp ĐÚNG một phiên)
+        session: String,
+        /// chữ gửi — một tham số trong ngoặc kép; dài thì ghi tệp rồi gửi đường dẫn
+        text: String,
+    },
     /// Windows: ĐO trên máy thật trước khi tin bản Windows — bảng tiến trình,
     /// gõ + đọc console (cổ điển VÀ Windows Terminal), `claude --version`, tên
     /// thư mục nhật ký. Không cần cấu hình. Thoát 0 đạt hết · 1 có mục hỏng ·
@@ -309,6 +322,7 @@ fn real_main() -> Result<()> {
         Command::Effort { level, session } => {
             std::process::exit(cmd_effort(&cfg, &level, session.as_deref()))
         }
+        Command::Gui { session, text } => std::process::exit(cmd_gui(&cfg, &session, &text)),
         // Đã xử lý TRƯỚC `config::load` (đầu `real_main`) — tới được đây là lỗi luồng.
         Command::WindowsTuKiem { .. } | Command::LinuxTuKiem => Err(anyhow::anyhow!(
             "lệnh tự kiểm phải được xử lý trước khi nạp cấu hình"
@@ -466,6 +480,9 @@ fn cmd_effort(cfg: &Config, level: &str, session: Option<&str>) -> i32 {
         return 2;
     };
     let who = huba::sessions::shown(target);
+    // Hạng gấp — cùng lý do với `cmd_gui`: sau lượt chụp danh sách, hạng nền có
+    // thể đã hết ngân sách hỏi Terminal và `window_of` bị cấm hỏi.
+    let _lane = huba::exec::urgent();
     let w = match huba::keys::window_of(&target.tty) {
         Ok(Some(w)) => w,
         Ok(None) => {
@@ -490,6 +507,125 @@ fn cmd_effort(cfg: &Config, level: &str, session: Option<&str>) -> i32 {
             2
         }
     }
+}
+
+/// `huba gui <id> "<chữ>"` — xem doc-comment của `Command::Gui` và `gui_phien.rs`.
+///
+/// Thứ tự: chữ hợp lệ (trước ảnh chụp — lượt ấy spawn `claude agents` mọi tài
+/// khoản) · đích đúng MỘT phiên, không phải chính mình · có cửa sổ · màn không có
+/// hộp chọn · gõ · báo Telegram. Mọi đường dừng đều nói ra và ghi log.
+fn cmd_gui(cfg: &Config, session: &str, text: &str) -> i32 {
+    use huba::gui_phien::{self, Dich};
+    if let Err(e) = gui_phien::chu_gui(None, text) {
+        eprintln!("⚠ {e}");
+        return 1;
+    }
+    let snap = huba::sessions::snapshot(cfg);
+    let tu = huba::sessions::session_of_this_terminal(&snap.sessions);
+    let tu_ten = tu.map(huba::sessions::shown);
+    let chu = match gui_phien::chu_gui(tu_ten.as_deref(), text) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("⚠ {e}");
+            return 1;
+        }
+    };
+    let den = match gui_phien::tim_dich(&snap.sessions, session) {
+        Dich::Mot(s) => s,
+        Dich::Nhieu(v) => {
+            eprintln!(
+                "⚠ '{session}' khớp {} phiên — gõ id dài hơn: {}",
+                v.len(),
+                v.iter()
+                    .map(|s| format!("{} {}", s.session_id, huba::sessions::shown(s)))
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            );
+            return 1;
+        }
+        Dich::CuaSoTran => {
+            eprintln!(
+                "⚠ '{session}' là một cửa sổ shell trần, không phải phiên CLI — chữ gõ vào đó chạy \
+                 thành lệnh shell, ngoài tường DENIED_TOOLS. Không gõ."
+            );
+            return 1;
+        }
+        Dich::Khong if !snap.blind.is_empty() => {
+            eprintln!(
+                "KHÔNG ĐO ĐƯỢC: chưa đọc được danh sách phiên của {} — không thấy '{session}' \
+                 chưa có nghĩa là nó không có. CHƯA gõ gì.",
+                snap.blind.join(", ")
+            );
+            return 2;
+        }
+        Dich::Khong => {
+            eprintln!(
+                "⚠ không thấy phiên khớp '{session}' trong danh sách đang sống (`huba sessions`)"
+            );
+            return 1;
+        }
+    };
+    if tu.is_some_and(|t| t.session_id == den.session_id) {
+        eprintln!("⚠ phiên đích là CHÍNH phiên đang gọi — không tự gửi cho mình");
+        return 1;
+    }
+    let den_ten = huba::sessions::shown(den);
+    // Có một phiên đang CHỜ câu trả lời này — hạng gấp như một cú bấm Telegram
+    // (`telegram.rs`). Đo 23/11 (load ~100): ở hạng nền, lượt chụp danh sách vừa
+    // tiêu hết ngân sách hỏi Terminal (20s/10s) ⟹ `window_of` bị cấm hỏi ⟹ 3/3
+    // lượt `huba gui` ra mã 2 dù phiên đích sống và rảnh.
+    let _lane = huba::exec::urgent();
+    let w = match huba::keys::window_of(&den.tty) {
+        Ok(Some(w)) => w,
+        Ok(None) => {
+            eprintln!(
+                "KHÔNG ĐO ĐƯỢC cửa sổ của {den_ten} (tty '{}') — CHƯA gõ gì. Chủ máy gửi tay: \
+                 /session {} rồi /type <chữ>",
+                den.tty, den.session_id
+            );
+            return 2;
+        }
+        Err(e) => {
+            eprintln!("KHÔNG ĐO ĐƯỢC cửa sổ của {den_ten}: {e} — CHƯA gõ gì");
+            return 2;
+        }
+    };
+    let ready = match huba::keys::screen_text(w) {
+        Ok(man) => huba::sessions::ready_from_screen(&man),
+        Err(e) => huba::sessions::Ready::Blind(e.to_string()),
+    };
+    if let Some((ma, cau)) = gui_phien::chan_khi(&ready) {
+        huba::logging::warn(
+            "gui_phien_refused",
+            serde_json::json!({ "den": den.session_id, "ma": ma, "why": cau }),
+        );
+        eprintln!("⚠ {den_ten}: {cau}");
+        return ma;
+    }
+    let (ma, cau) = match huba::keys::type_and_send(w, &chu) {
+        Ok(d) => gui_phien::ket_qua(&d),
+        Err(e) => (2, format!("không gõ được: {e}")),
+    };
+    huba::logging::info(
+        "gui_phien_done",
+        serde_json::json!({ "tu": tu.map(|t| t.session_id.clone()), "den": den.session_id,
+                            "chars": chu.chars().count(), "ma": ma, "ket": cau }),
+    );
+    let bao = gui_phien::cau_bao(
+        tu_ten.as_deref().unwrap_or("terminal ngoài phiên"),
+        &den_ten,
+        text,
+        &cau,
+    );
+    if let Err(e) = huba::confirm::tell(cfg, &bao) {
+        huba::logging::error(
+            "gui_phien_tele_failed",
+            serde_json::json!({ "err": e, "effect": "đã gõ vào phiên đích nhưng chủ máy KHÔNG nhận dòng 📨" }),
+        );
+        eprintln!("⚠ không báo được Telegram: {e}");
+    }
+    println!("{den_ten}: {cau}");
+    ma
 }
 
 /// `huba handover [id] [-a acc] [--no-switch]` — xem doc-comment của

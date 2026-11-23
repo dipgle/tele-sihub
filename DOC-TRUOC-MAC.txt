@@ -7,7 +7,7 @@ Trình cài tự làm:
   · chép gói vào ~/huba (cài lại giữ nguyên huba.config.json · huba.env · data/)
   · tạo ~/projects nếu chưa có, đặt luật chung ~/projects/CLAUDE.md + skill/tác tử (đã có thì GIỮ)
   · thư mục tài khoản + MCP codetrail cho các tài khoản claude
-  · cài claude / opencode / codex đúng bản ghim (cli-ghim.env)
+  · cài claude / opencode đúng bản ghim (cli-ghim.env)
   · tạo định danh ký «Hub Local Signing» (một lần), ký hubd, dựng plist launchd, khởi động
 
 Phải có NGƯỜI làm (hộp thoại hệ thống / bí mật — không tự động được):

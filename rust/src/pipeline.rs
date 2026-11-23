@@ -9759,6 +9759,32 @@ fn root_for_command(
     session_root(db, cfg, session_id)
 }
 
+/// Thư mục chạy một lệnh `/runin` / hòm thư: sổ (nhật ký lệnh · nhãn dự án) →
+/// cwd của HÀNG đang cầm → cwd đọc từ ẢNH CHỤP. `None` = không biết ⟹ từ chối.
+///
+/// 🔴 Đo 23/11 (Mac): hòm thư của hai phiên mở ở gốc `~/projects` chết ở
+/// `runin_no_root` ngay sau một lượt khởi động lại hubd — tệp đổi tên `taken`,
+/// câu trả lời bị tắt tiếng, lệnh KHÔNG chạy. Hàng tra từ sổ theo dõi
+/// (`sessions::window_target_from_book`) không mang `cwd`, và phiên mở ở gốc
+/// không có nhãn dự án (`c1bb2ad`) ⟹ cả hai nguồn đầu rỗng. Ảnh chụp thì có cwd
+/// thật — chỉ hỏi nó khi hàng đang cầm KHÔNG có cwd (hàng từ ảnh chụp đã thử rồi).
+pub fn goc_chay(
+    tu_so: Option<std::path::PathBuf>,
+    cwd_hang: &str,
+    cwd_anh_chup: impl FnOnce() -> Option<String>,
+) -> Option<std::path::PathBuf> {
+    let la_thu_muc = |c: &str| {
+        let p = std::path::Path::new(c.trim());
+        (!c.trim().is_empty() && p.is_dir()).then(|| p.to_path_buf())
+    };
+    tu_so.or_else(|| la_thu_muc(cwd_hang)).or_else(|| {
+        if !cwd_hang.trim().is_empty() {
+            return None;
+        }
+        cwd_anh_chup().and_then(|c| la_thu_muc(&c))
+    })
+}
+
 /// Bao nhiêu nút được nhớ. 40 ≈ vài chục tin gần nhất — đủ để một cái nút nằm
 /// trên màn hình cả buổi vẫn tra ra đúng việc của nó, mà sổ không phình.
 const QUICK_KEEP: usize = 40;
@@ -14846,10 +14872,26 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                         let logged = quick_cwd(db, &s.session_id, &line);
                         // Cwd THẬT của phiên là nguồn thứ hai: nhãn dự án đã
                         // trượt (trên) thì vẫn còn đường chạy đúng chỗ.
-                        let cwd_that = std::path::Path::new(s.cwd.trim());
-                        let root = match root_for_command(db, cfg, &s.session_id, &logged)
-                            .or_else(|| cwd_that.is_dir().then(|| cwd_that.to_path_buf()))
-                        {
+                        let root = match goc_chay(
+                            root_for_command(db, cfg, &s.session_id, &logged),
+                            &s.cwd,
+                            || {
+                                let l = live
+                                    .clone()
+                                    .unwrap_or_else(|| crate::sessions::snapshot(cfg));
+                                let cwd = l
+                                    .sessions
+                                    .iter()
+                                    .find(|x| same_session(&x.session_id, &s.session_id))
+                                    .map(|x| x.cwd.clone())?;
+                                logging::info(
+                                    "runin_cwd_from_snapshot",
+                                    json!({ "session": s.session_id, "cwd": cwd,
+                                            "why": "hàng từ sổ theo dõi không mang cwd — đọc ảnh chụp" }),
+                                );
+                                Some(cwd)
+                            },
+                        ) {
                             Some(r) => r,
                             None => {
                                 logging::warn(

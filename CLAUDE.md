@@ -409,6 +409,7 @@ rust/src/verbs.rs        pure parser: text → a route. No network, no channel, 
 rust/src/commands.rs     the route TABLE — one source for /help + setMyCommands
 rust/src/sessions.rs     list · stream · fork (/ask, /handover) · background (/new, /tell, /stop)
 rust/src/keys.rs         type into a real Terminal window, and read that window back
+rust/src/gui_phien.rs    `huba gui`: one session asks another to work (decision part; typing = keys)
 rust/src/watch.rs        "vừa xong" / "vừa tắt" — compare two snapshots, say it ONCE
 rust/src/redaction.rs    leak scan, used by session previews
 rust/src/setup.rs        `huba setup`: a 127.0.0.1 page that writes huba.env (chmod 600)
