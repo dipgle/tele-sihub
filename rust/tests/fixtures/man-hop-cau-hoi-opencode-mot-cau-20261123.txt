@@ -1,0 +1,38 @@
+   zkey project instructions   Simple addition             Dự án dwork dev-dci         Zkey project handoff cont   Dev-review kế nhiệm 22/11 • Huba UI handoff continuat ? Dự án dwork dev-dci      +
+  ┃                                                                                                                                                           Dự án dwork dev-dci
+  ┃  $ cd /mnt/data/projects/dwork && grep -n "S9\|ký\|Kết quả\|Đạt" DW-phieu/phieu-tu-dev/2026-11/bao-xong-23-f6.md | tail -10
+  ┃                                                                                                                                                           Context
+  ┃  (3 earlier lines)                                                                                                                                        319,306 tokens
+  ┃  21:| 7 | Phạm vi đúng task (11 app × 17 hộp) | Đạt — bảng phạm vi ở §3 |                                                                                 32% used
+  ┃  26:- **Đ** = Đạt (fix đã áp dụng qua shared-ui, có bài kiểm đơn vị)
+  ┃  92:| 1. Giao diện đúng spec | Không sửa giao diện trong task này (chỉ thêm test) | Đạt |                                                                 MCP
+  ┃  95:| 4. Unit test đủ | 16/16 ca xanh, có vế âm (ca ⑬) | Đạt |                                                                                            • project-agent             Connected
+  ┃  96:| 5. Không sửa phần máy chủ | Chỉ chạm shared-ui/tests/ | Đạt |
+  ┃  105:## 7. Tech lead check (S9) — lượt gọi vai 23/11
+  ┃  109:Phiếu này là báo xong của FE (A3, task PTSP-23-f6), không phải team dev ⇒ phần FE theo Audit nội bộ PTSP trước khi Tech lead ký (S9 là chữ ký
+  ┃  duy nhất phần FE — Q-0202 ý 5, Q-0216 điểm 3). Tệp chưa có dòng `Audit nội bộ PTSP: …` với mã thay đổi `0d064d375`. Đề nghị **Điều phối PTSP gọi
+  ┃  Audit nội bộ PTSP** chạy bảng kiểm cổng S9 trên bản `a3/ptsp-23-f6-10@0d064d375` (16/16 vitest xanh, không chạm máy chủ, không sửa 4 tệp anh Quang
+  ┃  · phạm vi 11 app × 17 hộp §3); có kết quả thì Tech lead check tiếp. Lưu ý máy lọc lượt gọi vai gắn nhầm nhãn «team dev thiếu Audit SXSP» cho phiếu
+  ┃  FE — ghi để QAQC chỉnh lý do máy lọc.
+  ┃
+     + Thought · 13.9s
+     → Asked 1 question
+  ┃
+  ┃  Questions
+  ┃
+  ┃  T-Q47-42 đã chuẩn bị xong (dựng thử 12 hiện phẩm XANH, gói shared-ui 57 tệp/372 ca ĐẠT, 11/11 vỏ đẩy --chi-kiem XANH, bộ chạy sẵn sàng ~10 phút).
+  ┃  Điều kiện kế hoạch còn thiếu ĐÚNG MỘT dòng: **Tech lead ký S9** trên `0d064d375` — FE-6 đã báo xong 10:11 (16/16 xanh, 187/187 ô Đạt) và Audit nội
+  ┃  bộ PTSP 23-a6 đã Đạt 10:16, nhưng dòng ký chưa có trong DW-phieu (lượt Tech lead gần nhất 11:45 còn ghi «chờ Audit» — có vẻ máy lọc chưa thấy kết
+  ┃  quả Audit). Nếu chờ, L2 13:50–15:50 mới có lượt; nếu trượt 15:00 thì buổi máy thật 14:20–15:50 chặn app Lịch di động, phải đẩy sau 15:50 (sát hạn
+  ┃  16:00). Anh chọn thế nào?
+  ┃
+  ┃  1. Chờ S9, đưa ngay khi có (Recommended)
+  ┃     Đúng luồng: chờ dòng ký của Tech lead trong L2 rồi đưa bản ngay (tôi canh mỗi ~10 phút). Rủi ro: nếu ký sau 15:00 thì app Lịch di động chỉ lên
+  ┃     được sau 15:50.
+  ┃  2. Đưa bản ngay, ghi rõ lệch
+  ┃     Tôi đưa 11 app lên dev NGAY (bỏ qua dòng S9 vì FE-6 + Audit đã Đạt), ghi rõ trong phiếu/sổ là «chưa có dòng ký S9 — Trưởng team dev cho phép
+  ┃     đưa» để QAQC đối chiếu.
+  ┃  3. Type your own answer
+  ┃
+  ┃  ↑↓ select  enter submit  esc dismiss
+  ┃                                                                                                                                                           /mnt/data/projects:main

@@ -1,0 +1,33 @@
+   zkey project instructions   Simple addition           • Dự án dwork dev-dci       • Zkey project handoff cont   Dev-review kế nhiệm 22/11   Huba UI handoff continuat   Dự án dwork dev-dci      +
+  ┃                                                                                                                                                           Dev-review kế nhiệm 22/11
+  ┃  $ cd /mnt/data/projects/dwork/dev-review && git -C ../DW-phieu fetch --quiet origin && echo "đích DW-phieu: $(git -C ../DW-phieu rev-parse --short
+  ┃  origin/main)" && git -C ../DW-phieu log --oneline -1 origin/main | cut -c1-100; echo "--- phiếu đã có mục Audit trên đích? ---"; git -C ../D…            Context
+  ┃                                                                                                                                                           298,378 tokens
+  ┃  đích DW-phieu: 9acbe24d                                                                                                                                  30% used
+  ┃  9acbe24d [Chung] V-0285 Audit nội bộ SXSP 23/11 14:38 (agent riêng, tệp vai b9bb6416): T-Q47-04 @308
+  ┃  --- phiếu đã có mục Audit trên đích? ---                                                                                                                 MCP
+  ┃  1                                                                                                                                                        • project-agent             Connected
+  ┃
+     dwork/review
+     Đẩy xong, đọc lại từ đích: DW-phieu@9acbe24d = origin/main, và phiếu T-Q47-47 trên đích đã có mục «Audit nội bộ SXSP — kết quả» (1 khớp). Phiếu T-
+     Q47-04 cũng có.
+     Vậy "thiếu một phiên audit" đã hết — không phải vì bên ba đổi cách, mà vì đúng luật thì team mình phải gọi (04_thanh-phan-va-quy-tac-ed.md:79, :89, :
+     296). Từ giờ mỗi lần làn báo xong, tôi gọi Audit riêng và ghi kết quả vào phiếu trong cùng lượt.
+     Trạng thái thật, tách rõ hai chuỗi đang chặn:
+     ┌────────────────────────────────────┬───────────────────────────────────────────────────────────────────────────────┬──────────────────────────────┐
+     │ Chuỗi                              │ Đang chờ                                                                      │ Không phải chờ               │
+     ├────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────┼──────────────────────────────┤
+     │ T-Q47-42 (đưa 11 app, chặn Tester) │ FE-6 + chữ ký Tech lead — FE-6 kẹt từ 11:45, đã có phiếu phát sinh gấp gửi    │ không chờ audit của 04/47    │
+     │                                    │ Scrum master 14:07                                                            │                              │
+     ├────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────┼──────────────────────────────┤
+     │ T-Q47-04 · T-Q47-47                │ làn sửa 2 mục bắt buộc rồi tôi gọi Audit lại bản mới                          │ audit đã có, chỉ là chưa đạt │
+     └────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────────┴──────────────────────────────┘
+     Hai mục bắt buộc để làn sửa (đã ghi trong phiếu): ① T-Q47-47 — tải lại cùng mã phải trả 200 idempotent kèm image_id/image_sha256 đã lưu, thêm ca kiểm
+     tải lần 2; ② T-Q47-04 — bỏ câu «qua lược đồ», ghi đúng «chưa đo được trên dev», bổ sung mã phiên bản/nhánh/commit + mốc lõi 2a8a6e0ae2.
+     Build · DeepSeek V4.1 Flash 1017 · 25.5s · 49.4 tok/s
+  ┃
+  ┃  [Pasted ~5 lines]
+  ┃
+  ┃  Build · DeepSeek V4.1 Flash 1017 OpenCode Go · high
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  /mnt/data/projects:main                                                                                                    298.4K (30%)  ctrl+p commands    /mnt/data/projects:main

@@ -1,0 +1,22 @@
+     đã nhận: B
+     Build · DeepSeek V4.1 Flash 1017 · 27.3s · 63.0 tok/s
+  ┃
+  ┃  Thử lần 2: gọi công cụ question ĐÚNG MỘT LẦN nhưng với HAI câu hỏi trong cùng một lần gọi: câu 1 «Chọn A hay B?» (A
+  ┃  . Nhận được hết câu trả lời thì viết một dòng «đã nhận lần 2» rồi dừng.
+  ┃
+     → Asked 2 questions
+  ┃
+  ┃  Questions
+  ┃
+  ┃  Chọn A hay B  Chọn X hay Y  Submit
+  ┃
+  ┃  Chọn A hay B?
+  ┃
+  ┃  1. A
+  ┃     phương án thứ nhất
+  ┃  2. B
+  ┃     phương án thứ hai
+  ┃  3. Type your own answer
+  ┃
+  ┃  ⇆ tab  ↑↓ select  enter confirm  esc dismiss
+  ┃

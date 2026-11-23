@@ -1079,10 +1079,20 @@ pub fn squash_box(s: &str) -> String {
 /// một dòng của ô nhập.
 pub fn still_in_box(screen: &str, typed: &str) -> bool {
     let squash = squash_box;
-    if box_start(screen).is_none() {
-        return false;
-    }
-    let screen = box_inner(screen).unwrap_or_default().to_string();
+    // 🔴 Ô nhập của OPENCODE (viền `┃` … `╹▀▀▀`) KHÔNG có `╭` lẫn vạch ngang + `❯` nên `box_start` trả `None` — và từ đó
+    // `still_in_box` luôn nói «chữ đã đi», `finish_send` không bao giờ bấm Enter bù. Quang 23/11 «Lại lỗi dán vào ô chát
+    // không gửi đi»: 14:43:10 huba dán kết quả `git push` vào phiên review (acc8), log ghi `runin_paste_khong_do_duoc_nhat_ky
+    // … coi là đã gửi`, mà ô nhập vẫn giữ `[Pasted ~5 lines]` tới khi có người bấm Enter tay (14:46:54).
+    // Đo trên phiên thử: dán xong mà thiếu Enter thì ô giữ đúng nhãn ấy, và MỘT Enter rời là gửi đi.
+    let screen = match opencode_input_text(screen) {
+        Some(inner) => inner,
+        None => {
+            if box_start(screen).is_none() {
+                return false;
+            }
+            box_inner(screen).unwrap_or_default().to_string()
+        }
+    };
     let t = squash(typed);
     let n = t.chars().count();
     let seen = squash(&screen);
@@ -1115,7 +1125,8 @@ pub fn still_in_box(screen: &str, typed: &str) -> bool {
     //
     // Chỉ áp cho khối NHIỀU DÒNG: đó đúng là thứ TUI rút gọn, và giới hạn ấy
     // giữ cho một câu một dòng không bao giờ ăn nhầm cái nhãn của lượt trước.
-    if typed.contains('\n') && seen.contains("[Pastedtext") {
+    // `[Pastedtext…` là nhãn của `claude`; `[Pasted~5lines]` (đã bóp khoảng trắng) là nhãn của opencode.
+    if typed.contains('\n') && (seen.contains("[Pastedtext") || seen.contains("[Pasted~")) {
         return true;
     }
     if seen.contains(&tail) || seen.contains(&head) {
@@ -5923,7 +5934,8 @@ pub fn parse_choices(screen: &str) -> Vec<(usize, String)> {
     // Dòng (chỉ số) của các mục dài hơn `LABEL_MAX` — xem chỗ ghi bên dưới.
     let mut dai: Vec<usize> = Vec::new();
     for (idx, line) in screen.lines().enumerate() {
-        let t = line.trim();
+        // Lề `┃` của opencode đứng TRƯỚC số (`┃  1. A`); bỏ nó thì dòng đánh số của hộp opencode mới đọc được.
+        let t = bo_le_opencode(line.trim());
         // Bỏ dấu con trỏ ❯ nếu có, rồi tìm "<số>." ở đầu.
         let t = t.strip_prefix('❯').map(str::trim_start).unwrap_or(t);
         let Some((num, rest)) = t.split_once('.') else {
@@ -6162,14 +6174,83 @@ pub fn chooser_footer_line(screen: &str) -> Option<usize> {
             // Đo 2026-09-23 trên cửa sổ 7949 (Hà: *"Tin có option nhưng không
             // bấm được"*); vẫn đòi đủ HAI vế nên một câu văn nhắc "to amend"
             // đứng một mình không thành dòng chân.
-            (l.contains("to select")
+            ((l.contains("to select")
                 || l.contains("to confirm")
                 || l.contains("to amend")
                 || l.contains("để chọn"))
-                && (l.contains("to navigate") || l.contains("to cancel") || l.contains("để huỷ"))
+                && (l.contains("to navigate") || l.contains("to cancel") || l.contains("để huỷ")))
+                || la_chan_opencode(line)
         })
         .map(|(i, _)| i)
         .last()
+}
+
+/// Dòng chân của hộp câu hỏi (công cụ `question`) của **opencode** — Quang 23/11: *«Tk acc8 vẫn chưa chọn được»*.
+///
+/// Đo trên phiên thật + phiên thử acc8 (23/11), ba dạng:
+///
+/// ```text
+/// ↑↓ select  enter submit  esc dismiss                  (hộp MỘT câu)
+/// ⇆ tab  ↑↓ select  enter confirm  esc dismiss          (hộp nhiều câu, đang ở một câu)
+/// ⇆ tab  enter submit  esc dismiss                      (hộp nhiều câu, trang Submit)
+/// ```
+///
+/// Không mảnh nào khớp kiểu của `claude` (`to select … to navigate/cancel`) nên trước đây huba coi màn là KHÔNG có hộp chọn
+/// và từ chối gửi số. Khớp CHẶT như lý do bên trên đã trả giá: dòng phải **bắt đầu** bằng ký hiệu phím (`↑↓` hoặc `⇆`, sau lề
+/// `┃` của opencode) — một câu văn nhắc `enter submit` và `esc dismiss` không bắt đầu như thế — và phải có CẢ `esc dismiss`
+/// lẫn `enter submit|confirm`. Phía sau dòng còn có đường dẫn thư mục của opencode, nên chỉ dùng `contains`.
+fn la_chan_opencode(line: &str) -> bool {
+    let t = line.trim_start_matches(|c: char| c == '┃' || c.is_whitespace());
+    if !(t.starts_with("↑↓") || t.starts_with('⇆')) {
+        return false;
+    }
+    let l = t.to_lowercase();
+    l.contains("esc dismiss") && (l.contains("enter submit") || l.contains("enter confirm"))
+}
+
+/// Chữ đang nằm trong **ô nhập của opencode** trên một màn phiên — `None` khi màn không phải màn phiên opencode.
+///
+/// Hình dạng đo trên màn thật (23/11, `tests/fixtures/man-o-nhap-opencode-khoi-dan-chua-gui-20261123.txt`):
+///
+/// ```text
+///      Build · DeepSeek V4.1 Flash 1017 · 25.5s · 49.4 tok/s     ← chân lượt trả lời (KHÔNG có lề ┃)
+///   ┃
+///   ┃  [Pasted ~5 lines]                                         ← chữ trong ô
+///   ┃
+///   ┃  Build · DeepSeek V4.1 Flash 1017 OpenCode Go · high      ← dòng agent · model
+///   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀      ← viền đáy
+/// ```
+///
+/// Neo ở viền đáy `╹▀`: dòng ngay trên phải là dòng `┃ … · …` (agent · model), rồi lấy dải dòng có lề `┃` liền kề phía trên.
+/// Lời nhắn cũ của chủ máy trong lịch sử cũng có lề `┃`, nhưng chúng cách ô nhập bởi dòng chân lượt trả lời (không lề) nên
+/// dải dừng ở đó. Màn chưa có hội thoại (trang chào) không có dòng `agent · model` ngay trên viền ⟹ `None`.
+pub fn opencode_input_text(screen: &str) -> Option<String> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let day = lines.iter().rposition(|l| {
+        let t = l.trim_start();
+        t.starts_with('╹') && t.chars().nth(1) == Some('▀')
+    })?;
+    let model = lines.get(day.checked_sub(1)?)?.trim_start();
+    if !model.starts_with('┃') || !model.contains(" · ") {
+        return None;
+    }
+    let mut trong: Vec<&str> = Vec::new();
+    let mut i = day - 1;
+    while i > 0 {
+        i -= 1;
+        let Some(rest) = lines[i].trim_start().strip_prefix('┃') else {
+            break;
+        };
+        trong.push(rest.trim());
+    }
+    trong.reverse();
+    Some(trong.join("\n"))
+}
+
+/// Bỏ lề dọc `┃` của opencode (và khoảng trắng quanh nó) ở đầu một dòng màn: `┃  1. A` → `1. A`.
+/// `claude` không vẽ lề này nên với màn của `claude` hàm trả nguyên dòng.
+fn bo_le_opencode(t: &str) -> &str {
+    t.strip_prefix('┃').map(str::trim_start).unwrap_or(t)
 }
 
 /// Nhãn của hộp chọn **KHÔNG ĐÁNH SỐ** đang mở trên màn — rỗng khi không có.

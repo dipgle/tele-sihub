@@ -1,0 +1,14 @@
+  ┃  Questions
+  ┃
+  ┃  Chọn A hay B  Chọn X hay Y  Submit
+  ┃
+  ┃  Chọn X hay Y?
+  ┃
+  ┃  1. X
+  ┃     phương án thứ nhất
+  ┃  2. Y
+  ┃     phương án thứ hai
+  ┃  3. Type your own answer
+  ┃
+  ┃  ⇆ tab  ↑↓ select  enter confirm  esc dismiss
+  ┃
