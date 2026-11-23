@@ -149,9 +149,16 @@ questions people usually ask): `ARCHITECTURE.md`.
 ## A window on the machine — `huba ui`
 
 ```bash
-./huba ui            # opens a window (Chrome/Edge `--app` when one is installed)
+./huba ui            # opens a window (Chrome/Edge/Chromium/Brave `--app` when one is installed)
 ./huba ui --no-open  # print the URL and serve — headless, or a machine with no display
 ```
+
+Which browser: macOS tries Google Chrome, Edge, Brave, Chromium in that order; Linux
+looks for `google-chrome`, `google-chrome-stable`, `chromium`, `chromium-browser`,
+`brave-browser`, `microsoft-edge` on `PATH` and starts the first one with `--app=<url>`
+(its own window, no address bar). A machine with **only Firefox** has no `--app`, so
+it falls back to `xdg-open` (Linux) / `open` (macOS) and you get an ordinary browser
+tab. Either way the URL is printed first, so a failed open never loses the page.
 
 A small web page served by huba itself from `ui/` (next to the `huba` binary), for
 when you are sitting at the machine and want a list instead of chat commands. It

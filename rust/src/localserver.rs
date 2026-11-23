@@ -151,6 +151,49 @@ pub fn write_resp(
     Ok(())
 }
 
+/// Trình duyệt kiểu Chrome biết `--app=<url>` trên Linux, THEO THỨ TỰ ƯU TIÊN (tên tệp chạy được trong `PATH`).
+/// Firefox không có trong danh sách vì không có `--app` ⟹ máy chỉ Firefox rơi về `xdg-open`.
+pub const LINUX_APP_BROWSERS: &[&str] = &[
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium",
+    "chromium-browser",
+    "brave-browser",
+    "microsoft-edge",
+];
+
+/// Tệp thường VÀ có quyền chạy (một tệp tên `chromium` không chạy được không phải trình duyệt).
+fn la_tep_chay_duoc(p: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p)
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        p.is_file()
+    }
+}
+
+/// Trình duyệt `--app` đầu tiên (theo [`LINUX_APP_BROWSERS`], rồi theo thứ tự thư mục trong `path_var`).
+/// Chỉ ĐỌC đĩa. Mục rỗng trong `PATH` (= thư mục hiện tại) bị bỏ qua: không chạy chương trình nằm cạnh cwd.
+pub fn find_linux_app_browser(path_var: &std::ffi::OsStr) -> Option<std::path::PathBuf> {
+    let dirs: Vec<std::path::PathBuf> = std::env::split_paths(path_var)
+        .filter(|d| !d.as_os_str().is_empty())
+        .collect();
+    for name in LINUX_APP_BROWSERS {
+        for d in &dirs {
+            let p = d.join(name);
+            if la_tep_chay_duoc(&p) {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
 /// Mở một URL thành CỬA SỔ ỨNG DỤNG, không phải một tab lẫn trong bầy.
 ///
 /// Tách từ `setup.rs` ngày 2026-11-09 khi có trang thứ hai (`huba accounts`):
@@ -179,9 +222,43 @@ pub fn open_window(url: &str, tag: &str) {
         }
         return;
     }
-    // Linux: không có `open` của macOS ⟹ `xdg-open` (trình duyệt mặc định của
-    // phiên đồ hoạ). Đo 13/11 trên Ubuntu: trang chạy (HTTP 200) mà không tự mở.
+    // Linux: có trình duyệt kiểu Chrome ⟹ `--app` (cửa sổ riêng, như macOS); không có (máy chỉ Firefox)
+    // ⟹ `xdg-open` (trình duyệt mặc định của phiên đồ hoạ, tab thường). Đo 13/11 trên Ubuntu: `xdg-open`
+    // chạy (HTTP 200) mà không tự mở ⟹ hai nhánh đều phải LOG, không im lặng (W3.1, tests/open_window_linux.rs).
     if cfg!(target_os = "linux") {
+        if let Some(bin) = std::env::var_os("PATH").and_then(|p| find_linux_app_browser(&p)) {
+            let ten = bin.display().to_string();
+            match std::process::Command::new(&bin)
+                .arg(format!("--app={url}"))
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                // `spawn`, KHÔNG `status`: trình duyệt sống cho tới khi người dùng đóng cửa sổ — đợi nó
+                // là treo `huba ui` ngay sau khi mở trang.
+                .spawn()
+            {
+                Ok(mut child) => {
+                    logging::info(&opened, json!({ "as": "app", "browser": ten }));
+                    // Thu dọn tiến trình con (không để zombie) và NÓI RA nếu nó thoát lỗi — trình duyệt chết
+                    // ngay lúc mở (không có màn hình, hồ sơ khoá…) không được thành im lặng.
+                    let failed = failed.clone();
+                    std::thread::spawn(move || match child.wait() {
+                        Ok(s) if s.success() => {}
+                        other => logging::warn(
+                            &failed,
+                            json!({ "detail": format!("{other:?}"), "browser": ten,
+                                    "stage": "browser_exited", "url_printed": true }),
+                        ),
+                    });
+                    return;
+                }
+                Err(e) => logging::warn(
+                    &failed,
+                    json!({ "detail": e.to_string(), "browser": ten,
+                            "stage": "browser_spawn", "fallback": "xdg-open" }),
+                ),
+            }
+        }
         match std::process::Command::new("xdg-open")
             .arg(url)
             .stdin(std::process::Stdio::null())
