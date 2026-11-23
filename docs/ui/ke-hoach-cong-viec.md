@@ -6,11 +6,14 @@ nữa, mỗi việc phải càng nhỏ nhanh ngắn càng tốt»* · chọn b�
 Quy ước: mỗi việc ≤ ~15 phút (ước lượng của tôi, **chưa đo** — việc nào quá thì tách tiếp), có **«xong khi»** đo được. 🅲 = bạn làm
 (cần mắt/tay/mật khẩu) · 🅷 = tôi làm · ⛔ = chờ bạn quyết. Việc đổi mã lõi (`rust/`) luôn có test đỏ → xanh. Thứ tự: xong cả khối mới sang khối sau.
 
-> **Trạng thái 23/11:** W1.1–W1.8 XONG. `rust/src/uiserver.rs` (hàm thuần + `serve_loop`) · `tests/ui_server_security.rs` 18 ca ·
-> `tests/ui_server_wire.rs` 5 ca qua ổ cắm thật · `localserver::read_request` có trần đầu 64 KiB / thân 1 MiB (2 ca đỏ→xanh).
-> Đột biến: gỡ từng hàng rào (Host · Origin · trần thân · cookie · vé một lần · chặn thoát `ui/` · chặn `..` · HttpOnly) ⟹ test ĐỎ cả 8
-> (một đột biến sống sót lần đầu — `..` — đã siết test rồi bắt được). Chạy thật `huba ui` + client python độc lập: 10/10 đúng.
-> **Chưa làm:** W2 (API phiên) và mọi thứ sau; chưa chạy cổng `gate.sh` đầy đủ; chưa nghiệm thu bằng mắt trên trình duyệt thật.
+> **Trạng thái 23/11 (cuối phiên a91869f2):** W1 XONG (commit `293dc42` trên main, gate xanh) · W2.1–W2.4 XONG trên nhánh `ui/w2`:
+> `/api/sessions` có bản đệm 10 s (snapshot tốn ~4,7 s) + thread làm mới chịu được panic · giao diện THẬT ở `ui/` (index.html · app.js · live.css ·
+> style.css chép từ bản mẫu; không bước build; CSP `default-src 'self'`) · bộ kiểm `ui-test/e2e.mjs` bằng TRÌNH DUYỆT THẬT (Chromium + WebKit),
+> máy chủ + dữ liệu phiên THẬT: **38/38 đạt** (STT liên tục · tìm/lọc so với API · thu gọn menu · XSS nội dung phiên · lỗi/mất kết nối/401/rỗng
+> giữ «dữ liệu CŨ» thay vì «0 phiên» · vé dùng lại ⟹ 401). Ca giả lỗi dùng `page.route` — khai báo ở đầu tệp, không phải nghiệm thu dữ liệu.
+> `ui-test/` là gốc pnpm riêng, cài bằng `cong-node cai` (cùng inode với kho chung: 0 byte nhân bản). Ảnh: `.tmp/ui-shots/`.
+> **Chưa làm:** gate.sh ĐẦY ĐỦ cho nhánh ui/w2 · README · đưa `ui/` vào gói cài (3 script dong-goi) · gốc `huba.config.json` cho vị trí ui/ khi cài ·
+> K3 (chat đọc một phiên) · K4 (gửi từ app) · ⛔ mức «gốc» chủ máy cần (K3.5) · Linux chỉ có Firefox ⟹ `huba ui` mở tab, chưa phải cửa sổ riêng (W3.1).
 
 ## PHƯƠNG ÁN W — giao diện là trang web do huba phục vụ (thay K0–K2 nếu bỏ Tauri)
 
@@ -41,10 +44,10 @@ Quy ước: mỗi việc ≤ ~15 phút (ước lượng của tôi, **chưa đo*
 | ✅ W1.6 | Giới hạn body 1 MiB | body 2 MiB ⟹ 413; 1 KiB ⟹ 200 | 🅷 |
 | ✅ W1.7 | Phục vụ tệp tĩnh từ thư mục `ui/` cạnh binary | `GET /` ra index.html; `GET /../x` ⟹ 400/404 | 🅷 |
 | ✅ W1.8 | Lệnh `huba ui`: mở cổng, in URL, gọi `open_window` | chạy tay thấy trang mở | 🅷 + 🅲 liếc |
-| W2.1 | `/api/sessions` trả JSON snapshot thật | số phiên = số phiên của `huba sessions` | 🅷 |
-| W2.2 | Nối danh sách phiên của bản mẫu vào API | ảnh chụp có phiên thật | 🅷 |
-| W2.3 | Ba trạng thái rỗng / lỗi-dữ liệu cũ / bình thường | giả lỗi đọc ⟹ «Dữ liệu cũ», không hiện rỗng | 🅷 |
-| W2.4 | Playwright Chromium + WebKit: mở bằng cookie, N hàng = API, 0 lỗi console | exit 0 cả hai engine | 🅷 |
+| ✅ W2.1 | `/api/sessions` trả JSON snapshot thật | số phiên = số phiên của `huba sessions` | 🅷 |
+| ✅ W2.2 | Nối danh sách phiên của bản mẫu vào API | ảnh chụp có phiên thật | 🅷 |
+| ✅ W2.3 | Ba trạng thái rỗng / lỗi-dữ liệu cũ / bình thường | giả lỗi đọc ⟹ «Dữ liệu cũ», không hiện rỗng | 🅷 |
+| ✅ W2.4 | Playwright Chromium + WebKit: mở bằng cookie, N hàng = API, 0 lỗi console | exit 0 cả hai engine | 🅷 |
 | W3.1 | Linux: ưu tiên `chromium`/`google-chrome` `--app` nếu có | máy có Chrome ⟹ cửa sổ riêng; máy chỉ Firefox ⟹ rơi về `xdg-open` (đo cả hai nhánh) | 🅷 |
 
 K3 trở đi giữ nguyên (đọc nhật ký, gửi…), chỉ khác là gọi qua `/api/*`.
