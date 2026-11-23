@@ -49,6 +49,11 @@ pub fn new_ticket(listener: &TcpListener) -> String {
     )
 }
 
+/// Trần thân yêu cầu (1 MiB) — mọi trang loopback của huba chỉ nhận form nhỏ.
+pub const MAX_BODY: usize = 1 << 20;
+/// Trần phần đầu (dòng yêu cầu + mọi header): 64 KiB.
+pub const MAX_HEADERS: usize = 64 * 1024;
+
 /// Một request đã đọc TRỌN: dòng đầu, mọi header (tên viết thường), và body
 /// theo `Content-Length`.
 #[derive(Debug, Clone, Default)]
@@ -63,8 +68,20 @@ pub struct Req {
 /// trang gọi nó, vì mỗi trang có một cách đặt vé khác nhau.
 pub fn read_request(stream: &mut TcpStream) -> Result<Req> {
     let mut reader = BufReader::new(stream.try_clone()?);
+    // Trần cho cả dòng đầu lẫn header: `read_line` trần đọc tới khi gặp `\n`, nên một dòng 4 GB không có xuống dòng
+    // nuốt hết bộ nhớ. `take` chặn MỖI lần đọc dòng ở phần còn lại của ngân sách (W1.6, 23/11).
+    let mut used = 0usize;
+    let mut read_capped = |reader: &mut BufReader<TcpStream>, line: &mut String| -> Result<usize> {
+        let left = MAX_HEADERS.saturating_sub(used) as u64 + 1;
+        let n = Read::by_ref(reader).take(left).read_line(line)?;
+        used += n;
+        if used > MAX_HEADERS {
+            anyhow::bail!("headers_too_large");
+        }
+        Ok(n)
+    };
     let mut request = String::new();
-    reader.read_line(&mut request)?;
+    read_capped(&mut reader, &mut request)?;
     let mut parts = request.split_whitespace();
     let method = parts.next().unwrap_or("").to_string();
     let target = parts.next().unwrap_or("/").to_string();
@@ -73,7 +90,7 @@ pub fn read_request(stream: &mut TcpStream) -> Result<Req> {
     let mut len = 0usize;
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 || line.trim().is_empty() {
+        if read_capped(&mut reader, &mut line)? == 0 || line.trim().is_empty() {
             break;
         }
         let Some((k, v)) = line.split_once(':') else {
@@ -85,6 +102,10 @@ pub fn read_request(stream: &mut TcpStream) -> Result<Req> {
             len = val.parse().unwrap_or(0);
         }
         headers.insert(key, val);
+    }
+    // Từ chối TRƯỚC khi cấp phát: `vec![0u8; len]` với `len` do bên gọi tự khai là cửa tấn công từ chối dịch vụ.
+    if len > MAX_BODY {
+        anyhow::bail!("body_too_large");
     }
     let mut body = vec![0u8; len];
     if len > 0 {
@@ -254,5 +275,49 @@ mod tests {
         assert_eq!(form.get("k").unwrap(), "a=b+c");
         assert_eq!(form.get("k2").unwrap(), "x y");
         assert!(!form.contains_key("rong"), "cặp không có `=` phải bị bỏ");
+    }
+
+    /// Gửi `raw` tới một ổ cắm loopback và đọc request ở phía máy chủ.
+    fn doc(raw: &'static [u8]) -> Result<Req> {
+        let (listener, port) = bind_loopback().unwrap();
+        let t = std::thread::spawn(move || {
+            let mut c = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+            c.write_all(raw).unwrap();
+            c.flush().unwrap();
+            // giữ kết nối mở một lúc để phía đọc không gặp EOF sớm
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        });
+        let (mut s, _) = listener.accept().unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let r = read_request(&mut s);
+        t.join().unwrap();
+        r
+    }
+
+    /// 🔴 W1.6: `Content-Length` khai 4 GB mà không có thân — bản cũ `vec![0u8; len]` cấp phát 4 GB TRƯỚC khi đọc.
+    #[test]
+    fn a_huge_content_length_is_refused_before_allocating() {
+        let e = doc(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 4294967296\r\n\r\n")
+            .expect_err("phải từ chối");
+        assert!(e.to_string().contains("body_too_large"), "{e}");
+    }
+
+    /// Đối chứng ngược: thân nhỏ vẫn đọc được trọn.
+    #[test]
+    fn a_small_body_is_still_read_whole() {
+        let r = doc(b"POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nabcde").unwrap();
+        assert_eq!(r.method, "POST");
+        assert_eq!(r.body, b"abcde");
+    }
+
+    /// Phần đầu (dòng yêu cầu + header) cũng có trần: một dòng header 100 KB không được nuốt bộ nhớ vô hạn.
+    #[test]
+    fn an_endless_header_is_refused() {
+        let mut raw = b"GET / HTTP/1.1\r\nX-Rac: ".to_vec();
+        raw.extend(std::iter::repeat_n(b'a', 100_000));
+        raw.extend_from_slice(b"\r\n\r\n");
+        let e = doc(Box::leak(raw.into_boxed_slice())).expect_err("phải từ chối");
+        assert!(e.to_string().contains("headers_too_large"), "{e}");
     }
 }

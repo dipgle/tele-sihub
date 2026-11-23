@@ -1,0 +1,404 @@
+//! Lõi bảo mật của giao diện web cục bộ (`huba ui`) — HÀM THUẦN: nhận `Req`, trả `Resp`, không đụng ổ cắm.
+//!
+//! W1 của `docs/ui/ke-hoach-cong-viec.md`. Cổng 127.0.0.1 KHÔNG phải hàng rào: mọi tiến trình cùng máy gọi được, và một
+//! trang web lạ trong trình duyệt của chủ máy cũng bắn được yêu cầu vào đó (DNS-rebinding, CSRF). Giao diện này sẽ GÕ được
+//! vào phiên CLI, nên hở là hở lệnh. Thứ tự kiểm — mỗi tầng chặn trước tầng sau, và KHÔNG tầng nào đốt vé:
+//!
+//! 1. `Host` phải là `127.0.0.1:<cổng>` hoặc `localhost:<cổng>` (chống DNS-rebinding: trang `evil.com` trỏ DNS về
+//!    127.0.0.1 vẫn gửi `Host: evil.com`).
+//! 2. Không phải GET ⟹ `Origin` phải là chính nó (chống CSRF; `SameSite=Strict` là lớp thứ hai, không thay thế).
+//! 3. Thân > [`MAX_BODY`] ⟹ 413.
+//! 4. `GET /?t=<vé>`: vé MỘT LẦN, đúng ⟹ cookie phiên `HttpOnly; SameSite=Strict`, rồi 303 về `/` (vé rời thanh địa chỉ).
+//! 5. Mọi thứ còn lại cần cookie phiên đúng (so sánh thời gian không đổi) ⟹ không thì 401.
+//! 6. Định tuyến: `/api/*` và tệp tĩnh từ `ui_dir`. Tệp tĩnh KHÔNG thoát khỏi `ui_dir` (phân giải thật + so tiền tố, nên cả
+//!    liên kết mềm dẫn ra ngoài cũng bị chặn).
+//!
+//! Token: 128 bit từ hệ điều hành (`getrandom`); không lấy được ⟹ KHÔNG dựng (không bao giờ rơi về khoá yếu).
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+pub use crate::localserver::MAX_BODY;
+use crate::localserver::{parse_form, percent_decode, Req};
+
+/// Tên cookie phiên.
+pub const COOKIE: &str = "huba_ui";
+
+#[derive(Debug, Clone)]
+pub struct Resp {
+    pub status: u16,
+    pub ctype: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+pub struct UiState {
+    pub port: u16,
+    pub ui_dir: PathBuf,
+    session: String,
+    ticket: String,
+    ticket_used: AtomicBool,
+}
+
+/// 16 byte ngẫu nhiên của hệ điều hành ⟹ 32 chữ số hex.
+fn random_hex() -> Result<String, String> {
+    let mut b = [0u8; 16];
+    getrandom::getrandom(&mut b)
+        .map_err(|e| format!("không lấy được số ngẫu nhiên từ hệ điều hành: {e}"))?;
+    Ok(b.iter().map(|x| format!("{x:02x}")).collect())
+}
+
+impl UiState {
+    /// Dựng trạng thái. Lỗi nếu hệ điều hành không cấp được số ngẫu nhiên — KHÔNG rơi về khoá yếu.
+    pub fn try_new(port: u16, ui_dir: PathBuf) -> Result<Self, String> {
+        let session = random_hex()?;
+        let mut ticket = random_hex()?;
+        // Xác suất 2^-128, nhưng «vé trùng khoá phiên» là lỗ hổng thật nên không để nó xảy ra.
+        while ticket == session {
+            ticket = random_hex()?;
+        }
+        Ok(UiState {
+            port,
+            ui_dir,
+            session,
+            ticket,
+            ticket_used: AtomicBool::new(false),
+        })
+    }
+
+    /// Như [`try_new`] nhưng dừng chương trình khi không có số ngẫu nhiên (dùng trong test).
+    pub fn new(port: u16, ui_dir: PathBuf) -> Self {
+        Self::try_new(port, ui_dir)
+            .expect("uiserver: không có số ngẫu nhiên ⟹ không dựng giao diện")
+    }
+
+    /// Vé một lần để ghép vào URL đầu tiên.
+    pub fn ticket(&self) -> &str {
+        &self.ticket
+    }
+
+    /// Giá trị cookie phiên (test dùng; mã chạy thật chỉ đưa nó qua `Set-Cookie`).
+    pub fn session(&self) -> &str {
+        &self.session
+    }
+
+    fn hosts(&self) -> [String; 2] {
+        [
+            format!("127.0.0.1:{}", self.port),
+            format!("localhost:{}", self.port),
+        ]
+    }
+
+    fn origins(&self) -> [String; 2] {
+        [
+            format!("http://127.0.0.1:{}", self.port),
+            format!("http://localhost:{}", self.port),
+        ]
+    }
+}
+
+/// So sánh không rò độ dài-khớp qua thời gian (độ dài khác ⟹ sai ngay; chỉ độ dài là lộ, mà nó cố định 32).
+fn ct_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+const CSP: &str = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; \
+                   frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+
+fn mk(status: u16, ctype: &str, body: impl Into<Vec<u8>>) -> Resp {
+    Resp {
+        status,
+        ctype: ctype.to_string(),
+        headers: vec![],
+        body: body.into(),
+    }
+}
+
+fn text(status: u16, msg: &str) -> Resp {
+    mk(status, "text/plain; charset=utf-8", msg.as_bytes().to_vec())
+}
+
+/// Gắn tiêu đề an toàn lên MỌI phản hồi (kể cả lỗi).
+fn finish(mut r: Resp) -> Resp {
+    for (k, v) in [
+        ("X-Content-Type-Options", "nosniff"),
+        ("Cache-Control", "no-store"),
+        ("Referrer-Policy", "no-referrer"),
+        ("X-Frame-Options", "DENY"),
+        ("Content-Security-Policy", CSP),
+    ] {
+        r.headers.push((k.to_string(), v.to_string()));
+    }
+    r
+}
+
+fn cookie_value<'a>(req: &'a Req, name: &str) -> Option<&'a str> {
+    let h = req.headers.get("cookie")?;
+    h.split(';').find_map(|kv| {
+        let (k, v) = kv.trim().split_once('=')?;
+        (k == name).then_some(v)
+    })
+}
+
+pub fn handle(state: &UiState, req: &Req) -> Resp {
+    finish(route(state, req))
+}
+
+fn route(state: &UiState, req: &Req) -> Resp {
+    // 1. Host
+    let host = req.headers.get("host").map(|h| h.to_ascii_lowercase());
+    match host {
+        Some(h) if state.hosts().contains(&h) => {}
+        _ => return text(403, "Host không hợp lệ"),
+    }
+    // 2. Origin khi không phải GET
+    let is_get = req.method.eq_ignore_ascii_case("GET");
+    if !is_get {
+        match req.headers.get("origin") {
+            Some(o) if state.origins().iter().any(|ok| ok == o) => {}
+            _ => return text(403, "Origin không hợp lệ"),
+        }
+    }
+    // 3. Thân
+    if req.body.len() > MAX_BODY {
+        return text(413, "Thân yêu cầu quá lớn");
+    }
+    let (path, query) = match req.target.split_once('?') {
+        Some((p, q)) => (p, q),
+        None => (req.target.as_str(), ""),
+    };
+    // 4. Đổi vé lấy cookie
+    if is_get && path == "/" && query.split('&').any(|kv| kv.starts_with("t=")) {
+        let t = parse_form(query).get("t").cloned().unwrap_or_default();
+        if ct_eq(&t, &state.ticket)
+            && state
+                .ticket_used
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            let mut r = mk(303, "text/plain; charset=utf-8", Vec::new());
+            r.headers.push(("Location".into(), "/".into()));
+            r.headers.push((
+                "Set-Cookie".into(),
+                format!(
+                    "{COOKIE}={}; HttpOnly; SameSite=Strict; Path=/",
+                    state.session
+                ),
+            ));
+            return r;
+        }
+        return text(401, "Vé không đúng hoặc đã dùng");
+    }
+    // 5. Cookie phiên
+    match cookie_value(req, COOKIE) {
+        Some(v) if ct_eq(v, &state.session) => {}
+        _ => return text(401, "Cần đăng nhập bằng vé"),
+    }
+    // 6. Định tuyến
+    if !is_get {
+        return text(405, "Chưa có thao tác ghi");
+    }
+    if path == "/api/health" {
+        return mk(200, "application/json", br#"{"ok":true}"#.to_vec());
+    }
+    if path.starts_with("/api/") {
+        return text(404, "Không có đường API này");
+    }
+    serve_static(&state.ui_dir, path)
+}
+
+/// Tệp tĩnh dưới `ui_dir`. `400` cho đường dẫn dị dạng, `404` cho không thấy HOẶC thoát khỏi `ui_dir`.
+fn serve_static(ui_dir: &Path, path: &str) -> Resp {
+    let decoded = percent_decode(path);
+    if decoded.contains('\0') || decoded.contains('\\') || !decoded.starts_with('/') {
+        return text(400, "Đường dẫn không hợp lệ");
+    }
+    let rel = decoded.trim_start_matches('/');
+    let segs: Vec<&str> = if rel.is_empty() {
+        vec!["index.html"]
+    } else {
+        rel.split('/').collect()
+    };
+    // `trim_start_matches('/')` đã nuốt MỌI dấu `/` đầu ⟹ `//etc/passwd` thành `etc/passwd`; vì vậy kiểm lại bản gốc.
+    if decoded.starts_with("//") || segs.iter().any(|s| s.is_empty() || *s == "." || *s == "..") {
+        return text(400, "Đường dẫn không hợp lệ");
+    }
+    let mut target = ui_dir.to_path_buf();
+    for s in &segs {
+        target.push(s);
+    }
+    let (Ok(root), Ok(file)) = (ui_dir.canonicalize(), target.canonicalize()) else {
+        return text(404, "Không thấy");
+    };
+    if !file.starts_with(&root) || !file.is_file() {
+        return text(404, "Không thấy");
+    }
+    match std::fs::read(&file) {
+        Ok(bytes) => mk(200, ctype_of(&file), bytes),
+        Err(_) => text(404, "Không thấy"),
+    }
+}
+
+fn ctype_of(p: &Path) -> &'static str {
+    match p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("html") | Some("htm") => "text/html; charset=utf-8",
+        Some("js") | Some("mjs") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("json") => "application/json",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("ico") => "image/x-icon",
+        Some("woff2") => "font/woff2",
+        Some("txt") | Some("md") => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
+
+// ── Vòng lắng nghe thật (W1.8) ─────────────────────────────────────────────────────────────────
+
+/// Số kết nối xử lý cùng lúc tối đa: một máy một chủ nhân, 32 là thừa; trần này chỉ để một vòng lặp lỗi/kẻ lạ không đẻ
+/// thread vô hạn.
+const MAX_CONN: usize = 32;
+/// Quá hạn đọc/ghi một kết nối: không để một ổ cắm treo giữ thread mãi.
+const IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Thư mục giao diện mặc định: env `HUBA_UI_DIR` → `<thư mục chứa huba>/ui` (gói cài) → `<hub_home>/ui` → `<hub_home>/docs/ui`
+/// (cây mã). Chỉ nhận thư mục CÓ `index.html`.
+pub fn default_ui_dir(hub_home: &Path) -> Option<PathBuf> {
+    let mut cands: Vec<PathBuf> = Vec::new();
+    if let Ok(d) = std::env::var("HUBA_UI_DIR") {
+        if !d.trim().is_empty() {
+            cands.push(PathBuf::from(d));
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            cands.push(dir.join("ui"));
+        }
+    }
+    cands.push(hub_home.join("ui"));
+    cands.push(hub_home.join("docs").join("ui"));
+    cands.into_iter().find(|d| d.join("index.html").is_file())
+}
+
+/// Chạy vòng nhận kết nối trên `listener` (chặn mãi mãi). Mỗi kết nối một thread, có hạn đọc/ghi và trần số kết nối.
+pub fn serve_loop(listener: std::net::TcpListener, state: std::sync::Arc<UiState>) {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::Arc;
+    let live = Arc::new(AtomicUsize::new(0));
+    for stream in listener.incoming() {
+        let mut stream = match stream {
+            Ok(s) => s,
+            Err(e) => {
+                crate::logging::warn(
+                    "ui_accept_failed",
+                    serde_json::json!({ "err": e.to_string() }),
+                );
+                continue;
+            }
+        };
+        if live.fetch_add(1, Ordering::SeqCst) >= MAX_CONN {
+            live.fetch_sub(1, Ordering::SeqCst);
+            let _ = write_out(&mut stream, finish(text(503, "Quá nhiều kết nối")));
+            continue;
+        }
+        let (state, live) = (Arc::clone(&state), Arc::clone(&live));
+        std::thread::spawn(move || {
+            let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
+            let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
+            let resp = match crate::localserver::read_request(&mut stream) {
+                Ok(req) => handle(&state, &req),
+                Err(e) => {
+                    let m = e.to_string();
+                    let code = if m.contains("body_too_large") {
+                        413
+                    } else if m.contains("headers_too_large") {
+                        431
+                    } else {
+                        400
+                    };
+                    // Lỗi đọc thường là kẻ lạ gửi rác hoặc hết hạn — ghi để truy, không ồn.
+                    crate::logging::info(
+                        "ui_bad_request",
+                        serde_json::json!({ "why": m, "status": code }),
+                    );
+                    finish(text(code, "Yêu cầu không hợp lệ"))
+                }
+            };
+            if let Err(e) = write_out(&mut stream, resp) {
+                crate::logging::info(
+                    "ui_write_failed",
+                    serde_json::json!({ "err": e.to_string() }),
+                );
+            }
+            live.fetch_sub(1, Ordering::SeqCst);
+        });
+    }
+}
+
+fn write_out(stream: &mut std::net::TcpStream, r: Resp) -> anyhow::Result<()> {
+    let status = match r.status {
+        200 => "200 OK",
+        303 => "303 See Other",
+        400 => "400 Bad Request",
+        401 => "401 Unauthorized",
+        403 => "403 Forbidden",
+        404 => "404 Not Found",
+        405 => "405 Method Not Allowed",
+        413 => "413 Payload Too Large",
+        431 => "431 Request Header Fields Too Large",
+        503 => "503 Service Unavailable",
+        _ => "500 Internal Server Error",
+    };
+    let hs: Vec<(&str, String)> = r
+        .headers
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.clone()))
+        .collect();
+    crate::localserver::write_resp(stream, status, &r.ctype, &hs, &r.body)
+}
+
+/// `huba ui`: mở cổng 127.0.0.1, in URL (có vé), tuỳ chọn mở cửa sổ, rồi phục vụ mãi.
+pub fn serve(ui_dir: PathBuf, open: bool) -> anyhow::Result<()> {
+    if !ui_dir.join("index.html").is_file() {
+        anyhow::bail!(
+            "thư mục giao diện «{}» không có index.html — đặt HUBA_UI_DIR hoặc --dir",
+            ui_dir.display()
+        );
+    }
+    let (listener, port) = crate::localserver::bind_loopback()?;
+    let state = UiState::try_new(port, ui_dir).map_err(|e| anyhow::anyhow!(e))?;
+    let url = format!("http://127.0.0.1:{port}/?t={}", state.ticket());
+    crate::logging::info("ui_started", serde_json::json!({ "port": port }));
+    println!("\n  Giao diện huba:\n\n    {url}\n");
+    println!("  (chỉ máy này vào được; vé trên URL dùng MỘT lần — Ctrl-C để đóng)\n");
+    if open {
+        crate::localserver::open_window(&url, "ui");
+    }
+    serve_loop(listener, std::sync::Arc::new(state));
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constant_time_compare_agrees_with_equality() {
+        assert!(ct_eq("abc", "abc"));
+        assert!(!ct_eq("abc", "abd"));
+        assert!(!ct_eq("abc", "ab"));
+        assert!(!ct_eq("", "a"));
+        assert!(ct_eq("", ""));
+    }
+}

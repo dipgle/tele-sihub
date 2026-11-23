@@ -23,6 +23,8 @@ anyhow = "1"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
+# `uiserver.rs`: token phiên 128 bit từ hệ điều hành (đã có trong Cargo.lock qua phụ thuộc gián tiếp).
+getrandom = "0.2"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "multipart"] }
 rusqlite = { version = "0.32", features = ["bundled"] }

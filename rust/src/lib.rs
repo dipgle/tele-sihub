@@ -87,6 +87,7 @@ pub mod so_viec;
 pub mod telegram;
 /// Sổ tin đến: update Telegram nằm trên ĐĨA trước khi con dấu `offset` tiến.
 pub mod tin_den;
+pub mod uiserver;
 pub mod verbs;
 pub mod watch;
 pub mod web;

@@ -64,6 +64,18 @@ enum Command {
         #[arg(long)]
         no_open: bool,
     },
+    /// Giao diện web cục bộ của huba (chỉ 127.0.0.1) — W1 của docs/ui/ke-hoach-cong-viec.md
+    ///
+    /// Mở cổng, in URL có vé MỘT lần, mở cửa sổ ứng dụng rồi phục vụ. Hàng rào (Host · Origin · cookie phiên · trần thân ·
+    /// chống thoát thư mục) ở `uiserver.rs`.
+    Ui {
+        /// Không tự mở cửa sổ — in URL rồi phục vụ (nghiệm thu headless, máy không màn hình)
+        #[arg(long)]
+        no_open: bool,
+        /// Thư mục giao diện (mặc định: HUBA_UI_DIR, rồi `ui/` cạnh huba, rồi `<hub_home>/docs/ui`)
+        #[arg(long)]
+        dir: Option<std::path::PathBuf>,
+    },
     /// In dòng lệnh mở phiên của một tài khoản — ĐÚNG dòng `/new` gõ vào Terminal
     ///
     /// Quang 12/11 chọn *"acc8 cạnh tranh bình đẳng"* cho vai mở bằng
@@ -226,6 +238,14 @@ fn real_main() -> Result<()> {
             } else {
                 huba::accounts_page::serve(&cfg, &db, !no_open)
             }
+        }
+        Command::Ui { no_open, dir } => {
+            let dir = dir
+                .or_else(|| huba::uiserver::default_ui_dir(&cfg.hub_home))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("không thấy thư mục giao diện (cần index.html) — đặt HUBA_UI_DIR hoặc --dir")
+                })?;
+            huba::uiserver::serve(dir, !no_open)
         }
         Command::LenhMo { acc, prompt } => {
             if !cfg
