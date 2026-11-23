@@ -106,6 +106,24 @@ buttons.
 > The plain consequence: **huba consumes no quota on its own**; a `claude` call
 > happens only when you press a button, at the same cost as typing it in a terminal.
 
+## Before you start
+
+There are two machines in every install: the one that **builds** a package and the one
+that **runs** huba (they can be the same). Packages are built from a clone of this
+repository sitting inside its workspace (`dong-goi-*.sh` also packs the shared rules,
+skills, the security gate in `../scripts/` and the `project-agent` MCP server from
+`../AI/codetrail/`) — a package step that misses any of them stops with exit 2 instead
+of building half a package.
+
+| | Build machine | Machine that runs huba |
+|---|---|---|
+| **macOS** (Apple Silicon only) | Rust/`cargo`; commit first — the package is named after `HEAD` but packs the tree as it is (the packer only warns about uncommitted changes) | `python3`; `claude` / `opencode` are installed by the installer at the version pinned in `cli-ghim.env`; `hubd` is signed ON this machine |
+| **Linux** | Rust/`cargo` + target `x86_64-unknown-linux-gnu` (`HUBA_LINUX_TARGET` for ARM); from a Mac also `cargo-zigbuild` + `zig` | `tmux`, `python3`, `systemd --user` |
+| **Windows** | Linux or macOS with `zig` (or mingw) | Python 3 (the installer tries `winget`) |
+
+Every machine also needs a **Telegram bot** (token from @BotFather) — one bot per
+machine, because two `hubd` processes on one bot fight over `getUpdates`.
+
 ## Up and running in 4 commands
 
 ```bash
@@ -164,6 +182,44 @@ that folder, and `/new` opens sessions there.
 
 ## Start with the machine — macOS (launchd)
 
+**A new Mac, from a package** (no clone needed on the target):
+
+```bash
+bash scripts/dong-goi-mac.sh                     # on the build Mac → .tmp/huba-mac-<sha>.tar.gz (prints sha256)
+tar -xzf huba-mac-<sha>.tar.gz
+bash huba-mac-<sha>/install_mac.sh               # install OR update; safe to re-run
+bash ~/huba/install_mac.sh --verify              # installed hubd == this package? launchd job loaded?
+```
+
+The installer copies the package into `$HUBA_HOME` (default `~/huba`) and **never
+overwrites** `huba.config.json`, `huba.env` or `data/`. It creates `~/projects` and puts the
+shared `CLAUDE.md` + skills/agents there (existing files are kept), sets up the account
+folders and the `project-agent` MCP server, installs the pinned CLIs, creates the signing
+identity **"Hub Local Signing"** once (`make-signing-cert.sh`), signs `hubd`, writes the
+launchd plist and starts it. Exit code: 0 done · 1 failed · 2 could not measure (package
+incomplete, or not a Mac). Switches: `HUBA_HOME`, `HUBA_KHONG_CAI_CLI=1`,
+`HUBA_KHONG_MO_TRANG=1`. To update, unpack the newer package and run its `install_mac.sh`.
+
+**Three things only a person can do** (system dialogs and secrets cannot be automated —
+huba cannot type into a session until the first two are done):
+
+1. System Settings › Privacy & Security › **Accessibility**: add
+   `~/Library/Application Support/hub/bin/hubd`.
+2. The first time huba drives Terminal, macOS asks *"hubd wants to control Terminal"* —
+   press **Allow**.
+3. The Telegram bot: the installer opens the `huba setup` page if `huba.env` has no bot
+   yet (paste the token, send the bot one message, Save). Then log each account in from
+   Telegram: `/accounts <acc> -l`.
+
+The same notes travel inside the package as `DOC-TRUOC.txt`.
+
+**A Mac that keeps a clone** (the developer's machine). `bash install_update.sh` builds,
+signs, installs and restarts; `bash install_update.sh --verify` says whether the installed
+`hubd` is the current build. The installer turns on `core.hooksPath=.githooks`, after which
+every `git pull` that changes runnable files **re-installs by itself** in the background
+(log in `.tmp/tu-cai-<time>.log`; `HUBA_KHONG_TU_CAI=1` skips it). By hand, the same steps
+without the script:
+
 ```bash
 ./huba self-install                                  # build → sign → install → restart
 
@@ -185,7 +241,8 @@ sign with a certificate → install to its own path), **rewritten in Rust** rath
 than calling the script: huba has to be able to install itself, or every fix
 needs someone sitting at the machine to type one line — exactly what this project
 exists to remove. From the phone: `/upgrade`. If any step fails, **the installed
-copy is left untouched**.
+copy is left untouched**. ⚠ `/upgrade` rebuilds the code **already on the machine** — it
+does not `git pull`; with the hook above, a pull alone is enough.
 
 launchd runs the **installed copy** `~/Library/Application Support/hub/bin/hubd`,
 not the `cargo` build in `target/`. In short (details in `CLAUDE.md`): macOS pins
