@@ -121,8 +121,10 @@ fi
 # vào tệp khi chẳng có gì đổi, nên "phải mới hơn lúc build" sẽ kêu oan ngay ở
 # lượt cài thứ hai liên tiếp — mà một cảnh báo kêu oan là một cảnh báo bị phớt
 # lờ, tức tệ hơn không có.
+# `rust/src/main.rs` là CLI `huba`, KHÔNG phải đầu vào của `hubad` — sửa riêng nó
+# thì cargo đúng là không dựng lại `hubad`, và chốt này kêu oan (đo 23/11, `8cf674f`).
 moi_hon="$(find "$HERE/rust/src" "$HERE/rust/Cargo.toml" "$HERE/rust/Cargo.lock" \
-             -type f -newer "$SRC" -print -quit 2>/dev/null || true)"
+             -type f -not -path "$HERE/rust/src/main.rs" -newer "$SRC" -print -quit 2>/dev/null || true)"
 [[ -z "$moi_hon" ]] || die "$SRC CŨ HƠN cây mã ($moi_hon mới hơn nó).
   Tức nó không phải thứ lượt build vừa sinh ra — đừng cài một bản không của cây mã này.
   Nhìn xem cargo vừa dựng ra cái gì:  ls -lat $HERE/rust/target/release/ | head"
