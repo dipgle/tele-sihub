@@ -62,7 +62,9 @@ Quy ước: mỗi việc ≤ ~15 phút (ước lượng của tôi, **chưa đo*
 | ✅ W2.5 | `./gate.sh` đầy đủ trên nhánh `ui/w2` | `GATE_EXIT=0` · 251/251 · FAILED=0 · WIN/LINUX đo được (log `.tmp/gate-uiw2-20261123.log`) | 🅷 |
 | ✅ W2.6 | `ui/` vào 3 gói cài + 3 trình cài | gói Linux có `ui/` 4 tệp; cài ⟹ `~/huba/ui`; **rút `ui/` ⟹ `--verify`=1** rồi trả lại ⟹ 0 | 🅷 |
 | ✅ W2.7 | README mục «`huba ui`» | nói đúng việc đang làm được, nói rõ K3/K4 CHƯA có | 🅷 |
-| W3.1 | Linux: ưu tiên `chromium`/`google-chrome` `--app` nếu có | máy có Chrome ⟹ cửa sổ riêng; máy chỉ Firefox ⟹ rơi về `xdg-open` (đo cả hai nhánh) | 🅷 |
+| ✅ W3.1 | Linux: ưu tiên `chromium`/`google-chrome` `--app` nếu có | máy có Chrome ⟹ cửa sổ riêng; máy chỉ Firefox ⟹ rơi về `xdg-open` (đo cả hai nhánh) | 🅷 |
+
+**W3.1 đã đo (23/11, nhánh `ui/w3`):** `rust/tests/open_window_linux.rs` — 7 ca bằng trình duyệt GIẢ trong `PATH` riêng (có chromium · chỉ xdg-open · thứ tự `google-chrome` trước `chromium` · tệp không chạy được bị bỏ qua · tệp hỏng đứng đầu không chặn ứng viên sau · `open_window` trả về ngay dù trình duyệt còn sống · mục rỗng trong `PATH` không chạy chương trình cạnh cwd). Đối chứng ngược: 5 lỗi cấy (đợi trình duyệt · bỏ kiểm quyền · đảo thứ tự · quên `--app` · chạy chương trình cạnh cwd) ⟹ cả 5 ĐỎ, mã gốc XANH (`bash scripts/dot-bien-w31.sh`, thoát 0 = bắt đủ 5). ⚠ **Chưa đo trên Chrome THẬT**: máy này chỉ có Firefox nên nhánh `--app` mới chỉ chạy với bản giả; nhánh `xdg-open` là nhánh máy này đi thật.
 
 K3 trở đi giữ nguyên (đọc nhật ký, gửi…), chỉ khác là gọi qua `/api/*`.
 
