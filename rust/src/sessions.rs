@@ -2483,12 +2483,29 @@ pub fn declared_parts(text: &str, workspace_root: &str) -> Option<(String, Strin
     }
     // Không phải thư mục ⟹ thử đọc thành `<dự án>/<làn>`, cắt ở dấu `/` CUỐI
     // để `AI/tcc/amm/LANE` vẫn ra dự án `AI/tcc/amm`.
-    let (dau, lan) = name.rsplit_once('/')?;
-    let lan = lan.trim();
-    if lan.is_empty() {
-        return None;
+    if let Some((dau, lan)) = name.rsplit_once('/') {
+        let lan = lan.trim();
+        if lan.is_empty() {
+            return None;
+        }
+        return whole(dau).map(|duan| (duan, lan.to_string()));
     }
-    whole(dau).map(|duan| (duan, lan.to_string()))
+    // 🔴 Hà 24/11 (ảnh `/session`): phiên `85924d1b` khai `[dwork-audit]` ở cả 33 lượt nói —
+    // gạch NỐI thay vì gạch chéo — và hiện `projects-1f`. Luật viết `<dự-án>/<làn>`, nhưng viết
+    // gạch nối là lỗi quen. Chỉ nhận khi phần ĐỨNG TRƯỚC một dấu `-` là thư mục THẬT (thử từ dấu
+    // cuối về đầu để `beta-gamma-doc` ra `beta-gamma` + `doc`); không thư mục nào khớp ⇒ `None`,
+    // không đoán. Thư mục thật có gạch nối nguyên chữ đã thắng ở `whole(name)` phía trên.
+    let mut cat = name.len();
+    while let Some(i) = name[..cat].rfind('-') {
+        let (dau, lan) = (&name[..i], name[i + 1..].trim());
+        if !dau.is_empty() && !lan.is_empty() {
+            if let Some(duan) = whole(dau) {
+                return Some((duan, lan.to_string()));
+            }
+        }
+        cat = i;
+    }
+    None
 }
 
 /// Dự án của thư mục CLI mở phiên (`cwd`) — **scope**, không phải danh tính.
