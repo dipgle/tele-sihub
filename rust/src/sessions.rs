@@ -2667,6 +2667,7 @@ pub fn folder_for_head_or_tail(
     tail: &str,
     workspace_root: &str,
     scope: &str,
+    rong: impl FnOnce() -> Option<String>,
 ) -> Option<String> {
     // 🔴 Hà 24/11 16:20 («Chạy tới 50% rồi chưa ra tên»): phiên `b978536d` im thẻ 42/46 lượt đầu, chỉ khai
     // `[dwork/dci]` ở 4 lượt cuối (được nhắc theo luật giữa chừng). Trước đây `head.unwrap_or(tail)` chọn đầu
@@ -2680,7 +2681,74 @@ pub fn folder_for_head_or_tail(
             return Some(ten);
         }
     }
-    folder_for_session(session_id, tail, workspace_root, scope)
+    if let Some(ten) =
+        folder_for_session(session_id, tail, workspace_root, scope).filter(|t| !t.is_empty())
+    {
+        return Some(ten);
+    }
+    // 🔴 Đo lại 24/11 17:0x: nhật ký toàn công cụ ⟹ 256 KB đuôi chỉ phủ ~6 lượt nói (một thẻ = «nhắc»),
+    // trong khi luật «hai lượt nhất quán» nhìn 12 lượt. Chưa có tên thì đọc RỘNG hơn, chỉ giữ lượt nói.
+    match rong() {
+        Some(r) => folder_for_session(session_id, &r, workspace_root, scope),
+        None => None,
+    }
+}
+
+/// Cửa sổ rộng để tìm lời khai của phiên chưa có tên (xem [`folder_for_head_or_tail`]).
+const KHAI_RONG_BYTES: u64 = 4 * 1024 * 1024;
+/// Phiên chưa tên chỉ được đọc rộng lại khi nhật ký dài thêm ít nhất chừng này — khỏi đọc 4 MiB mỗi vòng ~10 s.
+const KHAI_RONG_BUOC: u64 = 256 * 1024;
+
+/// Đọc tối đa [`KHAI_RONG_BYTES`] CUỐI nhật ký, chỉ giữ dòng `assistant` có chữ (bỏ công cụ, ảnh, đính kèm).
+pub fn read_spoken_wide(path: &Path) -> Result<String> {
+    let mut f = std::fs::File::open(path)?;
+    let len = f.metadata()?.len();
+    let from = len.saturating_sub(KHAI_RONG_BYTES);
+    f.seek(SeekFrom::Start(from))?;
+    let mut buf = Vec::new();
+    f.take(KHAI_RONG_BYTES).read_to_end(&mut buf)?;
+    let mut out = String::new();
+    let mut lines = buf.split(|b| *b == b'\n');
+    if from > 0 {
+        lines.next(); // dòng đầu bị cắt giữa chừng
+    }
+    for line in lines {
+        if line.is_empty() || line.len() > HEAD_MAX_LINE {
+            continue;
+        }
+        let Ok(record) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        if assistant_spoken_text(&record).is_some() {
+            out.push_str(&String::from_utf8_lossy(line));
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
+/// Sổ «lần đọc rộng gần nhất» theo phiên: kích thước nhật ký lúc đó.
+fn khai_rong_da_doc() -> &'static std::sync::Mutex<HashMap<String, u64>> {
+    static M: std::sync::OnceLock<std::sync::Mutex<HashMap<String, u64>>> =
+        std::sync::OnceLock::new();
+    M.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// `Some` khi ĐÃ tới lúc đọc rộng cho phiên này (chưa đọc lần nào, hoặc nhật ký dài thêm ≥ [`KHAI_RONG_BUOC`]).
+fn khai_rong_den_luot(session_id: &str, path: &Path) -> bool {
+    let Ok(len) = std::fs::metadata(path).map(|m| m.len()) else {
+        return false;
+    };
+    let Ok(mut m) = khai_rong_da_doc().lock() else {
+        return true;
+    };
+    match m.get(session_id) {
+        Some(truoc) if len < truoc.saturating_add(KHAI_RONG_BUOC) => false,
+        _ => {
+            m.insert(session_id.to_string(), len);
+            true
+        }
+    }
 }
 
 /// [`folder_for_session`] + bằng chứng thứ hai là chữ của **tin nhắn đầu** người
@@ -6655,6 +6723,21 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
                         &tail,
                         &ws,
                         &scope_label(&ws, &cwd),
+                        || {
+                            if !khai_rong_den_luot(&row.session_id, &path) {
+                                return None;
+                            }
+                            match read_spoken_wide(&path) {
+                                Ok(r) => Some(r),
+                                Err(e) => {
+                                    logging::warn(
+                                        "khai_rong_doc_loi",
+                                        json!({ "session": row.session_id, "err": e.to_string() }),
+                                    );
+                                    None
+                                }
+                            }
+                        },
                     )
                     .unwrap_or_default();
                     // SAU `folder_for_session`, không trước: chính lượt ấy ghi

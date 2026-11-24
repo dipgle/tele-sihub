@@ -35,8 +35,13 @@ fn jsonl(dong: &[String]) -> String {
 }
 
 fn ten(id: &str, head: Option<&str>, tail: &str) -> Option<String> {
+    ten_rong(id, head, tail, None)
+}
+
+/// `rong` = các lượt nói đọc từ cửa sổ RỘNG của nhật ký (None = không đọc được / không gọi tới).
+fn ten_rong(id: &str, head: Option<&str>, tail: &str, rong: Option<String>) -> Option<String> {
     let ws = workspace();
-    huba::sessions::folder_for_head_or_tail(id, head, tail, ws.to_str().unwrap(), "")
+    huba::sessions::folder_for_head_or_tail(id, head, tail, ws.to_str().unwrap(), "", || rong)
 }
 
 fn dau_im() -> String {
@@ -98,4 +103,68 @@ fn dau_co_ten_thi_dau_thang() {
 fn khong_co_dau_thi_dung_duoi() {
     let duoi = jsonl(&[noi("[alpha] x"), noi("[alpha] y"), noi("[alpha] z")]);
     assert_eq!(ten("khai-muon-4", None, &duoi).as_deref(), Some("alpha"));
+}
+
+/// ⑤ CA ĐO LẠI 24/11 17:0x — nhật ký toàn công cụ: 256 KB đuôi chỉ phủ 6 lượt nói và MỘT thẻ (phiên vừa chuyển
+/// giao), nhưng cửa sổ rộng có ba. Đầu im + đuôi một lần ⟹ phải đọc rộng.
+#[test]
+fn duoi_hep_chi_mot_lan_thi_doc_rong() {
+    let duoi_hep = jsonl(&[
+        noi("Việc."),
+        noi("[alpha/dci] Đã chuyển phiên."),
+        noi("Xong."),
+    ]);
+    let rong = jsonl(&[
+        noi("[alpha/dci] Đang chờ kiểm."),
+        noi("Commit xong."),
+        noi("[alpha/dci] Kiểm xanh."),
+        noi("Việc."),
+        noi("[alpha/dci] Đã chuyển phiên."),
+    ]);
+    assert_eq!(
+        ten_rong("khai-muon-5", Some(&dau_im()), &duoi_hep, Some(rong)).as_deref(),
+        Some("alpha")
+    );
+}
+
+/// ⑥ ĐỐI CHỨNG — cửa sổ rộng cũng chỉ có MỘT lần ⟹ vẫn là nhắc, không tên.
+#[test]
+fn rong_cung_chi_mot_lan_van_khong_ten() {
+    let duoi_hep = jsonl(&[noi("[alpha/dci] Một lần."), noi("Xong.")]);
+    let rong = jsonl(&[noi("Việc."), noi("[alpha/dci] Một lần."), noi("Xong.")]);
+    assert_eq!(
+        ten_rong("khai-muon-6", Some(&dau_im()), &duoi_hep, Some(rong)),
+        None
+    );
+}
+
+/// ⑦ `read_spoken_wide` chỉ giữ lượt nói, bỏ công cụ/đính kèm, và với tệp > 4 MiB vẫn thấy lượt cuối.
+#[test]
+fn doc_rong_chi_giu_luot_noi_va_thay_cuoi_tep() {
+    let mut dong = vec![noi("[alpha] lượt ĐẦU, nằm ngoài cửa sổ 4 MiB.")];
+    for _ in 0..3 {
+        dong.push(
+            serde_json::json!({"type": "attachment", "payload": "x".repeat(1_500_000)}).to_string(),
+        );
+    }
+    dong.push(
+        serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": "ls"}}]}})
+        .to_string(),
+    );
+    dong.push(noi("[alpha/dci] lượt CUỐI."));
+    let dir = std::env::temp_dir().join(format!("huba-doc-rong-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("r.jsonl");
+    std::fs::write(&path, jsonl(&dong)).unwrap();
+    assert!(std::fs::metadata(&path).unwrap().len() > 4 * 1024 * 1024);
+
+    let r = huba::sessions::read_spoken_wide(&path).unwrap();
+    assert!(r.contains("lượt CUỐI"), "mất lượt cuối: {} byte", r.len());
+    assert!(!r.contains("lượt ĐẦU"), "lượt đầu phải nằm ngoài cửa sổ");
+    assert!(
+        !r.contains("attachment") && !r.contains("tool_use"),
+        "phải bỏ dòng không phải lượt nói"
+    );
+    assert!(r.len() < 1024, "phình {} byte", r.len());
 }
