@@ -2660,6 +2660,29 @@ pub fn prompt_project(first: &str, workspace_root: &str) -> Option<String> {
     None
 }
 
+/// Tên phiên Claude: đọc ĐẦU nhật ký (Hà 23/11 «chỉ lấy tên ở vài lượt đầu»); đầu im ⟹ hỏi tiếp ĐUÔI.
+pub fn folder_for_head_or_tail(
+    session_id: &str,
+    head: Option<&str>,
+    tail: &str,
+    workspace_root: &str,
+    scope: &str,
+) -> Option<String> {
+    // 🔴 Hà 24/11 16:20 («Chạy tới 50% rồi chưa ra tên»): phiên `b978536d` im thẻ 42/46 lượt đầu, chỉ khai
+    // `[dwork/dci]` ở 4 lượt cuối (được nhắc theo luật giữa chừng). Trước đây `head.unwrap_or(tail)` chọn đầu
+    // CÓ DỮ LIỆU và bỏ đuôi — đầu im thì tên không bao giờ ra. Đầu ra tên ⟹ đầu thắng như cũ; đầu không ra tên
+    // ⟹ hỏi đuôi, nơi vẫn áp luật «hai lượt nhất quán mới là khai» (một lần là NHẮC) nên không mở lại cửa
+    // «tên nhảy theo việc hôm nay».
+    if let Some(h) = head {
+        if let Some(ten) =
+            folder_for_session(session_id, h, workspace_root, scope).filter(|t| !t.is_empty())
+        {
+            return Some(ten);
+        }
+    }
+    folder_for_session(session_id, tail, workspace_root, scope)
+}
+
 /// [`folder_for_session`] + bằng chứng thứ hai là chữ của **tin nhắn đầu** người
 /// dùng (opencode giữ nó ở `OcSession::first_prompt`).
 pub fn folder_for_session_ev(
@@ -6626,9 +6649,10 @@ pub fn snapshot(cfg: &Config) -> SessionsSnapshot {
                     // đầu), không đọc đuôi: đuôi của phiên dài là việc hôm nay, không
                     // phải dự án được giao lúc mở phiên.
                     let head_cho_ten = read_head(&path).ok();
-                    row.folder = folder_for_session(
+                    row.folder = folder_for_head_or_tail(
                         &row.session_id,
-                        head_cho_ten.as_deref().unwrap_or(&tail),
+                        head_cho_ten.as_deref(),
+                        &tail,
                         &ws,
                         &scope_label(&ws, &cwd),
                     )
