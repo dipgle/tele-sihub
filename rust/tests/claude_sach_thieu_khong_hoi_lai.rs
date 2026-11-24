@@ -34,6 +34,7 @@ fn dung(
         ),
     )
     .expect("ghi claude giả");
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&gia, std::fs::Permissions::from_mode(0o755)).expect("chmod");
