@@ -120,6 +120,23 @@ pub fn is_neutral(label: &str, root_name: &str) -> bool {
     project == root_name
 }
 
+/// `true` khi ghim chỉ có dự án (`[dwork]`, đuôi nào cũng được) còn nhãn mới là CHÍNH dự án ấy kèm làn (`[dwork/dci]`).
+/// Chỉ một chiều: nhãn đã có làn thì không bao giờ đổi làn, và dự án khác (`[dworker/x]`) không khớp.
+fn them_lan_cung_du_an(ghim: &str, moi: &str) -> bool {
+    let trong = |l: &str| -> Option<String> {
+        let rest = l.trim().strip_prefix('[')?;
+        Some(rest.split(']').next()?.to_string())
+    };
+    let (Some(g), Some(m)) = (trong(ghim), trong(moi)) else {
+        return false;
+    };
+    !g.is_empty()
+        && !g.contains('/')
+        && m.strip_prefix(g.as_str())
+            .and_then(|r| r.strip_prefix('/'))
+            .is_some_and(|lan| !lan.trim().is_empty())
+}
+
 /// Áp ghim lên các hàng. Trả `true` khi sổ có đổi (chỗ gọi mới ghi đĩa).
 pub fn apply_pins(rows: &mut [LiveSession], book: &mut PinBook, root_name: &str, now: i64) -> bool {
     let mut changed = false;
@@ -142,6 +159,12 @@ pub fn apply_pins(rows: &mut [LiveSession], book: &mut PinBook, root_name: &str,
             Some(p) => {
                 if is_neutral(&p.label, root_name) && !is_neutral(&r.label, root_name) {
                     // được giao dự án THẬT lần đầu: nâng đúng một lần rồi ghim luôn
+                    p.label = r.label.clone();
+                    p.seen = now;
+                    changed = true;
+                } else if them_lan_cung_du_an(&p.label, &r.label) {
+                    // Hà 24/11 («Tên vẫn thiếu», `[dwork]` thay vì `[dwork/dci]`): phiên mới mở chưa nói gì nên ghim
+                    // `[dwork]`; làn đến sau là chi tiết CÙNG dự án, không phải đổi danh tính ⟹ nâng đúng một lần.
                     p.label = r.label.clone();
                     p.seen = now;
                     changed = true;

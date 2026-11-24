@@ -90,6 +90,47 @@ fn one_real_project_never_jumps_to_another() {
     }
 }
 
+/// 🔴 Hà 24/11 14:23 (ảnh `/session`): phiên opencode `df9df371` hiện `[dwork]` trong khi lượt nói nào cũng mở bằng
+/// `[dwork/dci]`. Phiên MỚI MỞ chưa nói gì lúc huba thấy lần đầu ⟹ ghim `[dwork]`; lời khai `[dwork/dci]` đến sau, nhưng
+/// `[dwork]` không trung tính nên bị khoá. Làn là chi tiết CÙNG dự án, không phải đổi danh tính ⟹ nâng đúng một lần.
+#[test]
+fn a_project_only_pin_gains_its_lane_once_then_sticks() {
+    let mut b = PinBook::default();
+    let ra = qua_ghim(
+        &mut b,
+        "ses_df9df371",
+        &[
+            "[dwork]",
+            "[dwork]",
+            "[dwork/dci]",
+            "[dwork/review]",
+            "[dwork]",
+        ],
+    );
+    assert_eq!(
+        ra,
+        [
+            "[dwork]",
+            "[dwork]",
+            "[dwork/dci]",
+            "[dwork/dci]",
+            "[dwork/dci]"
+        ]
+    );
+}
+
+/// ĐỐI CHỨNG NGƯỢC — không phải làn của CÙNG dự án thì vẫn khoá: `[dwork]` không nhảy sang `[huba/ui]`, và nhãn đã có làn
+/// không đổi làn.
+#[test]
+fn a_lane_of_another_project_or_a_changed_lane_does_not_move_the_pin() {
+    let mut b = PinBook::default();
+    let ra = qua_ghim(&mut b, "s1", &["[dwork]", "[huba/ui]", "[dworker/x]"]);
+    assert_eq!(ra, ["[dwork]", "[dwork]", "[dwork]"]);
+    let mut b2 = PinBook::default();
+    let r2 = qua_ghim(&mut b2, "s2", &["[dwork/dci]", "[dwork/review]"]);
+    assert_eq!(r2, ["[dwork/dci]", "[dwork/dci]"]);
+}
+
 /// Nhãn TRUNG TÍNH («chưa giao dự án») được gắn dự án thật ĐÚNG MỘT LẦN — rồi ghim luôn (ca `[projects]·dfef9718` → `[zkey]`).
 #[test]
 fn a_neutral_label_gains_a_real_project_once_then_sticks() {
