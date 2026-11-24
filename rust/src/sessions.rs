@@ -4824,13 +4824,83 @@ fn read_tail_n(path: &Path, bytes: u64) -> Result<String> {
 /// ĐẦU thì gần như luôn có: chủ máy mở phiên bằng một câu gọi tên dự án, rồi
 /// những việc đầu tiên là đọc `CLAUDE.md`, `PLAN.md` của chính dự án ấy.
 ///
-/// 64 KB, một lần đọc nhỏ, và chỉ chạy cho phiên chưa đoán được.
-fn read_head(path: &Path) -> Result<String> {
-    let mut file = std::fs::File::open(path)?;
-    let mut buf = vec![0u8; 64 * 1024];
-    let n = file.read(&mut buf)?;
-    buf.truncate(n);
-    Ok(String::from_utf8_lossy(&buf).to_string())
+/// 🔴 «Vài lượt đầu» tính theo **DÒNG HỘI THOẠI**, không theo byte (Hà 24/11: phiên huba
+/// `103e5837` hiện `projects-1c`). Nhật ký Claude mở đầu bằng hàng chục dòng KHÔNG phải
+/// hội thoại — `attachment` (luật nạp vào: 78 KB), `api-request-*` (41 + 43 KB)… — nên câu
+/// trả lời `[huba]` đầu tiên nằm ở byte **226 469**; 64 KiB đầu theo byte không có dòng
+/// `assistant` nào ⟹ không lời khai ⟹ nhãn trung tính, ghim luôn. Nay: chỉ giữ dòng
+/// `assistant` và dòng `user` NHỎ (≤ [`HEAD_USER_LINE_MAX`]; một `user` to hơn là kết quả
+/// công cụ/bản dán, không mang lời khai), dừng khi đủ [`HEAD_MAX_LINES`] dòng hoặc
+/// [`HEAD_BUDGET_BYTES`] byte đã giữ. Trần quét [`HEAD_SCAN_CAP`] chặn tệp một-dòng-khổng-lồ.
+const HEAD_BUDGET_BYTES: usize = 64 * 1024;
+const HEAD_MAX_LINES: usize = 40;
+const HEAD_SCAN_CAP: u64 = 4 * 1024 * 1024;
+const HEAD_MAX_LINE: usize = 1024 * 1024;
+const HEAD_USER_LINE_MAX: usize = 16 * 1024;
+
+/// Đọc một dòng vào `line`, nhưng chỉ GIỮ tối đa `cap` byte (phần dư bị đọc bỏ, không cấp
+/// phát). Trả `(đã_đọc, bị_cắt)`; `đã_đọc == 0` = hết tệp.
+fn read_line_capped<R: std::io::BufRead>(
+    r: &mut R,
+    line: &mut Vec<u8>,
+    cap: usize,
+) -> std::io::Result<(usize, bool)> {
+    let mut total = 0usize;
+    let mut cut = false;
+    loop {
+        let buf = r.fill_buf()?;
+        if buf.is_empty() {
+            return Ok((total, cut));
+        }
+        let (take, done) = match buf.iter().position(|b| *b == b'\n') {
+            Some(i) => (i + 1, true),
+            None => (buf.len(), false),
+        };
+        let room = cap.saturating_sub(line.len());
+        if take > room {
+            cut = true;
+        }
+        line.extend_from_slice(&buf[..take.min(room)]);
+        r.consume(take);
+        total += take;
+        if done {
+            return Ok((total, cut));
+        }
+    }
+}
+
+pub fn read_head(path: &Path) -> Result<String> {
+    let file = std::fs::File::open(path)?;
+    let mut reader = std::io::BufReader::new(file.take(HEAD_SCAN_CAP));
+    let mut out = String::new();
+    let mut line: Vec<u8> = Vec::new();
+    let mut kept_lines = 0usize;
+    while kept_lines < HEAD_MAX_LINES && out.len() < HEAD_BUDGET_BYTES {
+        line.clear();
+        let (n, cut) = read_line_capped(&mut reader, &mut line, HEAD_MAX_LINE)?;
+        if n == 0 {
+            break;
+        }
+        // Dòng bị cắt (quá HEAD_MAX_LINE) hoặc cụt vì chạm trần quét: không phân tích được.
+        if cut || !line.ends_with(b"\n") && n as u64 >= HEAD_SCAN_CAP {
+            continue;
+        }
+        let Ok(record) = serde_json::from_slice::<Value>(&line) else {
+            continue;
+        };
+        let keep = match record.get("type").and_then(Value::as_str) {
+            Some("assistant") => true,
+            Some("user") => line.len() <= HEAD_USER_LINE_MAX,
+            _ => false,
+        };
+        if !keep {
+            continue;
+        }
+        out.push_str(String::from_utf8_lossy(&line).trim_end_matches('\n'));
+        out.push('\n');
+        kept_lines += 1;
+    }
+    Ok(out)
 }
 
 fn mtime_rfc3339(path: &Path) -> Option<String> {
