@@ -7127,6 +7127,36 @@ pub fn close_step(
     }
 }
 
+/// `close_window` TRẢ LỖI — lượt sau làm gì?
+///
+/// 🔴 Hà 25/11 (ảnh `/shot`: tab `[Process completed]`, 0 tiến trình, cửa sổ còn nguyên): *"Thi thoảng việc
+/// đóng phiên không đóng được triệt để và dừng ở đây"*. Nhánh `Err` của `CloseStep::Close` đọc MỌI lỗi là
+/// «cửa sổ biến mất giữa hai lượt hỏi» — nói *"cửa sổ không còn"* rồi XOÁ mục khỏi sổ. Nhưng
+/// `keys::close_tab` cũng trả `Err` khi Terminal nhận `close` (osascript 0) mà tab vẫn đứng đó — lời từ chối
+/// NHẤT THỜI (đo 17/08: gọi lại sau vài phút thì ăn). Câu «không còn» ấy là câu SAI, và xoá mục là bảo đảm
+/// không ai quay lại đóng nữa.
+///
+/// Phép đo đúng: hỏi LẠI `tab_state` sau lỗi. Chỉ `Gone` mới là «không còn»; còn lại (rảnh · bận · hỏi không
+/// được) thì tab vẫn đó ⟹ GIỮ trong sổ, thử lại nhịp sau, tới trần `CLOSE_GIVE_UP_SEC` mới nói MỘT câu thật.
+pub fn close_failed_step(seen_after: Option<crate::keys::TabState>, waited_sec: i64) -> CloseFail {
+    match seen_after {
+        Some(crate::keys::TabState::Gone) => CloseFail::Gone,
+        _ if waited_sec >= CLOSE_GIVE_UP_SEC => CloseFail::GiveUp,
+        _ => CloseFail::Retry,
+    }
+}
+
+/// Ba nước đi sau một lượt `close_window` lỗi — xem [`close_failed_step`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseFail {
+    /// Hỏi lại thì cửa sổ/tab đã không còn: XONG, nói «không còn».
+    Gone,
+    /// Tab vẫn còn: giữ mục trong sổ, lượt sau đóng lại.
+    Retry,
+    /// Thử đủ lâu mà tab vẫn còn: nói thật rồi buông.
+    GiveUp,
+}
+
 /// Mục ĐÃ ẨN thì lượt này làm gì.
 ///
 /// 🔴 Vì sao có vòng thử lại (đo 2026-08-17, và nó BÁC một giả thuyết tôi vừa
@@ -7475,15 +7505,48 @@ pub fn close_pending_tick(db: &Db, cfg: &Config, now: i64) {
                         }
                     }
                     Err(e) => {
-                        // Cửa sổ biến mất giữa hai lượt hỏi là chuyện thường
-                        // (Terminal tự dọn khi shell thoát, tuỳ profile) — vẫn
-                        // là XONG, và vẫn phải nói ra chứ không im.
-                        logging::info(
-                            "close_window_gone",
-                            json!({ "session": id, "window": c.w,
-                                    "err": crate::logging::err_chain(&e) }),
-                        );
-                        say_closed_c(cfg, c, &format!("⏹ {} đã thoát, cửa sổ không còn.", c.n));
+                        // 🔴 Lỗi ≠ «không còn» — xem `close_failed_step`. Hỏi lại tab
+                        // trước khi phán; tab còn thì giữ mục và thử lại.
+                        let sau = crate::keys::tab_state(c.w).ok();
+                        match close_failed_step(sau, waited) {
+                            CloseFail::Gone => {
+                                // Cửa sổ biến mất giữa hai lượt hỏi là chuyện thường
+                                // (Terminal tự dọn khi shell thoát, tuỳ profile) —
+                                // vẫn là XONG, và vẫn phải nói ra chứ không im.
+                                logging::info(
+                                    "close_window_gone",
+                                    json!({ "session": id, "window": c.w,
+                                            "err": crate::logging::err_chain(&e) }),
+                                );
+                                say_closed_c(
+                                    cfg,
+                                    c,
+                                    &format!("⏹ {} đã thoát, cửa sổ không còn.", c.n),
+                                );
+                            }
+                            CloseFail::Retry => {
+                                logging::warn(
+                                    "close_failed_will_retry",
+                                    json!({ "session": id, "window": c.w, "waited_sec": waited,
+                                            "err": crate::logging::err_chain(&e),
+                                            "effect": "tab còn đó — giữ trong sổ, đóng lại sau CLOSE_CHECK_SEC" }),
+                                );
+                                continue;
+                            }
+                            CloseFail::GiveUp => {
+                                logging::warn(
+                                    "close_failed_gave_up",
+                                    json!({ "session": id, "window": c.w, "waited_sec": waited,
+                                            "err": crate::logging::err_chain(&e) }),
+                                );
+                                say_closed_c(cfg, c, &format!(
+                                    "⚠ {} đã thoát CLI nhưng Terminal KHÔNG chịu đóng cửa sổ ấy sau {} phút thử lại — \
+                                     tab vẫn còn (`[Process completed]`). huba thôi; ⌘W khi anh ngồi máy.",
+                                    c.n,
+                                    waited / 60
+                                ));
+                            }
+                        }
                     }
                 }
                 done.push(id.clone());

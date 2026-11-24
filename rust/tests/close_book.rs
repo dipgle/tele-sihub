@@ -20,7 +20,9 @@
 //! window`: **một câu hỏi, một phép đo, và phép đo phải trỏ đúng chỗ.**
 
 use huba::keys::TabState;
-use huba::pipeline::{close_step, hidden_next, CloseStep, HiddenNext};
+use huba::pipeline::{
+    close_failed_step, close_step, hidden_next, CloseFail, CloseStep, HiddenNext,
+};
 
 /// Trần bỏ cuộc trong `pipeline` là 600 giây; bài kiểm không đọc được hằng số
 /// riêng tư nên nó dùng hai mốc nằm hẳn hai bên (5 phút · 20 phút).
@@ -255,4 +257,52 @@ fn the_outcomes_stay_distinct() {
     // thể của `CloseStep`. Thiếu một ô thì vòng lặp trên vẫn xanh mà chiều kia
     // không ai đo — nên khai thẳng con số.
     assert_eq!(all.len(), 7, "bảng phủ thiếu một kết cục");
+}
+
+// ── `close_window` lỗi: «không đóng được» KHÔNG phải «không còn» ────────────────────────────────────────
+// Hà 25/11: tab `[Process completed]` nằm lại sau khi đóng phiên — sổ đọc lỗi `close` là «cửa sổ không còn»
+// rồi xoá mục.
+
+/// CA CỦA HÀ — `close` lỗi mà tab vẫn đó (rảnh, 0 tiến trình) ⟹ GIỮ mục, thử lại. Mã cũ: xoá mục.
+#[test]
+fn a_refused_close_keeps_the_entry_and_retries() {
+    assert_eq!(
+        close_failed_step(Some(TabState::Idle), 30),
+        CloseFail::Retry
+    );
+}
+
+/// ĐỐI CHỨNG NGƯỢC — hỏi lại thì tab đã đi ⟹ XONG, không giữ mục.
+#[test]
+fn a_close_error_with_the_tab_gone_is_done() {
+    assert_eq!(close_failed_step(Some(TabState::Gone), 30), CloseFail::Gone);
+}
+
+/// Hỏi lại cũng không được (huba mù) ⟹ không được phán «không còn»: giữ.
+#[test]
+fn blind_after_a_close_error_is_not_gone() {
+    assert_eq!(close_failed_step(None, 30), CloseFail::Retry);
+}
+
+/// Tab bận sau lỗi đóng (có ai gõ vào) ⟹ giữ, không đóng liều.
+#[test]
+fn busy_after_a_close_error_keeps_retrying() {
+    assert_eq!(
+        close_failed_step(Some(TabState::Busy), 30),
+        CloseFail::Retry
+    );
+}
+
+/// Thử đủ lâu mà tab vẫn đó ⟹ nói thật rồi buông (không thử vô tận), kể cả khi mù.
+#[test]
+fn it_gives_up_out_loud_when_the_tab_never_goes() {
+    assert_eq!(
+        close_failed_step(Some(TabState::Idle), OVER),
+        CloseFail::GiveUp
+    );
+    assert_eq!(close_failed_step(None, OVER), CloseFail::GiveUp);
+    assert_eq!(
+        close_failed_step(Some(TabState::Gone), OVER),
+        CloseFail::Gone
+    );
 }
