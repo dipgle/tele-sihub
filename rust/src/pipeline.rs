@@ -14807,7 +14807,7 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                 // dùng `session_id`, `label`, `tty` — sổ có đủ cả ba.
                 let booked = db
                     .cursor_or_log(WATCH_KEY)
-                    .and_then(|v| crate::sessions::window_target_from_book(&v, &want));
+                    .and_then(|v| crate::sessions::window_target_any(cfg, &v, &want));
                 let live = match &booked {
                     Some(_) => None,
                     None => Some(crate::sessions::snapshot(cfg)),
@@ -16203,7 +16203,7 @@ fn execute_commands(db: &Db, cfg: &Config, adapter: &str, commands: &[ChannelCom
                 // thấy phiên" khi lượt hỏi hết giờ.
                 let booked = db
                     .cursor_or_log(WATCH_KEY)
-                    .and_then(|v| crate::sessions::window_target_from_book(&v, &want));
+                    .and_then(|v| crate::sessions::window_target_any(cfg, &v, &want));
                 // 🔴 BÁO NGAY khi phiên đã đi — không dựng ảnh chụp để nhận lại
                 // cùng câu trả lời (2026-09-23). Sổ theo dõi XOÁ phiên ngay khi
                 // nó tắt, nên với một phiên đã tắt thì `booked` luôn `None` và

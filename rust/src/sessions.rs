@@ -1154,6 +1154,102 @@ pub fn window_target_from_book(book_json: &str, id: &str) -> Option<LiveSession>
     })
 }
 
+/// Cửa sổ của một phiên OPENCODE, từ SỔ theo dõi + SỔ LIÊN KẾT cửa sổ — **không dựng ảnh chụp**. LÕI THUẦN.
+///
+/// 🔴 Hà 24/11 («opencode nhận … tin vẫn chậm»): gõ vào opencode `command_done` 5,5 s, vào Claude 1,4 s. Đường nhanh
+/// [`window_target_from_book`] đòi `pid` > 0 rồi hỏi `ps -p <pid>`, mà hàng opencode có `pid` 0 (kho SQLite không ghi
+/// tiến trình) ⟹ luôn rơi về dựng lại cả ảnh chụp (~3 s) chỉ để tra `tty`.
+///
+/// Không nới luật nhận cửa sổ: trong chính ảnh chụp, hàng opencode lấy `tty` DUY NHẤT từ sổ liên kết và chỉ lên danh
+/// sách khi (1) có liên kết, (2) liên kết là MỚI NHẤT trên `tty` ấy (tty được dùng lại — luật 11b), (3) có TUI
+/// `opencode` đang sống ở `tty` ấy. Hàm này kiểm đúng ba điều đó; thiếu điều nào ⟹ `None` ⟹ chỗ gọi đi đường ảnh chụp.
+pub fn opencode_target_from_parts(
+    book_json: &str,
+    id: &str,
+    bindings: &std::collections::BTreeMap<String, crate::opencode::WindowBinding>,
+    alive_ttys: &HashSet<String>,
+) -> Option<LiveSession> {
+    let book: std::collections::BTreeMap<String, crate::watch::Mark> =
+        serde_json::from_str(book_json).ok()?;
+    let mark = book.get(id)?;
+    if mark.n.is_empty() {
+        return None;
+    }
+    // (1) có liên kết; (2) là liên kết MỚI NHẤT trên tty của nó.
+    let b = bindings.get(id)?;
+    if !crate::opencode::tty_cua_lien_ket_moi_nhat(bindings, id, b) {
+        return None;
+    }
+    let tty = b.tty.trim_start_matches("/dev/");
+    if !is_real_tty(tty) {
+        return None;
+    }
+    // (3) có TUI `opencode` đang sống ở tty ấy.
+    if !alive_ttys.contains(tty) {
+        return None;
+    }
+    Some(LiveSession {
+        session_id: id.to_string(),
+        name: mark.n.clone(),
+        label: without_dot(&mark.l).to_string(),
+        tty: tty.to_string(),
+        host: mark.o.clone(),
+        folder: mark.d.clone(),
+        account: mark.a.clone(),
+        kind: "opencode".to_string(),
+        pid: 0,
+        ..Default::default()
+    })
+}
+
+/// [`opencode_target_from_parts`] + hai lần đọc thật: sổ liên kết của tài khoản và `ps` CHỈ cho tty ấy (vài ms).
+/// Không phải phiên opencode, hay không đọc được gì ⟹ `None` (đi đường ảnh chụp, không đoán).
+pub fn window_target_opencode(cfg: &Config, book_json: &str, id: &str) -> Option<LiveSession> {
+    let book: std::collections::BTreeMap<String, crate::watch::Mark> =
+        serde_json::from_str(book_json).ok()?;
+    let mark = book.get(id)?;
+    let account = cfg
+        .claude_accounts_or_ambient()
+        .into_iter()
+        .find(|a| a.is_opencode() && a.name == mark.a)?;
+    let bindings = crate::opencode::read_bindings(&account).ok()?;
+    let tty = bindings
+        .get(id)?
+        .tty
+        .trim_start_matches("/dev/")
+        .to_string();
+    if !is_real_tty(&tty) {
+        return None;
+    }
+    let out = crate::exec::run(
+        "ps",
+        &["-t", &tty, "-o", "args="],
+        crate::exec::RunOpts {
+            timeout: Some(std::time::Duration::from_secs(5)),
+            ..Default::default()
+        },
+    )
+    .ok()?;
+    let mut alive = HashSet::new();
+    if out.stdout.lines().any(is_opencode_tui) {
+        alive.insert(tty);
+    }
+    let t = opencode_target_from_parts(book_json, id, &bindings, &alive);
+    if let Some(t) = &t {
+        logging::info(
+            "opencode_target_fast",
+            json!({ "session": id, "tty": t.tty,
+                    "why": "sổ theo dõi + liên kết cửa sổ + TUI sống ở tty — không dựng ảnh chụp" }),
+        );
+    }
+    t
+}
+
+/// Đường nhanh cho MỌI loại phiên: Claude (sổ + `pid`) trước, opencode (sổ + liên kết cửa sổ) sau.
+pub fn window_target_any(cfg: &Config, book_json: &str, id: &str) -> Option<LiveSession> {
+    window_target_from_book(book_json, id).or_else(|| window_target_opencode(cfg, book_json, id))
+}
+
 /// `tty` này có phải một cửa sổ THẬT không.
 ///
 /// 🔴 Đo 2026-08-12 22:59, trên đúng cái tin Hà đọc được: `⏹ huba-67 (033059d8)
