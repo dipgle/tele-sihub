@@ -215,18 +215,23 @@ mod tests {
         assert_eq!(h.read(), Some(("huba".into(), "ui".into())));
     }
 
+    // 🔴 ĐẢO CHIỀU 24/11 theo quyết định của Hà 23/11 22:2x (`6c05ee9`): *«Phiên mở của dự án nào
+    // là cố định mãi không có đổi, trừ khi map nhầm ngay từ đầu»* — danh tính chốt ở lần nhận
+    // ĐẦU TIÊN. Bài này bị sót khi 4 bài khác được đảo (cổng 24/11 đỏ ở đây, không phải do
+    // sửa `read_head`). Luật CŨ giữ nguyên văn để người sau thấy cái gì đã bị bỏ:
+    //   sau `[other]` ×2 ⟹ Some(("other","")); sau `[huba]` ×2 nữa ⟹ Some(("huba","")).
     #[test]
-    fn bare_project_keeps_module_only_within_the_same_project() {
+    fn first_identity_stays_even_after_another_project_is_declared_twice() {
         let h = History::new();
         h.prefix(1, "[huba/ui] Original module.");
         h.prefix(2, "[huba] Same project, no replacement module.");
         assert_eq!(h.read(), Some(("huba".into(), "ui".into())));
         h.prefix(3, "[other] Project changed.");
         h.prefix(4, "[other] Project change confirmed.");
-        assert_eq!(h.read(), Some(("other".into(), String::new())));
-        h.prefix(5, "[huba] Returning does not resurrect a stale module.");
+        assert_eq!(h.read(), Some(("huba".into(), "ui".into())));
+        h.prefix(5, "[huba] Returning does not change a pinned identity.");
         h.prefix(6, "[huba] Return confirmed.");
-        assert_eq!(h.read(), Some(("huba".into(), String::new())));
+        assert_eq!(h.read(), Some(("huba".into(), "ui".into())));
     }
 
     #[test]
