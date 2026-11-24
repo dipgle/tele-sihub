@@ -5324,6 +5324,16 @@ fn list_job_books(dir: &Path, out: &mut Vec<Value>) -> Result<()> {
 pub fn book_status_fingerprint(cfg: &Config) -> String {
     let mut marks: Vec<String> = Vec::new();
     for account in cfg.claude_accounts_or_ambient() {
+        // opencode không có sổ `sessions/` — trạng thái lượt nằm ở `session_v2.time_busy/time_idle` của kho SQLite.
+        // Thiếu nhánh này thì một lượt opencode xong không đánh thức vòng, và tin «dừng» tới chậm 25–112 giây.
+        if account.is_opencode() {
+            marks.extend(
+                crate::opencode::status_marks_at(&crate::opencode::db_path(&account))
+                    .into_iter()
+                    .map(|m| format!("oc:{}:{m}", account.name)),
+            );
+            continue;
+        }
         let sessions = account_book_dir(&account).join("sessions");
         let Ok(entries) = std::fs::read_dir(&sessions) else {
             continue;

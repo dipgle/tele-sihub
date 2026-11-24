@@ -81,6 +81,43 @@ pub fn db_path(acc: &ClaudeAccountCfg) -> PathBuf {
         .join("opencode.db")
 }
 
+/// Dấu `id:time_busy:time_idle` của mọi phiên trong kho — CÒI ĐÁNH THỨC vòng `hubad`, không phải dữ liệu hiển thị.
+///
+/// 🔴 Hà 24/11 *"opencode nhận và phản hồi tin vẫn chậm"*: bản ghi `idle` của opencode rồi tin Telegram tới sau
+/// 25–112 giây, vì vòng ngủ tới khi dấu vân tay trạng thái đổi mà dấu ấy chỉ đọc sổ Claude. Chỉ đọc HAI cột đổi
+/// đúng lúc bắt đầu/kết thúc lượt — KHÔNG đọc `time_updated` (opencode ghi theo từng token: đánh thức mỗi 3 giây).
+/// Kho chưa có / mở hỏng / thiếu bảng ⟹ rỗng (đây chỉ là còi; người đọc thật `read_sessions` đã nói mọi lỗi).
+pub fn status_marks_at(path: &Path) -> Vec<String> {
+    if !path.is_file() {
+        return Vec::new();
+    }
+    let Ok(conn) = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return vec![format!("{}:?", path.display())];
+    };
+    let _ = conn.busy_timeout(std::time::Duration::from_millis(200));
+    if !matches!(has_table(&conn, "session_v2"), Ok(true)) {
+        return Vec::new();
+    }
+    let Ok(mut stmt) = conn.prepare("SELECT id, time_busy, time_idle FROM session_v2") else {
+        return vec![format!("{}:?", path.display())];
+    };
+    let rows = stmt.query_map([], |r| {
+        Ok(format!(
+            "{}:{}:{}",
+            r.get::<_, String>(0)?,
+            r.get::<_, Option<i64>>(1)?.unwrap_or(0),
+            r.get::<_, Option<i64>>(2)?.unwrap_or(0)
+        ))
+    });
+    match rows {
+        Ok(it) => it.flatten().collect(),
+        Err(_) => vec![format!("{}:?", path.display())],
+    }
+}
+
 /// Đọc danh sách phiên từ kho của tài khoản.
 ///
 /// `Err` là "không đo được", không phải "không có phiên": chỗ gọi phải đẩy nó
