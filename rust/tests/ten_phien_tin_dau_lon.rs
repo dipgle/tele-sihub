@@ -89,6 +89,45 @@ fn tin_nhan_dau_220kb_khong_che_mat_ten_phien() {
     );
 }
 
+/// ④ CA ĐO SAU KHI CÀI (24/11 10:44) — bản cài đầu tiên đọc được `[huba]` nhưng CHỈ MỘT lời khai
+/// (`folder_label_seed_refused … dong_y:1`): phiên mở ở gốc `projects` đòi HAI lời khai nhất quán.
+/// Nhật ký thật xen kẽ `assistant` chỉ-gọi-công-cụ (~3 KB) và `user` kết quả công cụ (~15 KB, vẫn
+/// ≤ 16 KiB nên lọt lưới) — chúng ăn hết ngân sách 64 KiB trước khi tới lượt nói thứ hai.
+#[test]
+fn ket_qua_cong_cu_xen_ke_khong_an_het_ngan_sach_cua_loi_khai() {
+    let goi_cong_cu = |n: usize| {
+        serde_json::json!({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": "x".repeat(n)}}
+            ]}
+        })
+        .to_string()
+    };
+    let mut dong = vec![dong_user("mở phiên huba")];
+    for _ in 0..3 {
+        dong.push(goi_cong_cu(3_000));
+        dong.push(dong_user(&"k".repeat(15_000)));
+    }
+    for i in 0..4 {
+        dong.push(dong_assistant(&format!(
+            "[huba] Lượt nói thứ {i} của phiên."
+        )));
+        dong.push(goi_cong_cu(3_000));
+        dong.push(dong_user(&"k".repeat(15_000)));
+    }
+    let path = ghi("xen-ke.jsonl", &dong);
+    let head = huba::sessions::read_head(&path).expect("đọc head");
+    let ten = huba::sessions::folder_for_session("test-xen-ke-103e5837", &head, &workspace(), "");
+    assert_eq!(
+        ten.as_deref(),
+        Some("huba"),
+        "ngân sách bị công cụ ăn hết: head {} byte, chỉ thấy {} lượt có chữ",
+        head.len(),
+        head.matches("Lượt nói thứ").count()
+    );
+}
+
 /// ② ĐỐI CHỨNG NGƯỢC — nhật ký nhỏ (ca bình thường) vẫn ra đúng tên như trước.
 #[test]
 fn nhat_ky_nho_van_ra_ten_nhu_cu() {

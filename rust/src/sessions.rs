@@ -4828,15 +4828,22 @@ fn read_tail_n(path: &Path, bytes: u64) -> Result<String> {
 /// `103e5837` hiện `projects-1c`). Nhật ký Claude mở đầu bằng hàng chục dòng KHÔNG phải
 /// hội thoại — `attachment` (luật nạp vào: 78 KB), `api-request-*` (41 + 43 KB)… — nên câu
 /// trả lời `[huba]` đầu tiên nằm ở byte **226 469**; 64 KiB đầu theo byte không có dòng
-/// `assistant` nào ⟹ không lời khai ⟹ nhãn trung tính, ghim luôn. Nay: chỉ giữ dòng
-/// `assistant` và dòng `user` NHỎ (≤ [`HEAD_USER_LINE_MAX`]; một `user` to hơn là kết quả
-/// công cụ/bản dán, không mang lời khai), dừng khi đủ [`HEAD_MAX_LINES`] dòng hoặc
-/// [`HEAD_BUDGET_BYTES`] byte đã giữ. Trần quét [`HEAD_SCAN_CAP`] chặn tệp một-dòng-khổng-lồ.
+/// `assistant` nào ⟹ không lời khai ⟹ nhãn trung tính, ghim luôn.
+///
+/// 🔴 Lần sửa thứ HAI, đo NGAY SAU KHI CÀI (24/11 10:44, `folder_label_seed_refused
+/// dong_y:1`): lọc theo loại dòng chưa đủ — `assistant` chỉ-gọi-công-cụ (~3 KB) và `user`
+/// kết quả công cụ (~15 KB, vẫn ≤ 16 KiB) xen kẽ ăn hết 64 KiB, head chỉ còn MỘT lượt nói,
+/// mà phiên mở ở gốc workspace đòi HAI lời khai nhất quán. Head chỉ nuôi `declared_in_tail`
+/// (đọc chữ của TRỢ LÝ), nên nay: giữ dòng `assistant` **có chữ** ([`assistant_spoken_text`])
+/// — đếm đúng [`KHAI_QUET_LUOT`] lượt, bằng cửa sổ của bộ giảm danh tính; dòng `assistant`
+/// chỉ-gọi-công-cụ bỏ; dòng `user` chỉ giữ [`HEAD_USER_KEEP`] dòng NHỎ đầu tiên
+/// (≤ [`HEAD_USER_LINE_MAX`]). Ngân sách [`HEAD_BUDGET_BYTES`] vẫn là trần cứng, và trần quét
+/// [`HEAD_SCAN_CAP`] chặn tệp một-dòng-khổng-lồ.
 const HEAD_BUDGET_BYTES: usize = 64 * 1024;
-const HEAD_MAX_LINES: usize = 40;
 const HEAD_SCAN_CAP: u64 = 4 * 1024 * 1024;
 const HEAD_MAX_LINE: usize = 1024 * 1024;
 const HEAD_USER_LINE_MAX: usize = 16 * 1024;
+const HEAD_USER_KEEP: usize = 3;
 
 /// Đọc một dòng vào `line`, nhưng chỉ GIỮ tối đa `cap` byte (phần dư bị đọc bỏ, không cấp
 /// phát). Trả `(đã_đọc, bị_cắt)`; `đã_đọc == 0` = hết tệp.
@@ -4874,8 +4881,9 @@ pub fn read_head(path: &Path) -> Result<String> {
     let mut reader = std::io::BufReader::new(file.take(HEAD_SCAN_CAP));
     let mut out = String::new();
     let mut line: Vec<u8> = Vec::new();
-    let mut kept_lines = 0usize;
-    while kept_lines < HEAD_MAX_LINES && out.len() < HEAD_BUDGET_BYTES {
+    let mut spoken = 0usize;
+    let mut users = 0usize;
+    while spoken < KHAI_QUET_LUOT && out.len() < HEAD_BUDGET_BYTES {
         line.clear();
         let (n, cut) = read_line_capped(&mut reader, &mut line, HEAD_MAX_LINE)?;
         if n == 0 {
@@ -4889,8 +4897,15 @@ pub fn read_head(path: &Path) -> Result<String> {
             continue;
         };
         let keep = match record.get("type").and_then(Value::as_str) {
-            Some("assistant") => true,
-            Some("user") => line.len() <= HEAD_USER_LINE_MAX,
+            Some("assistant") => {
+                let co_chu = assistant_spoken_text(&record).is_some();
+                spoken += usize::from(co_chu);
+                co_chu
+            }
+            Some("user") if users < HEAD_USER_KEEP && line.len() <= HEAD_USER_LINE_MAX => {
+                users += 1;
+                true
+            }
             _ => false,
         };
         if !keep {
@@ -4898,7 +4913,6 @@ pub fn read_head(path: &Path) -> Result<String> {
         }
         out.push_str(String::from_utf8_lossy(&line).trim_end_matches('\n'));
         out.push('\n');
-        kept_lines += 1;
     }
     Ok(out)
 }
