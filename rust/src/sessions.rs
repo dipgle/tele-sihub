@@ -5434,12 +5434,49 @@ fn list_account(account: &ClaudeAccountCfg, cli: &str) -> Result<Vec<Value>> {
     if dir.join("sessions").is_dir() {
         return list_account_books(&dir);
     }
+    // 🔴 Hà 24/11 («opencode nhận … tin vẫn chậm»): bốn tài khoản `acc2·4·5·7` chưa có `sessions/`, nên MỖI lần chụp
+    // chạy `claude agents --json` bốn lần (~200 ms/lần, `ms_ask_accounts` đứng yên ~800 ms) — và lần nào cũng `[]`.
+    // Nhớ ngắn hạn kết quả RỖNG thôi: kết quả có phiên hay LỖI thì không nhớ (phiên mới hiện ngay, lỗi không bị che),
+    // và `sessions/` xuất hiện thì nhánh đọc sổ ở trên chiếm lại ngay.
+    if let Some(at) = khong_phien_da_biet(&account.name) {
+        if at.elapsed() < KHONG_PHIEN_NHO {
+            return Ok(Vec::new());
+        }
+    }
     logging::warn(
         "claude_books_missing",
         json!({ "account": account.name, "dir": dir.display().to_string(),
                 "why": "không thấy <config>/sessions — rơi về `claude agents --json` (chậm hơn ~30 lần)" }),
     );
-    list_account_cli(account, cli)
+    let rows = list_account_cli(account, cli);
+    match &rows {
+        Ok(v) if v.is_empty() => ghi_khong_phien(&account.name, true),
+        _ => ghi_khong_phien(&account.name, false),
+    }
+    rows
+}
+
+/// Một tài khoản chưa có `sessions/` mà CLI vừa trả `[]` thì được tin trong chừng này.
+const KHONG_PHIEN_NHO: Duration = Duration::from_secs(120);
+
+fn khong_phien_so() -> &'static std::sync::Mutex<HashMap<String, std::time::Instant>> {
+    static M: std::sync::OnceLock<std::sync::Mutex<HashMap<String, std::time::Instant>>> =
+        std::sync::OnceLock::new();
+    M.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn khong_phien_da_biet(account: &str) -> Option<std::time::Instant> {
+    khong_phien_so().lock().ok()?.get(account).copied()
+}
+
+fn ghi_khong_phien(account: &str, rong: bool) {
+    if let Ok(mut m) = khong_phien_so().lock() {
+        if rong {
+            m.insert(account.to_string(), std::time::Instant::now());
+        } else {
+            m.remove(account);
+        }
+    }
 }
 
 /// Một id có còn nằm trong sổ `claude agents` của tài khoản nào không.
