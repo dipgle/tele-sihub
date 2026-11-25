@@ -178,7 +178,7 @@ async function chayEngine(ten, tc) {
     await page.locator('[data-testid=open-chat]').first().click();
     await page.locator('[data-testid=ev]').first().waitFor({ timeout: 20000 }).catch(() => {});
     const nEv = await page.locator('[data-testid=ev]').count();
-    const apiEv = await page.evaluate(async (id) => (await (await fetch('/api/sessions/' + id + '/stream?limit=120')).json()).data?.events?.length ?? -1, claude.session_id);
+    const apiEv = await page.evaluate(async (id) => ((await (await fetch('/api/sessions/' + id + '/stream?limit=120')).json()).data?.events ?? []).filter((e) => e.kind !== 'think').length || -1, claude.session_id);
     ca(P('K3.1 bấm tên phiên ⟹ chat có sự kiện'), nEv > 0 && (await page.locator('[data-testid=chat-title]').count()) === 1, `${nEv} sự kiện · phiên ${claude.name}`);
     ca(P('K3.2 số sự kiện trên màn ≈ API (±3: phiên đang chạy có thể thêm)'), nEv > 0 && Math.abs(nEv - apiEv) <= 3, `màn ${nEv} · API ${apiEv}`);
     const f = tepNhatKy(claude.session_id);
@@ -194,7 +194,8 @@ async function chayEngine(ten, tc) {
       console.log(P('KHÔNG ĐO ĐƯỢC K3.3: không tìm thấy/đọc được nhật ký gốc của phiên ') + claude.session_id.slice(0, 8));
     }
     await page.locator('button[data-tab=goc]').click();
-    ca(P('K3.4 tab «Nội dung gốc» nói thật «Chưa làm», không giả vờ có dữ liệu'), ((await page.locator('[data-testid=tab-goc]').textContent()) || '').includes('Chưa làm'));
+    const goc = (await page.locator('[data-testid=tab-goc]').textContent()) || '';
+    ca(P('K3.4 tab «Nội dung gốc» nêu đúng bốn thứ chủ máy chốt (25/11)'), ['Tin nhắn', 'thu gọn', 'Bước đang chạy', 'Trả lời cuối'].every((k) => goc.includes(k)) && !goc.includes('Chưa làm'), goc.slice(0, 80));
     await page.locator('button[data-tab=phien]').click();
     ca(P('K3.4b tab «Phiên» hiện thư mục làm việc thật'), ((await page.locator('[data-testid=tab-phien]').textContent()) || '').includes(claude.cwd));
     ca(P('K3.5 ô nhập bị khoá, nói rõ chưa có gửi từ app'), (await page.locator('#msg').isDisabled()) && ((await page.locator('#msg').getAttribute('placeholder')) || '').includes('K4'));
@@ -241,6 +242,50 @@ async function chayEngine(ten, tc) {
     await page.locator('[data-testid=notice]').waitFor({ timeout: 8000 }).catch(() => {});
     ca(P('K3.10 nguồn lỗi ⟹ báo lỗi, không giả vờ «chưa có hội thoại»'), (await page.locator('[data-testid=chat-empty]').count()) === 0 && (await page.locator('[data-testid=notice]').count()) >= 1);
     await page.unroute('**/api/sessions/*/stream*');
+    await page.evaluate(() => { location.hash = '#sessions'; });
+  }
+
+  // ── K3.11 bốn thứ chủ máy chốt (K3.5, 25/11): tin nhắn · bước THU GỌN · bước ĐANG CHẠY + trạng thái · trả lời CUỐI ──
+  // ĐỐI CHỨNG GIẢ DỮ LIỆU qua page.route (khai báo như ca K3.9): nhật ký thật không cho dựng trước «đang chạy» / «đã xong» theo lệnh.
+  if (claude) {
+    const thuc0 = await page.evaluate(async () => await (await fetch('/api/sessions')).json());
+    const sev = (role, text) => ({ kind: 'say', role, ts: null, name: '', withheld: false, text });
+    const tool = (name, text) => ({ kind: 'tool', role: 'assistant', ts: null, name, withheld: false, text });
+    const kq = (text) => ({ kind: 'result', role: 'user', ts: null, name: '', withheld: false, text });
+    const nghi = { kind: 'think', role: 'assistant', ts: null, name: '', withheld: false, text: 'BI-MAT-SUY-NGHI' };
+    const dung = async (events, working) => {
+      await page.unroute('**/api/sessions/*/stream*').catch(() => {});
+      await page.unroute('**/api/sessions').catch(() => {});
+      const ds = JSON.parse(JSON.stringify(thuc0));
+      ds.data.sessions = ds.data.sessions.map((x) => (x.session_id === claude.session_id ? { ...x, working, asking_password: false } : x));
+      await page.route('**/api/sessions', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(ds) }));
+      await page.route('**/api/sessions/*/stream*', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ now_ms: Date.now(), error: null, data: { session_id: claude.session_id, older_hidden: 0, events } }) }));
+      await page.evaluate(() => { location.hash = '#sessions'; });
+      await page.evaluate((id) => { setTimeout(() => { location.hash = '#chat/' + id; }, 50); }, claude.session_id);
+      await page.waitForTimeout(400);
+      await page.evaluate(() => window.dispatchEvent(new Event('hashchange')));
+      await page.waitForTimeout(600);
+    };
+    const xong = [sev('user', 'làm đi'), nghi, tool('Read', 'a.rs'), kq('nội dung a'), tool('Bash', 'ls -la'), kq('total 0'), sev('assistant', 'XONG-RỒI-NÈ')];
+    await dung(xong, false);
+    const tt = (await page.locator('#timeline').textContent()) || '';
+    ca(P('K3.11a phiên rảnh: các bước gộp THU GỌN (1 ô, đóng sẵn, ghi «2 bước · Read ×1 · Bash ×1»)'),
+      (await page.locator('details[data-testid=steps]').count()) === 1 && (await page.locator('details[data-testid=steps][open]').count()) === 0 && tt.includes('2 bước') && tt.includes('Read ×1') && tt.includes('Bash ×1'), tt.slice(0, 120));
+    ca(P('K3.11b trả lời cuối được đánh dấu — đúng MỘT, là câu của model'), (await page.locator('[data-final]').count()) === 1 && ((await page.locator('[data-final]').textContent()) || '').includes('Trả lời cuối') && ((await page.locator('[data-final]').textContent()) || '').includes('XONG-RỒI-NÈ'));
+    ca(P('K3.11c không có «bước đang chạy» khi phiên rảnh · «suy nghĩ» KHÔNG hiện'), (await page.locator('[data-testid=running]').count()) === 0 && !tt.includes('BI-MAT-SUY-NGHI'));
+    const dangChay = [sev('user', 'chạy thử'), tool('Read', 'a.rs'), kq('nội dung a'), tool('Bash', 'cargo test --release')];
+    await dung(dangChay, true);
+    const rt = (await page.locator('[data-testid=running]').textContent().catch(() => '')) || '';
+    ca(P('K3.11d phiên đang làm: bước ĐANG CHẠY hiện thẳng (tên + lệnh) kèm trạng thái «Đang làm»'),
+      (await page.locator('[data-testid=running]').count()) === 1 && rt.includes('Đang chạy') && rt.includes('Bash') && rt.includes('cargo test --release') && ((await page.locator('[data-testid=running-state]').textContent()) || '').includes('Đang làm'), rt.slice(0, 120));
+    ca(P('K3.11e bước TRƯỚC đó vẫn thu gọn (Read ×1) và chưa có «trả lời cuối»'),
+      (await page.locator('[data-testid=running] details[data-testid=steps]:not([open])').count()) === 1 && rt.includes('Read ×1') && (await page.locator('[data-final]').count()) === 0);
+    const dangNoi = [sev('user', 'viết giúp'), tool('Read', 'a.rs'), kq('nội dung a'), sev('assistant', 'ĐANG-VIẾT-DỞ')];
+    await dung(dangNoi, true);
+    ca(P('K3.11f ĐỐI CHỨNG: đang làm mà model vừa nói ⟹ KHÔNG gắn «Trả lời cuối» (chưa xong lượt)'), (await page.locator('[data-final]').count()) === 0 && ((await page.locator('#timeline').textContent()) || '').includes('ĐANG-VIẾT-DỞ'));
+    await page.screenshot({ path: `${SHOTS}/${ten}-5-chat-buoc.png` });
+    await page.unroute('**/api/sessions/*/stream*').catch(() => {});
+    await page.unroute('**/api/sessions').catch(() => {});
     await page.evaluate(() => { location.hash = '#sessions'; });
   }
 

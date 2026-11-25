@@ -208,12 +208,12 @@ function md(text) {
   }).join('');
 }
 
-function eventHtml(ev) {
-  const who = ev.role === 'user' ? 'Bạn' : 'Claude';
+function eventHtml(ev, final = false) {
+  const who = (ev.role === 'user' ? 'Bạn' : 'Claude') + (final ? ' · Trả lời cuối' : '');
   const when = ev.ts ? ` · ${esc(new Date(ev.ts).toLocaleTimeString('vi-VN'))}` : '';
   const held = ev.withheld ? '<span class="pill red">Nội dung bị giữ lại</span> ' : '';
   if (ev.kind === 'say') {
-    return `<div class="ev say ${esc(ev.role)}" data-testid="ev" data-kind="say" data-role="${esc(ev.role)}"><div class="who">${who}${when}</div>` +
+    return `<div class="ev say ${esc(ev.role)}${final ? ' final' : ''}" data-testid="ev" data-kind="say" data-role="${esc(ev.role)}"${final ? ' data-final="1"' : ''}><div class="who">${who}${when}</div>` +
       `<div class="bubble">${held}${md(ev.text)}</div></div>`;
   }
   if (ev.kind === 'tool') {
@@ -222,6 +222,55 @@ function eventHtml(ev) {
   const label = ev.kind === 'think' ? 'Suy nghĩ' : 'Kết quả công cụ';
   return `<details class="ev ${esc(ev.kind)}" data-testid="ev" data-kind="${esc(ev.kind)}"><summary>${label}${ev.name ? ' · ' + esc(ev.name) : ''}</summary>` +
     `<pre>${esc(cut(ev.text, 4000))}</pre></details>`;
+}
+
+/**
+ * Mức nội dung chủ máy chốt 25/11 (K3.5): tin nhắn · các bước THU GỌN · bước ĐANG CHẠY + trạng thái · trả lời CUỐI.
+ * «Suy nghĩ» của model không thuộc bốn thứ ấy ⟹ không hiện. Các sự kiện không phải tin nhắn liền nhau gộp thành MỘT nhóm bước.
+ */
+function groupEvents(evs) {
+  const out = [];
+  for (const ev of evs) {
+    if (ev.kind === 'think') continue;
+    if (ev.kind === 'say') { out.push({ t: 'msg', ev }); continue; }
+    const last = out[out.length - 1];
+    if (last && last.t === 'steps') last.evs.push(ev); else out.push({ t: 'steps', evs: [ev] });
+  }
+  return out;
+}
+function stepsSummary(evs) {
+  const tools = evs.filter((e) => e.kind === 'tool');
+  const n = tools.length || evs.length;
+  const cnt = new Map();
+  for (const e of tools) cnt.set(e.name || 'công cụ', (cnt.get(e.name || 'công cụ') || 0) + 1);
+  const parts = [...cnt].map(([k, v]) => `${esc(k)} ×${v}`);
+  return `▸ ${n} bước${parts.length ? ' · ' + parts.join(' · ') : ''}`;
+}
+function stepsHtml(evs, summary) {
+  return `<details class="steps" data-testid="steps"><summary>${summary}</summary>${evs.map((e) => eventHtml(e)).join('')}</details>`;
+}
+/** Nhóm bước CUỐI khi phiên đang làm: hiện thẳng bước đang chạy + trạng thái, các bước trước nằm trong một ô thu gọn. */
+function runningHtml(evs, st) {
+  const last = evs[evs.length - 1];
+  const tool = last.kind === 'tool' ? last : [...evs].reverse().find((e) => e.kind === 'tool');
+  const dangChay = last.kind === 'tool';
+  const head = dangChay
+    ? `Đang chạy: <b>${esc(tool.name || 'công cụ')}</b> <code>${esc(cut(tool.text, 160))}</code>`
+    : `Vừa xong bước <b>${esc(tool ? tool.name || 'công cụ' : 'trước')}</b> — đang chờ model xử lý tiếp`;
+  const truoc = dangChay ? evs.slice(0, -1) : evs;
+  return `<div class="steps running" data-testid="running"><div class="running-head"><span class="pill ${st.cls}" data-testid="running-state"><span class="dot"></span>${esc(st.label)}</span> ${head}</div>` +
+    (truoc.length ? stepsHtml(truoc, stepsSummary(truoc).replace('▸ ', '▸ Trước đó: ')) : '') + `</div>`;
+}
+function chatBody(evs, m) {
+  const items = groupEvents(evs);
+  const st = m ? stateOf(m) : null;
+  const working = !!(st && st.key === 'working');
+  const lastIdx = items.length - 1;
+  return items.map((it, i) => {
+    if (it.t === 'msg') return eventHtml(it.ev, i === lastIdx && it.ev.role === 'assistant' && !working);
+    if (i === lastIdx && working) return runningHtml(it.evs, st);
+    return stepsHtml(it.evs, stepsSummary(it.evs));
+  }).join('');
 }
 
 function chatMeta(id) {
@@ -247,14 +296,14 @@ function renderChat() {
     tl = `<div class="empty" data-testid="chat-empty"><h2>${C.data.note ? 'Chưa đọc được nội dung' : 'Chưa có hội thoại'}</h2>` +
       `<p>${esc(C.data.note || 'Phiên này chưa có lượt nào đọc được trong nhật ký.')}</p></div>`;
   } else {
-    tl = (C.data.older_hidden > 0 ? `<div class="notice info" data-testid="older">${C.data.older_hidden} sự kiện cũ hơn chưa hiện.</div>` : '') + evs.map(eventHtml).join('');
+    tl = (C.data.older_hidden > 0 ? `<div class="notice info" data-testid="older">${C.data.older_hidden} sự kiện cũ hơn chưa hiện.</div>` : '') + chatBody(evs, m);
   }
   const warn = (C.netError && evs !== null ? `<div class="notice error" role="alert" data-testid="notice">⚠ ${esc(C.netError)} — đang hiện nội dung CŨ.</div>` : '') +
     (C.error && evs !== null ? `<div class="notice error" role="alert" data-testid="notice">⚠ ${esc(C.error)} — đang hiện nội dung CŨ.</div>` : '');
   const st = m ? stateOf(m) : null;
   const tabs = [['phien', 'Phiên'], ['goc', 'Nội dung gốc'], ['hoat-dong', 'Hoạt động']];
   let panel;
-  if (C.tab === 'goc') panel = '<p data-testid="tab-goc">Chưa làm. Cần chủ máy chốt mức dữ liệu «gốc» cần xem (kế hoạch K3.5) — không tự đoán.</p>';
+  if (C.tab === 'goc') panel = '<div data-testid="tab-goc"><p><b>Mức nội dung đã chốt (chủ máy, 25/11):</b></p><ul><li>Tin nhắn</li><li>Các bước — thu gọn</li><li>Bước đang chạy + trạng thái</li><li>Trả lời cuối</li></ul><p>Không hiện: suy nghĩ của model, dữ liệu thô của API.</p></div>';
   else if (C.tab === 'hoat-dong') panel = '<p data-testid="tab-hd">Sắp có.</p>';
   else if (!m) panel = '<p data-testid="tab-phien">Phiên này không còn trong danh sách phiên đang chạy.</p>';
   else panel = `<dl class="meta" data-testid="tab-phien"><dt>Tài khoản</dt><dd>${esc(m.account || '—')}</dd><dt>Loại</dt><dd>${esc(m.kind)}</dd>` +

@@ -32,3 +32,9 @@ pre{background:#f4f6f7;padding:12px;border-radius:8px;overflow:auto;font-size:11
 .meta{display:grid;grid-template-columns:auto 1fr;gap:6px 12px;font-size:12px;margin:0}.meta dt{color:var(--muted)}.meta dd{margin:0;overflow-wrap:anywhere}
 .composer{display:flex;gap:10px;margin-top:16px}.composer textarea{flex:1;resize:none;font-size:12px;padding:10px;border-radius:10px;border:1px solid var(--line);background:#f6f8f9}
 @media(max-width:1000px){.chat-wrap{grid-template-columns:1fr}}
+
+details.steps{margin:8px 0 8px 6px;font-size:11px;color:var(--muted)}details.steps>summary{cursor:pointer;padding:4px 8px;border-radius:8px;background:#f3f6f7;display:inline-block}
+details.steps[open]>summary{margin-bottom:4px}
+.steps.running{margin:10px 0 10px 6px;padding:8px 10px;border:1px solid var(--accent-bg);border-radius:10px;background:#fbfdfd;font-size:12px}
+.running-head{overflow-wrap:anywhere}.running-head .pill{margin-right:6px}
+.ev.say.final .bubble{border:1px solid var(--accent);background:#fff}.ev.say.final .who{color:var(--accent);font-weight:600}
