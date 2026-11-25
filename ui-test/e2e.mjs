@@ -53,6 +53,9 @@ function loiCuoiCuaModel(f) {
   return null;
 }
 const chuanHoa = (t) => String(t).replace(/\s+/g, ' ').trim();
+// So SÁNH nhật ký gốc (markdown thô) với chữ ĐÃ DỰNG trên màn: dấu `…` và *…* bị trình dựng bỏ (đo 25/11: «ở `%135` ch» trên nhật ký
+// ⟹ «ở %135 ch» trên màn, ca K3.3 HỎNG oan ở cả hai engine). Bỏ dấu ở CẢ HAI phía; vẫn so 40 ký tự chữ thật.
+const boDauMd = (t) => chuanHoa(t).replace(/[`*]/g, '');
 
 let sai = 0;
 let khongDo = 0;
@@ -181,9 +184,11 @@ async function chayEngine(ten, tc) {
     const f = tepNhatKy(claude.session_id);
     const cuoi = f ? loiCuoiCuaModel(f) : null;
     if (cuoi) {
-      const tren = (await page.locator('[data-testid=ev][data-kind=say][data-role=assistant]').allTextContents()).map(chuanHoa);
-      const mau = chuanHoa(cuoi).slice(0, 40);
+      const tren = (await page.locator('[data-testid=ev][data-kind=say][data-role=assistant]').allTextContents()).map(boDauMd);
+      const mau = boDauMd(cuoi).slice(0, 40);
       ca(P('K3.3 ĐỐI CHIẾU NHẬT KÝ GỐC: lời cuối của model trong tệp .jsonl có trên màn'), tren.some((t) => t.includes(mau)), `«${mau}…»`);
+      // ĐỐI CHỨNG NGƯỢC: bỏ dấu markdown KHÔNG được làm phép so khớp dễ dãi tới mức câu bịa cũng trùng.
+      ca(P('K3.3b đối chứng: câu bịa KHÔNG có trên màn'), !tren.some((t) => t.includes(mau.slice(0, 20) + ' ĐIỀU-KHÔNG-AI-NÓI')));
     } else {
       khongDo++;
       console.log(P('KHÔNG ĐO ĐƯỢC K3.3: không tìm thấy/đọc được nhật ký gốc của phiên ') + claude.session_id.slice(0, 8));
