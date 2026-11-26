@@ -51,6 +51,22 @@ pub type StreamFn =
 const STREAM_DEFAULT: usize = 80;
 const STREAM_MAX: usize = 300;
 
+/// Nhà cung cấp việc GỬI tin vào phiên (K4): nhận hàng phiên (JSON trong bản đệm) + chữ, trả kết cục. Mã chạy thật gắn
+/// `ui_send::send`; test gắn bản giả — nhờ vậy hàng rào của đường POST kiểm được mà không đụng Terminal nào.
+pub type SendFn =
+    Box<dyn Fn(&serde_json::Value, &str) -> crate::ui_send::SendResult + Send + Sync>;
+
+/// Số kết quả gửi gần nhất được nhớ theo `client_id` (để bấm lặp/mạng retry không gõ hai lần). Trần cố định: bộ nhớ không phình.
+const SEND_REMEMBER: usize = 200;
+
+/// Sổ chống gõ hai lần: `client_id` đã có kết quả (nhớ SEND_REMEMBER cái gần nhất), `client_id` và phiên đang được gửi.
+#[derive(Default)]
+struct SendBook {
+    done: std::collections::VecDeque<(String, serde_json::Value)>,
+    in_flight: std::collections::HashSet<String>,
+    busy_sessions: std::collections::HashSet<String>,
+}
+
 pub struct UiState {
     pub port: u16,
     pub ui_dir: PathBuf,
@@ -59,6 +75,8 @@ pub struct UiState {
     ticket_used: AtomicBool,
     sessions: RwLock<SessionsCache>,
     stream_fn: RwLock<Option<StreamFn>>,
+    send_fn: RwLock<Option<SendFn>>,
+    sends: std::sync::Mutex<SendBook>,
 }
 
 fn now_ms() -> i64 {
@@ -93,7 +111,14 @@ impl UiState {
             ticket_used: AtomicBool::new(false),
             sessions: RwLock::new(SessionsCache::default()),
             stream_fn: RwLock::new(None),
+            send_fn: RwLock::new(None),
+            sends: std::sync::Mutex::new(SendBook::default()),
         })
+    }
+
+    /// Gắn nhà cung cấp việc gửi tin (mã chạy thật gắn `ui_send::send`; test gắn bản giả).
+    pub fn set_send_provider(&self, f: SendFn) {
+        *self.send_fn.write().unwrap_or_else(|e| e.into_inner()) = Some(f);
     }
 
     /// Ghi kết quả một lần làm mới danh sách phiên. `Ok` thay bản đệm; `Err` giữ bản cũ và ghi lỗi.
@@ -272,7 +297,15 @@ fn route(state: &UiState, req: &Req) -> Resp {
     }
     // 6. Định tuyến
     if !is_get {
-        return text(405, "Chưa có thao tác ghi");
+        if req.method.eq_ignore_ascii_case("POST") {
+            if let Some(id) = path
+                .strip_prefix("/api/sessions/")
+                .and_then(|r| r.strip_suffix("/send"))
+            {
+                return send_route(state, id, req);
+            }
+        }
+        return text(405, "Không có thao tác ghi này");
     }
     if path == "/api/health" {
         return mk(200, "application/json", br#"{"ok":true}"#.to_vec());
@@ -299,16 +332,108 @@ fn json_resp(status: u16, v: serde_json::Value) -> Resp {
     mk(status, "application/json", v.to_string().into_bytes())
 }
 
+/// Id phiên đi vào việc tìm TỆP nhật ký / khoá sổ ⟹ chỉ nhận [A-Za-z0-9_-]{1,80}.
+fn valid_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 80
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn err_json(status: u16, msg: &str) -> Resp {
+    json_resp(status, serde_json::json!({ "error": msg, "data": null }))
+}
+
+/// `POST /api/sessions/<id>/send` (K4) — gõ một tin vào phiên. Thứ tự: kiểu nội dung JSON (chặn biểu mẫu `text/plain`
+/// không cần preflight) → thân → id phiên → phiên có trong bản đệm → có nhà cung cấp → CHỐNG GÕ HAI LẦN → gửi.
+///
+/// Chống gõ hai lần: `client_id` do trang sinh MỖI lần bấm. Đã có kết quả ⟹ trả lại đúng kết quả ấy (`replayed`), KHÔNG
+/// gõ nữa — kể cả kết quả mơ hồ; đang gửi ⟹ 409; cùng phiên đang được gửi tin khác ⟹ 409 (hai tin không gõ chồng nhau).
+/// Mọi kết cục tới được nhà cung cấp đều trả 200 kèm `result` để trang hiển thị; chỉ lỗi đầu vào/hàng rào mới là mã khác.
+fn send_route(state: &UiState, raw_id: &str, req: &Req) -> Resp {
+    let id = percent_decode(raw_id);
+    if !valid_session_id(&id) {
+        return err_json(400, "id phiên không hợp lệ");
+    }
+    let is_json = req
+        .headers
+        .get("content-type")
+        .map(|c| {
+            c.split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .eq_ignore_ascii_case("application/json")
+        })
+        .unwrap_or(false);
+    if !is_json {
+        return err_json(415, "Chỉ nhận application/json");
+    }
+    let Ok(body) = serde_json::from_slice::<serde_json::Value>(&req.body) else {
+        return err_json(400, "Thân không phải JSON");
+    };
+    let client_id = body.get("client_id").and_then(|v| v.as_str()).unwrap_or("");
+    let valid_client = (8..=64).contains(&client_id.len())
+        && client_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !valid_client {
+        return err_json(400, "client_id phải là 8–64 ký tự [A-Za-z0-9_-]");
+    }
+    let Some(text) = body.get("text").and_then(|v| v.as_str()) else {
+        return err_json(400, "thiếu trường text (chuỗi)");
+    };
+    let Some(row) = state.session_row(&id) else {
+        return err_json(404, "không có phiên này trong danh sách");
+    };
+    let guard = state.send_fn.read().unwrap_or_else(|e| e.into_inner());
+    let Some(f) = guard.as_ref() else {
+        return err_json(503, "chưa cấu hình đường gửi tin vào phiên");
+    };
+    {
+        let mut b = state.sends.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, v)) = b.done.iter().find(|(c, _)| c == client_id) {
+            let mut v = v.clone();
+            v["data"]["replayed"] = serde_json::json!(true);
+            return json_resp(200, v);
+        }
+        if b.in_flight.contains(client_id) {
+            return err_json(409, "tin này đang được gửi");
+        }
+        if b.busy_sessions.contains(&id) {
+            return err_json(409, "phiên đang nhận một tin khác — chờ xong rồi gửi tiếp");
+        }
+        b.in_flight.insert(client_id.to_string());
+        b.busy_sessions.insert(id.clone());
+    }
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&row, text)))
+        .unwrap_or_else(|_| crate::ui_send::SendResult {
+            outcome: crate::ui_send::Outcome::Failed,
+            message: "việc gửi bị lỗi nội bộ (panic) — xem phiên trước khi gửi lại".into(),
+        });
+    let resp = serde_json::json!({
+        "data": { "result": r.outcome.as_str(), "message": r.message, "replayed": false },
+        "now_ms": now_ms(),
+        "error": null,
+    });
+    {
+        let mut b = state.sends.lock().unwrap_or_else(|e| e.into_inner());
+        b.in_flight.remove(client_id);
+        b.busy_sessions.remove(&id);
+        b.done.push_back((client_id.to_string(), resp.clone()));
+        while b.done.len() > SEND_REMEMBER {
+            b.done.pop_front();
+        }
+    }
+    json_resp(200, resp)
+}
+
 /// `GET /api/sessions/<id>/stream[?limit=N]`. `<id>` đi vào việc tìm TỆP nhật ký ⟹ chỉ nhận [A-Za-z0-9_-]{1,80} (sai ⟹ 400,
 /// không phải 404: không cho thử dò); id phải CÓ trong bản đệm (lạ ⟹ 404, không chạm nhà cung cấp); `limit` kẹp trong [1, 300].
 fn stream_route(state: &UiState, raw_id: &str, query: &str) -> Resp {
     let id = percent_decode(raw_id);
-    if id.is_empty()
-        || id.len() > 80
-        || !id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
+    if !valid_session_id(&id) {
         return json_resp(
             400,
             serde_json::json!({ "error": "id phiên không hợp lệ", "data": null }),
@@ -492,7 +617,9 @@ fn write_out(stream: &mut std::net::TcpStream, r: Resp) -> anyhow::Result<()> {
         403 => "403 Forbidden",
         404 => "404 Not Found",
         405 => "405 Method Not Allowed",
+        409 => "409 Conflict",
         413 => "413 Payload Too Large",
+        415 => "415 Unsupported Media Type",
         431 => "431 Request Header Fields Too Large",
         503 => "503 Service Unavailable",
         _ => "500 Internal Server Error",
@@ -556,6 +683,25 @@ fn produce_stream(
     serde_json::to_value(&st).map_err(|e| format!("không mã hoá được nội dung phiên: {e}"))
 }
 
+/// Gửi MỘT tin vào phiên THẬT (K4). Hàng phiên trong bản đệm là chính `LiveSession` đã mã hoá — đọc ngược lại, không dựng
+/// lại ảnh chụp (4,7 s). Không đọc ngược được ⟹ từ chối, không đoán.
+fn produce_send(
+    cfg: &crate::config::Config,
+    row: &serde_json::Value,
+    text: &str,
+) -> crate::ui_send::SendResult {
+    match serde_json::from_value::<crate::sessions::LiveSession>(row.clone()) {
+        Ok(s) => crate::ui_send::send(cfg, &s, text),
+        Err(e) => {
+            crate::logging::warn("ui_send_row_unreadable", serde_json::json!({ "err": e.to_string() }));
+            crate::ui_send::SendResult {
+                outcome: crate::ui_send::Outcome::Refused,
+                message: format!("Không đọc được hàng phiên trong bản đệm ({e}) nên không gõ."),
+            }
+        }
+    }
+}
+
 /// `huba ui`: mở cổng 127.0.0.1, in URL (có vé), tuỳ chọn mở cửa sổ, rồi phục vụ mãi.
 pub fn serve(cfg: crate::config::Config, ui_dir: PathBuf, open: bool) -> anyhow::Result<()> {
     if !ui_dir.join("index.html").is_file() {
@@ -576,6 +722,10 @@ pub fn serve(cfg: crate::config::Config, ui_dir: PathBuf, open: bool) -> anyhow:
     let cfg_stream = cfg.clone();
     state.set_stream_provider(Box::new(move |row, limit| {
         produce_stream(&cfg_stream, row, limit)
+    }));
+    let cfg_send = cfg.clone();
+    state.set_send_provider(Box::new(move |row, text| {
+        produce_send(&cfg_send, row, text)
     }));
     let state = std::sync::Arc::new(state);
     let cfg_dem = cfg.clone();

@@ -174,7 +174,7 @@ function renderComing(id) {
     `<p>Màn này chưa được làm. Kế hoạch: <code>docs/ui/ke-hoach-cong-viec.md</code>.</p></div></div>`;
 }
 
-// ── Chat: xem nội dung MỘT phiên (K3). Chỉ đọc — gửi từ ứng dụng là K4. ────────────────────────────────────────────────
+// ── Chat: xem nội dung MỘT phiên (K3) + gửi một tin vào phiên (K4). ────────────────────────────────────────────────────
 const C = { id: '', data: null, error: null, netError: null, fetchedAt: 0, tab: 'phien', loading: false };
 
 async function loadChat() {
@@ -273,6 +273,64 @@ function chatBody(evs, m) {
   }).join('');
 }
 
+// ── Gửi tin (K4). Bản nháp sống RIÊNG khỏi việc dựng lại trang (trang dựng lại mỗi vài giây — nếu nháp nằm trong DOM thì mất). ──
+// Quy tắc: nháp CHỈ bị xoá khi máy chủ nói «sent» (nhật ký phiên đã nhận). Mọi kết cục khác — mơ hồ, từ chối, lỗi mạng — GIỮ nháp
+// để người bấm quyết định gửi lại; trang KHÔNG BAO GIỜ tự gửi lại. `client_id` mới MỖI lần bấm (máy chủ dùng nó chống gõ hai lần).
+const CMP = { drafts: {}, busy: null, result: null }; // result: { id, kind, msg }
+const RESULT_LABEL = { sent: 'Đã nhận', in_box: 'Còn trong ô nhập', unverified: 'Chưa xác nhận', refused: 'Bị từ chối', failed: 'Lỗi khi gõ', error: 'Không gửi được' };
+
+function newClientId() {
+  const b = new Uint8Array(12);
+  crypto.getRandomValues(b);
+  return 'c' + Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+}
+
+/** Gợi ý SƠ BỘ ở phía trang (UX) — máy chủ mới là nơi quyết định và từ chối có lý do. */
+function sendHint(m) {
+  if (!m) return 'Phiên này không còn trong danh sách phiên đang chạy.';
+  if (m.kind !== 'interactive' || m.host !== 'terminal') return 'Phiên này không mở trong cửa sổ Terminal nên chưa gửi tin từ ứng dụng được. Dùng Telegram hoặc terminal.';
+  return '';
+}
+
+async function sendMsg() {
+  const { arg: id } = route();
+  if (!id || CMP.busy) return;
+  const text = CMP.drafts[id] || '';
+  if (!text.trim()) { CMP.result = { id, kind: 'refused', msg: 'Tin trống — gõ chữ rồi hãy gửi.' }; render(); return; }
+  CMP.busy = id; CMP.result = null; render();
+  let res;
+  try {
+    const r = await fetch('/api/sessions/' + encodeURIComponent(id) + '/send', {
+      method: 'POST', credentials: 'same-origin', cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: newClientId(), text }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.status === 200 && j.data && j.data.result) res = { id, kind: j.data.result, msg: j.data.message || '' };
+    else if (r.status === 401) res = { id, kind: 'error', msg: 'Phiên đăng nhập hết hạn — chạy lại `huba ui` để lấy liên kết mới. Bản nháp còn nguyên.' };
+    else if (r.status === 409) res = { id, kind: 'error', msg: (j.error || 'Đang gửi tin khác') + '. Bản nháp còn nguyên.' };
+    else res = { id, kind: 'error', msg: (j.error || 'Máy chủ huba trả mã ' + r.status) + '. Bản nháp còn nguyên.' };
+  } catch (e) {
+    res = { id, kind: 'error', msg: 'Mất kết nối tới huba (' + e.message + '). Tin có thể ĐÃ đi — xem phiên trước khi gửi lại. Bản nháp còn nguyên.' };
+  }
+  if (res.kind === 'sent') CMP.drafts[id] = '';
+  CMP.result = res; CMP.busy = null;
+  render(); loadChat();
+}
+
+function composerHtml(m, arg) {
+  const hint = sendHint(m);
+  const busy = CMP.busy === arg;
+  const draft = CMP.drafts[arg] || '';
+  const res = CMP.result && CMP.result.id === arg ? CMP.result : null;
+  const cls = !res ? '' : res.kind === 'sent' ? 'info' : 'error';
+  const out = res ? `<div class="notice ${cls} send-result" role="status" data-testid="send-result" data-result="${esc(res.kind)}"><b>${esc(RESULT_LABEL[res.kind] || res.kind)}.</b> ${esc(res.msg)}</div>` : '';
+  const ph = hint || 'Gõ tin gửi vào phiên (Ctrl+Enter để gửi). Tin đi vào ô nhập của phiên như bạn gõ ở terminal.';
+  return `<div class="composer-wrap">${out}<div class="composer" data-testid="composer"><label for="msg" class="sr-only">Tin nhắn</label>` +
+    `<textarea id="msg" rows="2" maxlength="8000" placeholder="${esc(ph)}"${hint ? ' disabled' : ''}${busy ? ' readonly' : ''}>${esc(draft)}</textarea>` +
+    `<button type="button" data-send data-testid="send"${hint || busy ? ' disabled' : ''}>${busy ? 'Đang gửi…' : 'Gửi'}</button></div></div>`;
+}
+
 function chatMeta(id) {
   const all = sessions() || [];
   return all.find((x) => x.session_id === id) || null;
@@ -311,14 +369,12 @@ function renderChat() {
     `<dt>Mã phiên</dt><dd><code>${esc(m.session_id)}</code></dd></dl>`;
   return `<div class="page chat-page"><div class="page-top"><div><div class="eyebrow">Chat</div>` +
     `<h1 data-testid="chat-title">${esc(m ? (m.label || m.name) : arg)}</h1>` +
-    `<p>${st ? `<span class="pill ${st.cls}"><span class="dot"></span>${esc(st.label)}</span> · ` : ''}Chỉ xem — làm mới mỗi ${REFRESH_MS / 1000} giây.</p></div>` +
+    `<p>${st ? `<span class="pill ${st.cls}"><span class="dot"></span>${esc(st.label)}</span> · ` : ''}Làm mới mỗi ${REFRESH_MS / 1000} giây.</p></div>` +
     `<div class="actions"><a class="link-button" href="#sessions">‹ Danh sách phiên</a></div></div>${warn}` +
     `<div class="chat-wrap"><section class="timeline" id="timeline" aria-label="Nội dung phiên">${tl}</section>` +
     `<aside class="details"><div class="tabs" role="tablist">${tabs.map(([k, t]) => `<button type="button" role="tab" class="tab${C.tab === k ? ' on' : ''}" aria-selected="${C.tab === k}" data-tab="${k}">${t}</button>`).join('')}</div>` +
     `<div class="tabpanel">${panel}</div></aside></div>` +
-    `<div class="composer" data-testid="composer"><label for="msg" class="sr-only">Tin nhắn</label>` +
-    `<textarea id="msg" disabled rows="2" placeholder="Gửi từ ứng dụng chưa có (bước K4). Hiện chỉ xem; gõ vào phiên bằng Telegram hoặc terminal."></textarea>` +
-    `<button type="button" disabled>Gửi</button></div></div>`;
+    composerHtml(m, arg) + `</div>`;
 }
 
 /** Giữ vị trí cuộn của khung hội thoại qua mỗi lần dựng lại; đang ở đáy thì bám đáy. */
@@ -339,8 +395,11 @@ function render() {
   renderHeader();
   const { name: id } = route();
   const keep = chatScroll();
+  const ta = document.activeElement && document.activeElement.id === 'msg' ? document.activeElement : null;
+  const caret = ta ? [ta.selectionStart, ta.selectionEnd] : null;
   $('#main').innerHTML = id === 'chat' ? renderChat() : LIVE.has(id) ? renderSessions() : renderComing(id);
   chatRestore(keep);
+  if (caret) { const n = document.getElementById('msg'); if (n && !n.disabled) { n.focus(); try { n.setSelectionRange(caret[0], caret[1]); } catch { /* không đặt được con trỏ: bỏ qua */ } } }
 }
 
 // ── sự kiện (không có trình xử lý nội dòng: CSP chặn) ───────────────────────────────────────────────────────────────────
@@ -351,12 +410,19 @@ $('#main').addEventListener('click', (e) => {
     navigator.clipboard?.writeText(code ? code.textContent : '').then(() => { cp.textContent = 'Đã chép'; setTimeout(() => (cp.textContent = 'Sao chép'), 1200); }).catch(() => { cp.textContent = 'Không chép được'; });
     return;
   }
+  if (e.target.closest('button[data-send]')) { sendMsg(); return; }
   const tb = e.target.closest('button[data-tab]');
   if (tb) { C.tab = tb.dataset.tab; render(); return; }
   const b = e.target.closest('button[data-act]');
   if (!b || b.disabled) return;
   S.page += b.dataset.act === 'next' ? 1 : -1;
   render();
+});
+$('#main').addEventListener('input', (e) => {
+  if (e.target.id === 'msg') { const { arg } = route(); if (arg) CMP.drafts[arg] = e.target.value; }
+});
+$('#main').addEventListener('keydown', (e) => {
+  if (e.target.id === 'msg' && e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendMsg(); }
 });
 $('#main').addEventListener('change', (e) => {
   if (e.target.id === 'status') { S.status = e.target.value; S.page = 1; render(); }

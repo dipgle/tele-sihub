@@ -8231,13 +8231,13 @@ pub fn cau_da_vao_nhat_ky(phan_moi: &str, o_nhap: &str) -> bool {
 
 /// Chờ nhật ký nhận khối, tối đa bao lâu. Nhận một lượt thì `claude` ghi ngay
 /// (dưới 1 s ở máy lành) — 8 s là chỗ cho máy nặng, không phải cho may rủi.
-const XAC_NHAN_NHAT_KY_SEC: u64 = 8;
+pub(crate) const XAC_NHAN_NHAT_KY_SEC: u64 = 8;
 
 /// Chờ tới khi phần nhật ký ghi thêm từ byte `tu` thoả `thay`, tối đa `cho`
 /// (`Duration::ZERO` = đọc đúng một lần). Ba kết cục, không gộp:
 /// `Some(true)` thấy · `Some(false)` đọc được mà không thấy · `None` chưa lần
 /// nào đọc được — "không đọc được" không phải "không có".
-fn cho_nhat_ky(
+pub(crate) fn cho_nhat_ky(
     path: &std::path::Path,
     tu: u64,
     cho: std::time::Duration,
@@ -11406,7 +11406,7 @@ pub fn ly_do_khong_cua_so(tty: &str, loi: Option<&str>) -> String {
 /// Không đọc được tab ⟹ `false`, cố ý: dán nhầm vào phiên khác là đưa kết quả
 /// lệnh của một làn cho một làn khác đọc và làm theo — đắt hơn nhiều một lượt
 /// chờ `RUNIN_RETRY_SEC`.
-fn paste_target_ok(window: i64, want_tty: &str, session: &str) -> Result<(), String> {
+pub(crate) fn paste_target_ok(window: i64, want_tty: &str, session: &str) -> Result<(), String> {
     // 🔴 HẠNG GẤP cho đúng MỘT câu hỏi này (sửa cùng ngày, sau khi đo bản đầu
     // chạy thật 18:16→21:15Z): 74 lượt `runin_paste_to` đều khớp, nhưng 23 lượt
     // `runin_paste_target_unverified` — phần lớn là *"vòng nền đã tiêu hết ngân

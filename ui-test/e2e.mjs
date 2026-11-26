@@ -198,7 +198,11 @@ async function chayEngine(ten, tc) {
     ca(P('K3.4 tab «Nội dung gốc» nêu đúng bốn thứ chủ máy chốt (25/11)'), ['Tin nhắn', 'thu gọn', 'Bước đang chạy', 'Trả lời cuối'].every((k) => goc.includes(k)) && !goc.includes('Chưa làm'), goc.slice(0, 80));
     await page.locator('button[data-tab=phien]').click();
     ca(P('K3.4b tab «Phiên» hiện thư mục làm việc thật'), ((await page.locator('[data-testid=tab-phien]').textContent()) || '').includes(claude.cwd));
-    ca(P('K3.5 ô nhập bị khoá, nói rõ chưa có gửi từ app'), (await page.locator('#msg').isDisabled()) && ((await page.locator('#msg').getAttribute('placeholder')) || '').includes('K4'));
+    {
+      const duocGui = claude.kind === 'interactive' && claude.host === 'terminal';
+      const khoa = await page.locator('#msg').isDisabled();
+      ca(P(`K3.5 ô nhập (K4): phiên thật host=${claude.host} ⟹ ${duocGui ? 'BẬT' : 'KHOÁ kèm lý do'}`), duocGui ? !khoa : khoa && ((await page.locator('#msg').getAttribute('placeholder')) || '').includes('không mở trong cửa sổ Terminal'));
+    }
     await page.screenshot({ path: `${SHOTS}/${ten}-4-chat.png` });
     await page.getByRole('link', { name: 'Danh sách phiên' }).click();
     await page.locator('[data-testid=row]').first().waitFor({ timeout: 5000 }).catch(() => {});
@@ -253,11 +257,11 @@ async function chayEngine(ten, tc) {
     const tool = (name, text) => ({ kind: 'tool', role: 'assistant', ts: null, name, withheld: false, text });
     const kq = (text) => ({ kind: 'result', role: 'user', ts: null, name: '', withheld: false, text });
     const nghi = { kind: 'think', role: 'assistant', ts: null, name: '', withheld: false, text: 'BI-MAT-SUY-NGHI' };
-    const dung = async (events, working) => {
+    const dung = async (events, working, extra = {}) => {
       await page.unroute('**/api/sessions/*/stream*').catch(() => {});
       await page.unroute('**/api/sessions').catch(() => {});
       const ds = JSON.parse(JSON.stringify(thuc0));
-      ds.data.sessions = ds.data.sessions.map((x) => (x.session_id === claude.session_id ? { ...x, working, asking_password: false } : x));
+      ds.data.sessions = ds.data.sessions.map((x) => (x.session_id === claude.session_id ? { ...x, working, asking_password: false, ...extra } : x));
       await page.route('**/api/sessions', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(ds) }));
       await page.route('**/api/sessions/*/stream*', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ now_ms: Date.now(), error: null, data: { session_id: claude.session_id, older_hidden: 0, events } }) }));
       await page.evaluate(() => { location.hash = '#sessions'; });
@@ -265,6 +269,8 @@ async function chayEngine(ten, tc) {
       await page.waitForTimeout(400);
       await page.evaluate(() => window.dispatchEvent(new Event('hashchange')));
       await page.waitForTimeout(600);
+      await page.evaluate(() => load()); // ép tải lại danh sách phiên NGAY (không chờ nhịp 5 giây) để hàng phiên giả có hiệu lực
+      await page.waitForTimeout(400);
     };
     const xong = [sev('user', 'làm đi'), nghi, tool('Read', 'a.rs'), kq('nội dung a'), tool('Bash', 'ls -la'), kq('total 0'), sev('assistant', 'XONG-RỒI-NÈ')];
     await dung(xong, false);
@@ -284,6 +290,93 @@ async function chayEngine(ten, tc) {
     await dung(dangNoi, true);
     ca(P('K3.11f ĐỐI CHỨNG: đang làm mà model vừa nói ⟹ KHÔNG gắn «Trả lời cuối» (chưa xong lượt)'), (await page.locator('[data-final]').count()) === 0 && ((await page.locator('#timeline').textContent()) || '').includes('ĐANG-VIẾT-DỞ'));
     await page.screenshot({ path: `${SHOTS}/${ten}-5-chat-buoc.png` });
+
+    // ── K4 gửi tin từ giao diện. ĐỐI CHỨNG GIẢ qua page.route (khai báo như K3.9/K3.11): bấm «Gửi» thật trên giao diện thật, nhưng
+    // máy chủ trả lời GIẢ — để dựng đủ bốn kết cục (đã nhận · còn trong ô · chưa xác nhận · bị từ chối) và lỗi mạng mà không
+    // gõ vào phiên Claude thật nào. Đường gõ THẬT vào Terminal có bài riêng (rust/tests + nghiệm thu trên phiên bỏ đi).
+    {
+      const goi = [];
+      let tra = { status: 200, data: { result: 'sent', message: 'Phiên đã nhận tin.' }, tre: 0, huy: false };
+      await page.route('**/api/sessions/*/send', async (r) => {
+        const req = r.request();
+        let body = {};
+        try { body = JSON.parse(req.postData() || '{}'); } catch {}
+        goi.push({ body, ct: req.headers()['content-type'], method: req.method() });
+        if (tra.tre) await new Promise((ok) => setTimeout(ok, tra.tre));
+        if (tra.huy) return r.abort('failed');
+        return r.fulfill({ status: tra.status, contentType: 'application/json', body: JSON.stringify({ now_ms: Date.now(), error: null, data: { replayed: false, ...tra.data } }) });
+      });
+      const nhap = async (chu) => { await page.locator('#msg').click(); await page.locator('#msg').fill(chu); };
+      const nhanGui = () => page.locator('[data-testid=send]').click();
+      const ket = async () => (await page.locator('[data-testid=send-result]').getAttribute('data-result').catch(() => null));
+      const rong = [sev('user', 'xin chào'), sev('assistant', 'chào anh')];
+
+      await dung(rong, false, { host: 'terminal', kind: 'interactive' });
+      ca(P('K4.1 phiên Terminal: ô nhập + nút Gửi BẬT'), !(await page.locator('#msg').isDisabled()) && !(await page.locator('[data-testid=send]').isDisabled()));
+
+      await nhap('làm tiếp việc đang dở nhé');
+      await nhanGui();
+      await page.locator('[data-testid=send-result]').waitFor({ timeout: 5000 }).catch(() => {});
+      ca(P('K4.2 «đã nhận»: thân yêu cầu đúng (JSON, text nguyên văn, client_id) + nháp được XOÁ'),
+        goi.length === 1 && goi[0].method === 'POST' && (goi[0].ct || '').includes('application/json') && goi[0].body.text === 'làm tiếp việc đang dở nhé' && /^[A-Za-z0-9_-]{8,64}$/.test(goi[0].body.client_id || '') && (await ket()) === 'sent' && (await page.locator('#msg').inputValue()) === '', JSON.stringify(goi[0] && goi[0].body));
+      const id1 = goi[0] && goi[0].body.client_id;
+
+      tra = { status: 200, data: { result: 'unverified', message: 'Màn khai tin đã đi, nhưng nhật ký phiên CHƯA thấy.' }, tre: 0, huy: false };
+      await nhap('tin mơ hồ');
+      await nhanGui();
+      await page.locator('[data-result=unverified]').waitFor({ timeout: 5000 }).catch(() => {});
+      ca(P('K4.3 «chưa xác nhận»: nháp GIỮ NGUYÊN + câu nói đúng kết cục'), (await ket()) === 'unverified' && (await page.locator('#msg').inputValue()) === 'tin mơ hồ' && ((await page.locator('[data-testid=send-result]').textContent()) || '').includes('Chưa xác nhận'));
+      await page.screenshot({ path: `${SHOTS}/${ten}-6a-gui-tin-chua-xac-nhan.png` });
+      await page.waitForTimeout(5800); // qua ≥1 nhịp làm mới 5 giây
+      ca(P('K4.4 KHÔNG TỰ GỬI LẠI: sau một nhịp làm mới vẫn chỉ 2 yêu cầu, nháp vẫn còn'), goi.length === 2 && (await page.locator('#msg').inputValue()) === 'tin mơ hồ', `yêu cầu=${goi.length}`);
+      await nhanGui();
+      await page.waitForTimeout(500);
+      ca(P('K4.5 bấm lại là MỘT quyết định mới: client_id KHÁC lần trước'), goi.length === 3 && goi[2].body.client_id !== goi[1].body.client_id && goi[2].body.client_id !== id1);
+
+      tra = { status: 200, data: { result: 'in_box', message: 'Chữ vẫn nằm trong ô nhập của phiên.' }, tre: 0, huy: false };
+      await nhanGui();
+      await page.locator('[data-result=in_box]').waitFor({ timeout: 5000 }).catch(() => {});
+      ca(P('K4.6 «còn trong ô nhập»: nháp giữ, nói rõ'), (await ket()) === 'in_box' && ((await page.locator('[data-testid=send-result]').textContent()) || '').includes('Còn trong ô nhập') && (await page.locator('#msg').inputValue()) === 'tin mơ hồ');
+
+      tra = { status: 200, data: { result: 'refused', message: 'Phiên đang hỏi / mở hộp chọn.' }, tre: 0, huy: false };
+      await nhanGui();
+      await page.locator('[data-result=refused]').waitFor({ timeout: 5000 }).catch(() => {});
+      ca(P('K4.7 «bị từ chối»: hiện LÝ DO của máy chủ, nháp giữ'), ((await page.locator('[data-testid=send-result]').textContent()) || '').includes('Phiên đang hỏi') && (await page.locator('#msg').inputValue()) === 'tin mơ hồ');
+
+      tra = { status: 200, data: { result: 'sent', message: 'ok' }, tre: 0, huy: true };
+      const t8 = goi.length;
+      await nhanGui();
+      await page.locator('[data-result=error]').waitFor({ timeout: 5000 }).catch(() => {});
+      ca(P('K4.8 mất mạng giữa chừng: nói «có thể ĐÃ đi», nháp giữ, KHÔNG tự gửi lại'), ((await page.locator('[data-testid=send-result]').textContent()) || '').includes('có thể ĐÃ đi') && (await page.locator('#msg').inputValue()) === 'tin mơ hồ' && goi.length === t8 + 1, `yêu cầu thêm=${goi.length - t8}`);
+
+      // bấm đúp: nút khoá trong lúc đang gửi ⟹ đúng MỘT yêu cầu
+      tra = { status: 200, data: { result: 'sent', message: 'ok' }, tre: 900, huy: false };
+      const truoc = goi.length;
+      await page.locator('[data-testid=send]').dblclick();
+      await page.waitForTimeout(1500);
+      ca(P('K4.9 bấm đúp «Gửi» chỉ đi MỘT yêu cầu'), goi.length === truoc + 1, `thêm=${goi.length - truoc}`);
+
+      // nháp sống qua việc dựng lại trang (mỗi vài giây) — gõ dở không bị mất, con trỏ không nhảy
+      tra = { status: 200, data: { result: 'sent', message: 'ok' }, tre: 0, huy: false };
+      await nhap('gõ dở dang');
+      await page.locator('#msg').press('End');
+      await page.waitForTimeout(5800);
+      const giu = await page.evaluate(() => ({ v: document.getElementById('msg').value, f: document.activeElement && document.activeElement.id }));
+      ca(P('K4.10 gõ dở qua một nhịp làm mới: chữ còn, ô vẫn đang focus'), giu.v === 'gõ dở dang' && giu.f === 'msg', JSON.stringify(giu));
+
+      // Ctrl+Enter gửi
+      const t2 = goi.length;
+      await page.locator('#msg').press('Control+Enter');
+      await page.waitForTimeout(600);
+      ca(P('K4.11 Ctrl+Enter gửi'), goi.length === t2 + 1 && goi[goi.length - 1].body.text === 'gõ dở dang');
+
+      // phiên KHÔNG ở Terminal ⟹ khoá + lý do (không có đường gửi)
+      await dung(rong, false, { host: 'editor', kind: 'interactive' });
+      const phk = (await page.locator('#msg').getAttribute('placeholder')) || '';
+      ca(P('K4.12 phiên chạy ở editor: ô KHOÁ + nêu lý do'), (await page.locator('#msg').isDisabled()) && (await page.locator('[data-testid=send]').isDisabled()) && phk.includes('không mở trong cửa sổ Terminal'), phk.slice(0, 60));
+      await page.screenshot({ path: `${SHOTS}/${ten}-6-gui-tin.png` });
+      await page.unroute('**/api/sessions/*/send').catch(() => {});
+    }
     await page.unroute('**/api/sessions/*/stream*').catch(() => {});
     await page.unroute('**/api/sessions').catch(() => {});
     await page.evaluate(() => { location.hash = '#sessions'; });

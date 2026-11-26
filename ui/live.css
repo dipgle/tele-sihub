@@ -38,3 +38,6 @@ details.steps[open]>summary{margin-bottom:4px}
 .steps.running{margin:10px 0 10px 6px;padding:8px 10px;border:1px solid var(--accent-bg);border-radius:10px;background:#fbfdfd;font-size:12px}
 .running-head{overflow-wrap:anywhere}.running-head .pill{margin-right:6px}
 .ev.say.final .bubble{border:1px solid var(--accent);background:#fff}.ev.say.final .who{color:var(--accent);font-weight:600}
+
+.composer-wrap{margin-top:16px}.composer-wrap .composer{margin-top:0}.send-result{margin:0 0 8px;overflow-wrap:anywhere}
+.composer textarea:disabled{background:#eef1f2;color:var(--muted)}.composer textarea[readonly]{opacity:.7}
