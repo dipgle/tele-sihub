@@ -7614,6 +7614,38 @@ pub fn transcript_idle_seconds(cfg: &Config, session_id: &str) -> Option<i64> {
     Some(mtime.elapsed().ok()?.as_secs() as i64)
 }
 
+/// Đọc đuôi nhật ký và NỚI KHUNG DẦN cho tới khi có ít nhất một CÂU NÓI (`say`), rồi giữ `limit` sự kiện cuối —
+/// nhưng KHÔNG cắt bỏ câu nói gần nhất: nếu nó nằm xa hơn `limit` thì lấy từ chính câu ấy trở đi.
+///
+/// 🔴 25/11 (Hà: *"Sửa tin nhắn trước"*): phiên đang làm nặng nuốt nhiều kết quả công cụ dài ⇒ 256 KB cuối chỉ có
+/// công cụ, màn Chat không có tin nhắn nào. Cùng phép nới khung với `last_prose_of_file_at`. Nhật ký không có câu
+/// nói nào (hoặc đã đọc hết tệp) thì dừng — trả những gì có, không bịa.
+fn read_stream_window(path: &Path, limit: usize) -> Result<SessionStream> {
+    let len = std::fs::metadata(path)
+        .map(|m| m.len())
+        .unwrap_or(TAIL_BYTES);
+    let mut last: Option<SessionStream> = None;
+    for window in [TAIL_BYTES, 1 << 20, 4 << 20, 16 << 20] {
+        let tail = read_tail_n(path, window)?;
+        let all = parse_stream(&tail, usize::MAX);
+        let say_at = all.events.iter().rposition(|e| e.kind == "say");
+        let whole_file = len <= window;
+        if say_at.is_some() || whole_file || window == (16 << 20) {
+            let total = all.events.len();
+            let from = match say_at {
+                Some(i) => total.saturating_sub(limit).min(i),
+                None => total.saturating_sub(limit),
+            };
+            let mut p = all;
+            p.events.drain(..from);
+            p.older_hidden = from;
+            return Ok(p);
+        }
+        last = Some(all);
+    }
+    Ok(last.unwrap_or_default())
+}
+
 /// The recent stream of one session, ready to render.
 pub fn stream(cfg: &Config, session_id: &str, cwd: &str, limit: usize) -> SessionStream {
     let mut out = SessionStream {
@@ -7624,9 +7656,8 @@ pub fn stream(cfg: &Config, session_id: &str, cwd: &str, limit: usize) -> Sessio
         out.note = Some("chưa có nhật ký phiên".into());
         return out;
     };
-    match read_tail(&path) {
-        Ok(tail) => {
-            let parsed = parse_stream(&tail, limit);
+    match read_stream_window(&path, limit) {
+        Ok(parsed) => {
             out.events = parsed.events;
             out.older_hidden = parsed.older_hidden;
             if out.events.is_empty() {
