@@ -18,7 +18,10 @@ fn lanh() -> LiveSession {
 
 #[test]
 fn a_healthy_claude_terminal_session_takes_a_normal_message() {
-    assert_eq!(refuse_reason(&lanh(), "chào phiên, làm tiếp việc đang dở"), None);
+    assert_eq!(
+        refuse_reason(&lanh(), "chào phiên, làm tiếp việc đang dở"),
+        None
+    );
     // nhiều dòng + tab vẫn là tin thường
     assert_eq!(refuse_reason(&lanh(), "dòng 1\n\tdòng 2"), None);
 }

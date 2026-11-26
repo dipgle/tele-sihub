@@ -165,7 +165,11 @@ fn a_foreign_origin_or_host_is_refused_before_anything_else() {
 fn only_json_bodies_are_accepted() {
     let (s, _d) = state();
     let log = gan(&s, Outcome::Sent);
-    for ct in [Some("text/plain"), Some("application/x-www-form-urlencoded"), None] {
+    for ct in [
+        Some("text/plain"),
+        Some("application/x-www-form-urlencoded"),
+        None,
+    ] {
         let mut g = gui(
             &s,
             "/api/sessions/s-claude/send",
@@ -204,9 +208,15 @@ fn the_session_id_is_checked_like_the_stream_route() {
     let (s, _d) = state();
     let log = gan(&s, Outcome::Sent);
     let b = json!({"client_id": ID_TOT, "text": "x"});
-    assert_eq!(gui(&s, "/api/sessions/..%2Fetc/send", b.clone()).chay().0, 400);
+    assert_eq!(
+        gui(&s, "/api/sessions/..%2Fetc/send", b.clone()).chay().0,
+        400
+    );
     assert_eq!(gui(&s, "/api/sessions/a b/send", b.clone()).chay().0, 400);
-    assert_eq!(gui(&s, "/api/sessions/khong-co/send", b.clone()).chay().0, 404);
+    assert_eq!(
+        gui(&s, "/api/sessions/khong-co/send", b.clone()).chay().0,
+        404
+    );
     assert!(log.lock().unwrap().is_empty());
 }
 

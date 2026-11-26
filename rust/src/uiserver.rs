@@ -53,8 +53,7 @@ const STREAM_MAX: usize = 300;
 
 /// Nhà cung cấp việc GỬI tin vào phiên (K4): nhận hàng phiên (JSON trong bản đệm) + chữ, trả kết cục. Mã chạy thật gắn
 /// `ui_send::send`; test gắn bản giả — nhờ vậy hàng rào của đường POST kiểm được mà không đụng Terminal nào.
-pub type SendFn =
-    Box<dyn Fn(&serde_json::Value, &str) -> crate::ui_send::SendResult + Send + Sync>;
+pub type SendFn = Box<dyn Fn(&serde_json::Value, &str) -> crate::ui_send::SendResult + Send + Sync>;
 
 /// Số kết quả gửi gần nhất được nhớ theo `client_id` (để bấm lặp/mạng retry không gõ hai lần). Trần cố định: bộ nhớ không phình.
 const SEND_REMEMBER: usize = 200;
@@ -693,7 +692,10 @@ fn produce_send(
     match serde_json::from_value::<crate::sessions::LiveSession>(row.clone()) {
         Ok(s) => crate::ui_send::send(cfg, &s, text),
         Err(e) => {
-            crate::logging::warn("ui_send_row_unreadable", serde_json::json!({ "err": e.to_string() }));
+            crate::logging::warn(
+                "ui_send_row_unreadable",
+                serde_json::json!({ "err": e.to_string() }),
+            );
             crate::ui_send::SendResult {
                 outcome: crate::ui_send::Outcome::Refused,
                 message: format!("Không đọc được hàng phiên trong bản đệm ({e}) nên không gõ."),

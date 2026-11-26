@@ -83,7 +83,11 @@ fn nhat_ky_ngan_giu_nguyen() {
     assert_eq!(st.events.len(), 7);
     assert_eq!(st.older_hidden, 0);
     let st = sessions::stream(&cfg, ID, CWD, 3);
-    assert_eq!(st.events.len(), 3, "câu nói cuối đã nằm trong 3 sự kiện cuối");
+    assert_eq!(
+        st.events.len(),
+        3,
+        "câu nói cuối đã nằm trong 3 sự kiện cuối"
+    );
     assert_eq!(st.older_hidden, 4);
 }
 

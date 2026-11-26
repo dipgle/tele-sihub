@@ -75,7 +75,10 @@ pub fn refuse_reason(s: &LiveSession, text: &str) -> Option<String> {
             "Tin dài quá {MAX_CHARS} ký tự — chia nhỏ, hoặc để thành tệp rồi nhờ phiên đọc."
         ));
     }
-    if text.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+    if text
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+    {
         return Some("Tin có ký tự điều khiển (không in được) — xoá chúng rồi gửi lại.".into());
     }
     if text.trim_start().starts_with('/') {
@@ -101,7 +104,10 @@ pub fn refuse_reason(s: &LiveSession, text: &str) -> Option<String> {
         ));
     }
     if !crate::sessions::is_real_tty(&s.tty) {
-        return Some("Phiên không gắn với cửa sổ Terminal nào (không có tty) nên huba không gõ vào được.".into());
+        return Some(
+            "Phiên không gắn với cửa sổ Terminal nào (không có tty) nên huba không gõ vào được."
+                .into(),
+        );
     }
     if s.asking_password {
         return Some("Phiên đang chờ MẬT KHẨU — huba không gõ vào ô đó. Nhập ở terminal.".into());
@@ -114,7 +120,9 @@ pub fn refuse_reason(s: &LiveSession, text: &str) -> Option<String> {
         );
     }
     if s.account_dead.is_some() {
-        return Some("Tài khoản của phiên đang hỏng (đăng nhập hết hạn?) — phiên chưa nhận tin được.".into());
+        return Some(
+            "Tài khoản của phiên đang hỏng (đăng nhập hết hạn?) — phiên chưa nhận tin được.".into(),
+        );
     }
     if s.limited.is_some() {
         return Some("Phiên đang bị chặn vì hết hạn mức — chờ tới giờ mở lại.".into());
