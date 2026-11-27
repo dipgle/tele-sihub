@@ -10057,7 +10057,8 @@ pub fn cho_id_ke_nhiem(
             return None;
         }
         let root_s = cwd.to_string_lossy().to_string();
-        if let Err(e) = crate::opencode::write_binding(&row, &s.id, window, tty_short, Some(&root_s))
+        if let Err(e) =
+            crate::opencode::write_binding(&row, &s.id, window, tty_short, Some(&root_s))
         {
             logging::error(
                 "opencode_bind_write_failed",
