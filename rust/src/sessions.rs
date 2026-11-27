@@ -10021,6 +10021,61 @@ pub fn self_opened_successor(
     successor_by_brief(&calls, &candidates)
 }
 
+/// id của phiên KẾ NHIỆM vừa mở ở cửa sổ `window`/`tty_short` — chờ theo ĐÚNG CLI
+/// của tài khoản đích, không theo CLI của phiên cũ.
+///
+/// 🔴 Đo 16/11 trên Mac (3 lượt bàn giao sang acc9, opencode): đường bàn giao luôn
+/// chờ bằng `wait_for_new_session_id` — cách của Claude (nhật ký `.jsonl` + `claude
+/// agents`). Phiên opencode KHÔNG sinh nhật ký ấy ⟹ luôn `None` ⟹
+/// `handover_new_session_never_appeared` ⟹ GIỮ cửa sổ cũ: hai phiên cùng module, và
+/// phiên mới không có liên kết cửa sổ nên bị ẩn khỏi danh sách (luật phiên ma).
+/// Nay acc opencode chờ kho SQLite của chính nó và ghi liên kết cửa sổ — y như `/new`
+/// (`start_opencode_in_terminal`). `oc_giay` chỉ để bài kiểm rút ngắn lượt chờ.
+#[allow(clippy::too_many_arguments)]
+pub fn cho_id_ke_nhiem(
+    cfg: &Config,
+    acc: &str,
+    cwd: &Path,
+    opened_at: std::time::SystemTime,
+    window: i64,
+    tty_short: &str,
+    exclude: Option<&str>,
+    oc_giay: u64,
+) -> Option<String> {
+    if let Some(row) = account_row(cfg, Some(acc)).filter(|a| a.is_opencode()) {
+        let opened_ms = opened_at
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let s = wait_opencode_session(&row, cwd, opened_ms, oc_giay)?;
+        if exclude == Some(s.id.as_str()) {
+            logging::warn(
+                "handover_opencode_saw_old_session",
+                json!({ "account": row.name, "session": s.id,
+                        "effect": "không nhận phiên cũ làm kế nhiệm — giữ cửa sổ cũ" }),
+            );
+            return None;
+        }
+        let root_s = cwd.to_string_lossy().to_string();
+        if let Err(e) = crate::opencode::write_binding(&row, &s.id, window, tty_short, Some(&root_s))
+        {
+            logging::error(
+                "opencode_bind_write_failed",
+                json!({ "account": row.name, "session": s.id, "err": e,
+                        "effect": "phiên kế nhiệm mở được nhưng /shot /stop không tìm thấy cửa sổ" }),
+            );
+        }
+        return Some(s.id);
+    }
+    // MỘT chỗ cho cả `/new` lẫn đường này — xem `wait_for_new_session_id`.
+    // `exclude` là phần riêng có thật của lượt bàn giao: phiên CŨ vẫn đang ghi
+    // tiếp nhật ký, nên "tệp nào vừa đổi" bao gồm cả nó, và bản cũ đã ghép
+    // trúng id phiên đang bị đóng sổ (`handover_window_opened session:0a109818…`).
+    // `deep = false`: ở đây không có id nghĩa là GIỮ NGUYÊN cửa sổ cũ — một kết
+    // cục an toàn, không đáng trả thêm 40 giây hỏi `claude agents`.
+    wait_for_new_session_id(cfg, cwd, opened_at, tty_short, exclude, false)
+}
+
 /// Mở một phiên MỚI mang theo bản bàn giao. Cửa sổ cũ chỉ đóng khi
 /// [`should_close_old_window`] cho phép — mặc định của lượt do người gõ là GIỮ.
 pub fn start_fresh_after_handover(
@@ -10082,24 +10137,25 @@ pub fn start_fresh_after_handover(
         } else {
             ensure_account_usable(cfg, Some(dung_acc))?;
         }
+        let row = account_row(cfg, Some(dung_acc));
+        if let Some(acc) = row.as_ref().filter(|a| a.is_opencode()) {
+            // Cùng bước chuẩn bị với `/new` (`start_opencode_in_terminal`).
+            chuan_bi_mo_opencode(acc);
+        }
         let cmd = window_command(cfg, Some(dung_acc), cwd, Some(&task), None);
-        crate::accounts::tin_truoc_khi_mo(cfg, account_row(cfg, Some(dung_acc)).as_ref(), cwd);
+        crate::accounts::tin_truoc_khi_mo(cfg, row.as_ref(), cwd);
         let opened_at = std::time::SystemTime::now();
-        let (_window, tty) = crate::keys::open_window(&cmd)?;
+        let (window, tty) = crate::keys::open_window(&cmd)?;
         let tty_short = tty.trim_start_matches("/dev/").to_string();
-        // MỘT chỗ cho cả `/new` lẫn đường này — xem `wait_for_new_session_id`.
-        // `exclude` là phần riêng có thật của lượt bàn giao: phiên CŨ vẫn đang ghi
-        // tiếp nhật ký, nên "tệp nào vừa đổi" bao gồm cả nó, và bản cũ đã ghép
-        // trúng id phiên đang bị đóng sổ (`handover_window_opened session:0a109818…`).
-        // `deep = false`: ở đây không có id nghĩa là GIỮ NGUYÊN cửa sổ cũ — một kết
-        // cục an toàn, không đáng trả thêm 40 giây hỏi `claude agents`.
-        let new_id = wait_for_new_session_id(
+        let new_id = cho_id_ke_nhiem(
             cfg,
+            dung_acc,
             cwd,
             opened_at,
+            window,
             &tty_short,
             Some(&session.session_id),
-            false,
+            45,
         );
         logging::info(
             "handover_window_opened",
